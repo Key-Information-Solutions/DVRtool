@@ -1,0 +1,494 @@
+using System.Globalization;
+using System.Text;
+using DVRTool.Core;
+using DVRTool.Vendors.Dahua;
+using DVRTool.Vendors.Hikvision;
+
+const string Usage = """
+    dvrtool — multi-vendor NVR footage tool (Key Information Solutions)
+
+    Usage:
+      dvrtool <command> [options]
+
+    Commands:
+      info            Device model / serial / firmware
+      channels        List channels
+      search          List recordings for a channel in a window
+      download        Export footage for a time span to a file
+      live-url        Print the RTSP live URI (paste into VLC)
+      playback-url    Print the RTSP playback-by-time URI
+
+    Options:
+      --vendor <hikvision|dahua>   default: hikvision
+      --host <ip[:port]>           or DVR_HOST (HTTP port; default 80, 443 with --tls —
+                                   many NVRs serve HTTPS on 8443: --host 10.0.0.5:8443)
+      --user <name>                or DVR_USER
+      --pass <password>            or DVR_PASS; omit both to be prompted (avoid the
+                                   flag: it persists in shell history and audit logs)
+      --rtsp-port <n>              default: 554
+      --tls                        HTTPS to the NVR (self-signed cert pinned on first use)
+      --channel <n>                1-based display channel
+      --start / --end              "yyyy-MM-dd HH:mm[:ss]" (NVR-local time)
+      --stream <main|sub>          default: main
+      --out <file>                 download target (default: auto-named after the
+                                   container the device actually sent)
+      --remux [mp4|mkv]            stream-copy the download into a real container via
+                                   ffmpeg (default mp4). Hikvision exports are MPEG
+                                   program streams whatever they are named, and Dahua
+                                   sends .dav — most players reject both.
+      --force                      replace an existing file at the download target
+                                   (without it, an export that would overwrite one is
+                                   refused — before the download starts, and again
+                                   before a remux is moved onto the target)
+      --with-creds                 embed user:pass into printed RTSP URIs
+      --env <path>                 .env file to load (default: .env in the working dir)
+
+    Credentials can live in a .env file (DVR_HOST / DVR_USER / DVR_PASS). The
+    password is stored there in PLAINTEXT — never keep .env inside footage/export
+    folders that get zipped up and shared.
+    """;
+
+if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
+{
+    Console.WriteLine(Usage);
+    return 0;
+}
+
+string command = args[0].ToLowerInvariant();
+Dictionary<string, string> opts;
+try
+{
+    opts = ParseOptions(args.Skip(1).ToArray());
+    LoadDotEnv(opts.GetValueOrDefault("env"));
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"error: {ex.Message}");
+    return 2;
+}
+
+using var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    cts.Cancel();
+};
+
+try
+{
+    // URL-only commands don't authenticate; only demand a password when it is
+    // actually used (so `dvrtool live-url` never blocks on a prompt).
+    bool needsPassword = command is not ("live-url" or "playback-url")
+        || opts.ContainsKey("with-creds");
+    using INvrClient client = BuildClient(opts, needsPassword);
+    switch (command)
+    {
+        case "info":
+        {
+            var info = await client.GetDeviceInfoAsync(cts.Token);
+            Console.WriteLine($"Vendor:    {client.Vendor}");
+            Console.WriteLine($"Name:      {info.Name}");
+            Console.WriteLine($"Model:     {info.Model}");
+            Console.WriteLine($"Serial:    {info.SerialNumber}");
+            Console.WriteLine($"Firmware:  {info.FirmwareVersion}");
+            return 0;
+        }
+        case "channels":
+        {
+            var channels = await client.GetChannelsAsync(cts.Token);
+            if (channels.Count == 0)
+            {
+                Console.WriteLine("No channels reported.");
+                return 0;
+            }
+            foreach (var ch in channels)
+            {
+                string online = ch.Online switch
+                {
+                    true => "online",
+                    false => "OFFLINE",
+                    null => "",
+                };
+                Console.WriteLine($"{ch.Id,4}  {ch.Name,-32} {online}");
+            }
+            return 0;
+        }
+        case "search":
+        {
+            int channel = RequireChannel(opts);
+            var (start, end) = RequireWindow(opts);
+            var segments = await client.SearchAsync(channel, start, end, cts.Token);
+            if (segments.Count == 0)
+            {
+                Console.WriteLine("No recordings found in that window.");
+                return 0;
+            }
+            Console.WriteLine($"{"#",4}  {"Start",-19}  {"End",-19}  {"Duration",-10}  {"Type",-10}  Size");
+            for (int i = 0; i < segments.Count; i++)
+            {
+                var s = segments[i];
+                string size = s.SizeBytes is long b ? $"{b / 1048576.0:F1} MB" : "";
+                Console.WriteLine(
+                    $"{i + 1,4}  {s.Start:yyyy-MM-dd HH:mm:ss}  {s.End:yyyy-MM-dd HH:mm:ss}  " +
+                    $"{FormatDuration(s.Duration),-10}  {s.Type,-10}  {size}");
+            }
+            TimeSpan total = TimeSpan.FromSeconds(segments.Sum(s => s.Duration.TotalSeconds));
+            Console.WriteLine($"\n{segments.Count} segment(s), {FormatDuration(total)} of footage.");
+            return 0;
+        }
+        case "download":
+        {
+            int channel = RequireChannel(opts);
+            var (start, end) = RequireWindow(opts);
+            bool force = opts.ContainsKey("force");
+            string? requestedOut = opts.GetValueOrDefault("out") is { Length: > 0 } o ? o : null;
+            RemuxContainer? container = opts.TryGetValue("remux", out var remuxValue)
+                ? DownloadPaths.ResolveContainer(remuxValue, requestedOut)
+                : null;
+            var plan = DownloadPaths.Plan(requestedOut,
+                $"ch{channel}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}", container);
+
+            // Before a download that can run for minutes, not after it.
+            DownloadPaths.EnsureNotOverwriting(plan.FinalPath, force);
+
+            string outDir = Path.GetDirectoryName(Path.GetFullPath(plan.FinalPath))!;
+            if (File.Exists(Path.Combine(outDir, ".env")))
+                Console.Error.WriteLine(
+                    "warning: a .env (plaintext credentials) sits in the export directory — " +
+                    "don't zip it up with the footage.");
+
+            Console.WriteLine($"Downloading ch{channel} {start:yyyy-MM-dd HH:mm:ss} → {end:HH:mm:ss} …");
+            long lastShown = 0;
+            var progress = new Progress<long>(total =>
+            {
+                if (total - lastShown < 2_000_000)
+                    return;
+                lastShown = total;
+                Console.Write($"\r  {total / 1048576.0:F1} MB");
+            });
+            await client.DownloadAsync(channel, start, end, plan.DownloadPath, progress, cts.Token);
+            long size = new FileInfo(plan.DownloadPath).Length;
+
+            if (plan.Container is RemuxContainer target)
+            {
+                Console.WriteLine($"\r  {size / 1048576.0:F1} MB downloaded.");
+                Console.WriteLine($"Remuxing → {plan.FinalPath} …");
+                var remux = await Remux.RemuxAsync(
+                    plan.DownloadPath, plan.FinalPath, target, force, cts.Token);
+                if (remux.RefusedOverwrite)
+                {
+                    // ffmpeg did its job; only the promotion was refused. Reporting that
+                    // as an ffmpeg failure would send the operator after the wrong problem.
+                    Console.Error.WriteLine($"error: {remux.Output}");
+                    Console.Error.WriteLine(
+                        "  it appeared while this export was downloading, so the remux — " +
+                        "which succeeded — was discarded instead of replacing it.");
+                    Console.Error.WriteLine(
+                        $"  the raw download is kept at {plan.DownloadPath} — VLC plays it as-is.");
+                    return 2;
+                }
+                if (!remux.Success)
+                {
+                    Console.Error.WriteLine($"  ffmpeg failed:\n{remux.Output}");
+                    Console.Error.WriteLine(
+                        $"  the raw download is kept at {plan.DownloadPath} — VLC plays it as-is.");
+                    return 1;
+                }
+                TryDelete(plan.DownloadPath);
+                long muxed = new FileInfo(plan.FinalPath).Length;
+                Console.WriteLine($"  {muxed / 1048576.0:F1} MB — saved {plan.FinalPath}");
+                // The operator named this file, so it is never silently renamed — but
+                // shipping evidence whose extension lies about its bytes is the exact
+                // defect --remux exists to fix, and it must not come from our own tool.
+                if (DownloadPaths.ExplicitContainerContradictsName(remuxValue, requestedOut, target))
+                    Console.Error.WriteLine(
+                        $"warning: --remux {(target == RemuxContainer.Mp4 ? "mp4" : "mkv")} wrote " +
+                        $"{ContainerSniffer.DisplayName(DownloadPaths.MediaContainerFor(target))} " +
+                        $"data into a file you named {Path.GetExtension(plan.FinalPath)} — most " +
+                        "players trust the extension and will refuse it. Rename it, or drop the " +
+                        "explicit --remux and let the --out name pick the container.");
+                return 0;
+            }
+
+            // No remux: name the file after what the device actually sent. Hikvision
+            // exports are MPEG program streams however they are labeled — but that is
+            // one firmware's behavior, so the bytes decide, not the vendor.
+            var sniffed = ContainerSniffer.SniffFile(plan.DownloadPath);
+            string finalPath = plan.DownloadPath;
+            if (requestedOut is null)
+            {
+                finalPath += ContainerSniffer.ExtensionFor(sniffed) ?? ".bin";
+                // The auto-name's extension comes from the bytes, so this collision is
+                // the one that genuinely cannot be checked before the download.
+                if (!force && File.Exists(finalPath))
+                {
+                    Console.Error.WriteLine($"\nerror: {DownloadPaths.OverwriteRefusalMessage(finalPath)}");
+                    Console.Error.WriteLine($"  this download is kept at {plan.DownloadPath}.");
+                    return 2;
+                }
+                File.Move(plan.DownloadPath, finalPath, overwrite: force);
+            }
+            Console.WriteLine($"\r  {size / 1048576.0:F1} MB — saved {finalPath}");
+            if (ContainerSniffer.ExtensionContradicts(finalPath, sniffed))
+                Console.Error.WriteLine(
+                    $"warning: that file holds {ContainerSniffer.DisplayName(sniffed)} data, " +
+                    $"not {Path.GetExtension(finalPath)} — most players will refuse it. " +
+                    "Re-run with --remux to get a real container.");
+            else if (sniffed is MediaContainer.MpegProgramStream or MediaContainer.Dhav)
+                Console.WriteLine(
+                    $"  ({ContainerSniffer.DisplayName(sniffed)} straight off the NVR; " +
+                    "pass --remux for a file Windows plays by default)");
+            else if (sniffed is MediaContainer.Unknown)
+                Console.WriteLine("  (unrecognized container — try --remux, or open it in VLC)");
+            return 0;
+        }
+        case "live-url":
+        {
+            int channel = RequireChannel(opts);
+            Console.WriteLine(client.GetLiveUri(channel, ParseStream(opts),
+                opts.ContainsKey("with-creds")));
+            return 0;
+        }
+        case "playback-url":
+        {
+            int channel = RequireChannel(opts);
+            var (start, end) = RequireWindow(opts);
+            Console.WriteLine(client.GetPlaybackUri(channel, start, end, ParseStream(opts),
+                opts.ContainsKey("with-creds")));
+            return 0;
+        }
+        default:
+            Console.Error.WriteLine($"error: unknown command '{command}'\n");
+            Console.WriteLine(Usage);
+            return 2;
+    }
+}
+catch (OperationCanceledException) when (cts.IsCancellationRequested)
+{
+    Console.Error.WriteLine("\ncanceled.");
+    return 1;
+}
+catch (OperationCanceledException ex)
+{
+    // HttpClient's 30s timeout surfaces as TaskCanceledException too — without
+    // this distinction a hung/unreachable NVR would be reported as a user abort.
+    Console.Error.WriteLine(ex.InnerException is TimeoutException
+        ? "Timed out talking to the device (30s). Check host/port and that the NVR is reachable."
+        : $"Request canceled unexpectedly: {ex.Message}");
+    return 1;
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"error: {ex.Message}");
+    return 2;
+}
+catch (NvrException ex)
+{
+    Console.Error.WriteLine($"NVR error: {ex.Message}");
+    if (!string.IsNullOrWhiteSpace(ex.ResponseBody))
+        Console.Error.WriteLine(ex.ResponseBody.Length > 500
+            ? ex.ResponseBody[..500] + "…"
+            : ex.ResponseBody);
+    return 1;
+}
+catch (HttpRequestException ex)
+{
+    Console.Error.WriteLine($"Connection error: {ex.Message}" +
+        (ex.InnerException is not null ? $" — {ex.InnerException.Message}" : ""));
+    return 1;
+}
+
+// ----- helpers -----
+
+static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPassword = true)
+{
+    string host = Require(opts, "host", "DVR_HOST");
+    bool useTls = opts.ContainsKey("tls");
+    int httpPort = useTls ? 443 : 80;
+    if (host.Contains(':'))
+    {
+        var parts = host.Split(':', 2);
+        host = parts[0];
+        httpPort = ParsePort(parts[1], $"--host '{parts[1]}'");
+    }
+
+    string user = Require(opts, "user", "DVR_USER");
+    var conn = new NvrConnection
+    {
+        Host = host,
+        HttpPort = httpPort,
+        RtspPort = opts.TryGetValue("rtsp-port", out var rp)
+            ? ParsePort(rp, "--rtsp-port") : 554,
+        Username = user,
+        Password = GetPassword(opts, user, host, needsPassword),
+        UseTls = useTls,
+    };
+
+    string vendor = opts.GetValueOrDefault("vendor", "hikvision").ToLowerInvariant();
+    return vendor switch
+    {
+        "hikvision" or "hik" => new HikvisionClient(conn),
+        "dahua" or "amcrest" => new DahuaClient(conn),
+        _ => throw new ArgumentException($"unknown vendor '{vendor}' (use hikvision or dahua)"),
+    };
+}
+
+static string Require(Dictionary<string, string> opts, string flag, string envVar)
+{
+    if (opts.TryGetValue(flag, out var v) && !string.IsNullOrEmpty(v))
+        return v;
+    return Environment.GetEnvironmentVariable(envVar)
+        ?? throw new ArgumentException($"missing --{flag} (or {envVar} in env/.env)");
+}
+
+static int ParsePort(string value, string what)
+{
+    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int port) ||
+        port is < 1 or > 65535)
+        throw new ArgumentException($"invalid port in {what}");
+    return port;
+}
+
+static string GetPassword(Dictionary<string, string> opts, string user, string host,
+    bool required)
+{
+    if (opts.TryGetValue("pass", out var v) && !string.IsNullOrEmpty(v))
+        return v;
+    if (Environment.GetEnvironmentVariable("DVR_PASS") is { Length: > 0 } env)
+        return env;
+    if (!required)
+        return "";
+    // No password anywhere: prompt with echo suppressed rather than failing, so
+    // ad-hoc site visits never need the password on the command line at all.
+    if (Console.IsInputRedirected)
+        throw new ArgumentException("missing --pass (or DVR_PASS in env/.env)");
+    Console.Error.Write($"Password for {user}@{host}: ");
+    var sb = new StringBuilder();
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter)
+            break;
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (sb.Length > 0)
+                sb.Length--;
+            continue;
+        }
+        if (key.KeyChar != '\0')
+            sb.Append(key.KeyChar);
+    }
+    Console.Error.WriteLine();
+    return sb.ToString();
+}
+
+static void TryDelete(string path)
+{
+    try { File.Delete(path); }
+    catch (IOException) { }
+    catch (UnauthorizedAccessException) { }
+}
+
+static string FormatDuration(TimeSpan t) =>
+    // TimeSpan's "h" specifier drops whole days (40h renders as "16:00:00").
+    $"{(long)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}";
+
+static int RequireChannel(Dictionary<string, string> opts)
+{
+    if (opts.TryGetValue("channel", out var v) && int.TryParse(v, out int ch) && ch >= 1)
+        return ch;
+    throw new ArgumentException("missing or invalid --channel");
+}
+
+static (DateTime Start, DateTime End) RequireWindow(Dictionary<string, string> opts)
+{
+    DateTime start = ParseTime(opts.GetValueOrDefault("start")
+        ?? throw new ArgumentException("missing --start"));
+    DateTime end = ParseTime(opts.GetValueOrDefault("end")
+        ?? throw new ArgumentException("missing --end"));
+    if (end <= start)
+        throw new ArgumentException("--end must be after --start");
+    return (start, end);
+}
+
+static DateTime ParseTime(string value)
+{
+    string[] formats =
+    [
+        "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd",
+        "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm",
+    ];
+    if (DateTime.TryParseExact(value, formats, CultureInfo.InvariantCulture,
+            DateTimeStyles.None, out var t))
+        return DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
+    throw new ArgumentException($"can't parse time '{value}' (use \"yyyy-MM-dd HH:mm[:ss]\")");
+}
+
+static StreamType ParseStream(Dictionary<string, string> opts) =>
+    opts.GetValueOrDefault("stream", "main").ToLowerInvariant() switch
+    {
+        "main" or "0" => StreamType.Main,
+        "sub" or "1" => StreamType.Sub,
+        var s => throw new ArgumentException($"unknown stream '{s}' (use main or sub)"),
+    };
+
+static Dictionary<string, string> ParseOptions(string[] args)
+{
+    // Flags without a value (or followed by another --flag) are stored as "".
+    // --remux is deliberately absent: it takes an optional container name, and bare
+    // "--remux" still lands here as "" via the lookahead below.
+    string[] boolFlags = ["with-creds", "tls", "force"];
+    var opts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    for (int i = 0; i < args.Length; i++)
+    {
+        if (!args[i].StartsWith("--", StringComparison.Ordinal))
+            throw new ArgumentException($"unexpected argument '{args[i]}'");
+        string key = args[i][2..];
+        if (boolFlags.Contains(key) || i + 1 >= args.Length ||
+            args[i + 1].StartsWith("--", StringComparison.Ordinal))
+        {
+            opts[key] = "";
+        }
+        else
+        {
+            opts[key] = args[++i];
+        }
+    }
+    return opts;
+}
+
+static void LoadDotEnv(string? explicitPath)
+{
+    string path = explicitPath ?? Path.Combine(Environment.CurrentDirectory, ".env");
+    if (!File.Exists(path))
+    {
+        if (explicitPath is not null)
+            throw new ArgumentException($"--env file not found: {explicitPath}");
+        return;
+    }
+    // Only the keys this tool understands — a planted .env must not be able to
+    // inject arbitrary environment variables (inherited by the ffmpeg child).
+    string[] allowed = ["DVR_HOST", "DVR_USER", "DVR_PASS"];
+    var applied = new List<string>();
+    foreach (string raw in File.ReadAllLines(path))
+    {
+        string line = raw.Trim();
+        if (line.Length == 0 || line.StartsWith('#'))
+            continue;
+        int eq = line.IndexOf('=');
+        if (eq <= 0)
+            continue;
+        string key = line[..eq].Trim();
+        string value = line[(eq + 1)..].Trim().Trim('"');
+        if (!allowed.Contains(key, StringComparer.OrdinalIgnoreCase))
+            continue;
+        if (Environment.GetEnvironmentVariable(key) is null && value.Length > 0)
+        {
+            Environment.SetEnvironmentVariable(key, value);
+            applied.Add(key);
+        }
+    }
+    // Never load credentials silently — the operator should know where they came from.
+    if (applied.Count > 0)
+        Console.Error.WriteLine($"loaded {Path.GetFullPath(path)} (set: {string.Join(", ", applied)})");
+}

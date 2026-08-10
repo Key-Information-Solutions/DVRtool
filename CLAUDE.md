@@ -1,0 +1,1 @@
+**MANDATORY:** Workflows and agents are allowed, but they MUST never be Fable. Opus should be used for implementing, Sonnet used for big research, and Haiku used for small tasks or local searching.
