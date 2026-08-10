@@ -117,6 +117,37 @@ file, so we don't second-guess it.
 
 ffmpeg must be on `PATH`.
 
+## GUI exports
+
+The WPF app exports through the same pipeline as the CLI. **Remux to a playable file**
+on the Playback / Export tab governs both `Download selected…` and `Export range…`, and
+is on by default — the copies that leave this tool should play on the machine they are
+going to.
+
+The Save-As dialog suggests a name for what the file will actually be: `.mp4` with
+remuxing on, and otherwise the container the device really sends (`.mpg` for Hikvision,
+`.dav` for Dahua) rather than the `.mp4` the device implies. Choose an `.mkv` name and
+the remux writes Matroska. With remuxing off, the download is sniffed once it lands and
+a warning names the mismatch if the bytes contradict the name you chose.
+
+The Save dialog's own "replace this file?" prompt is the permission to overwrite —
+answering yes there is the GUI's `--force`. That permission is bound to the exact name
+the dialog showed: leave the extension off and the remux supplies one, and the export
+lands somewhere you were never asked about, so it is refused rather than written.
+
+For a remuxed export, a file that appears at the target *while* the download is running
+was never offered either — it is refused and the raw download kept, exactly as in the
+CLI. A raw export has no such second check: it streams onto the destination and the
+promotion overwrites, the same single-check window the CLI has for `--out` without
+`--remux`. Both come from `AtomicDownload`, which both front ends share.
+
+If the name you choose contradicts what the remux writes — `case.dav` with remuxing on
+produces MP4 — the app says so and asks before the transfer starts, rather than handing
+you an MP4 called `.dav`. The CLI warns about the same thing after the fact.
+
+Cancelling during a download saves nothing. Cancelling during the remux keeps the raw
+download and says where it is: it is minutes of transfer, and VLC opens it.
+
 ## Conventions
 
 - All timestamps are **NVR-local wall-clock time** (`DateTimeKind.Unspecified`).

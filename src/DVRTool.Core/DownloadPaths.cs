@@ -85,30 +85,42 @@ public static class DownloadPaths
         container == RemuxContainer.Mp4 ? MediaContainer.Mp4 : MediaContainer.Matroska;
 
     /// <summary>
-    /// True when an explicit <c>--remux &lt;value&gt;</c> writes a container the operator's
-    /// <c>--out</c> name contradicts — the same "extension lies about the bytes" defect
-    /// remuxing exists to fix, only self-inflicted.
+    /// True when a remux writes a container the requested name contradicts — the same
+    /// "extension lies about the bytes" defect remuxing exists to fix, only self-inflicted.
     /// <para>
-    /// Bare <c>--remux</c> can never conflict: with no value the <c>--out</c> extension
-    /// chooses the container, so the two agree by construction.
+    /// This is not confined to an explicitly chosen container. Letting the name pick the
+    /// container only makes the two agree when the name is one the resolver understands:
+    /// <c>.mp4</c>, <c>.mkv</c>, or no extension at all. Every other name — <c>case.dav</c>,
+    /// <c>clip.mpg</c> — resolves to the MP4 default and then has MP4 bytes written under
+    /// it, which is exactly the file nothing but VLC will open.
     /// </para>
     /// </summary>
-    public static bool ExplicitContainerContradictsName(string? requestedRemux,
-        string? requestedOut, RemuxContainer resolved) =>
-        !string.IsNullOrWhiteSpace(requestedRemux) && requestedOut is not null &&
+    public static bool ContainerContradictsName(string? requestedOut, RemuxContainer resolved) =>
+        requestedOut is not null &&
         ContainerSniffer.ExtensionContradicts(requestedOut, MediaContainerFor(resolved));
 
+    /// <summary>
+    /// Why an export was refused, in words every front end can use. How to override it
+    /// is deliberately not here: that is a command-line flag in one front end and a
+    /// checkbox in another, and a GUI must never tell an operator to "pass --force".
+    /// Callers append their own <c>advice</c>.
+    /// </summary>
     public static string OverwriteRefusalMessage(string path) =>
         $"{Path.GetFullPath(path)} already exists — refusing to overwrite an export that " +
-        "may already be evidence. Choose another --out, or pass --force to replace it.";
+        "may already be evidence.";
+
+    /// <summary>How the CLI tells an operator to get past a refusal.</summary>
+    public const string CliOverwriteAdvice =
+        "Choose another --out, or pass --force to replace it.";
 
     /// <summary>
     /// Guards a real destination — never the internal <see cref="RawPathFor"/> or
     /// <see cref="StagingPathFor"/> scratch files, which overwrite themselves by design.
     /// </summary>
-    public static void EnsureNotOverwriting(string path, bool force)
+    public static void EnsureNotOverwriting(string path, bool force, string? advice = null)
     {
         if (!force && File.Exists(path))
-            throw new ArgumentException(OverwriteRefusalMessage(path));
+            throw new ArgumentException(OverwriteRefusalMessage(path) +
+                (advice is null ? "" : " " + advice));
     }
 }

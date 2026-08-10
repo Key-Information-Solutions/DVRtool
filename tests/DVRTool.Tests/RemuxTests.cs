@@ -172,7 +172,8 @@ public class RemuxTests
 
             Assert.False(result.Success);
             Assert.True(result.RefusedOverwrite);
-            Assert.Contains("--force", result.Output);
+            Assert.Contains(Path.GetFullPath(destination), result.Output);
+            Assert.Contains("already exists", result.Output);
             Assert.Equal(prior, await File.ReadAllTextAsync(destination));
             // …and the refused remux is not left behind to be mistaken for the export.
             Assert.Equal(

@@ -98,6 +98,21 @@
                             <Button Content="⬇ Download selected…" Click="OnDownloadSegment"/>
                             <Button Content="⏹ Stop" Click="OnPlaybackStop"/>
                             <Separator/>
+                            <CheckBox x:Name="RemuxCheck" Content="Remux to a playable file"
+                                      IsChecked="True" VerticalAlignment="Center" Margin="4,0">
+                                <CheckBox.ToolTip>
+                                    <TextBlock>
+                                        Applies to both &quot;Download selected&quot; and &quot;Export range&quot;.<LineBreak/>
+                                        <LineBreak/>
+                                        NVR exports are MPEG program streams (Hikvision) or DHAV/.dav<LineBreak/>
+                                        (Dahua) whatever they are named, and most players outside VLC<LineBreak/>
+                                        refuse them. This rebuilds the container with ffmpeg as a stream<LineBreak/>
+                                        copy — nothing is re-encoded, so the footage stays bit-identical<LineBreak/>
+                                        evidence. Requires ffmpeg on PATH.
+                                    </TextBlock>
+                                </CheckBox.ToolTip>
+                            </CheckBox>
+                            <Separator/>
                             <ProgressBar x:Name="DownloadProgress" Width="180" Height="14"/>
                             <TextBlock x:Name="DownloadLabel" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         </ToolBar>

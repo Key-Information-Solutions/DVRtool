@@ -319,10 +319,9 @@ public partial class MainWindow : Window
             return;
         }
         var client = _client;
-        string extension = client.Vendor == Vendor.Dahua ? ".dav" : ".mp4";
-        string suggested = $"ch{segment.Channel}_{segment.Start:yyyyMMdd_HHmmss}{extension}";
-        await RunDownloadAsync(suggested, segment.SizeBytes, (path, progress, ct) =>
-            client.DownloadSegmentAsync(segment, path, progress, ct));
+        await RunDownloadAsync($"ch{segment.Channel}_{segment.Start:yyyyMMdd_HHmmss}",
+            client.Vendor, segment.SizeBytes, (path, progress, ct) =>
+                client.DownloadSegmentAsync(segment, path, progress, ct));
     }
 
     private async void OnExportRange(object sender, RoutedEventArgs e)
@@ -336,20 +335,31 @@ public partial class MainWindow : Window
             return;
 
         var client = _client;
-        string extension = client.Vendor == Vendor.Dahua ? ".dav" : ".mp4";
-        string suggested = $"ch{item.Channel.Id}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}{extension}";
-        await RunDownloadAsync(suggested, null, (path, progress, ct) =>
-            client.DownloadAsync(item.Channel.Id, start, end, path, progress, ct));
+        await RunDownloadAsync($"ch{item.Channel.Id}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}",
+            client.Vendor, null, (path, progress, ct) =>
+                client.DownloadAsync(item.Channel.Id, start, end, path, progress, ct));
     }
 
-    private async Task RunDownloadAsync(string suggestedName, long? expectedBytes,
+    /// <summary>
+    /// How an export ended. A failed remux is not an exception: the footage was
+    /// downloaded and is still on disk, and where it is matters more to the operator
+    /// than what ffmpeg said. <see cref="Detail"/> is raised in a dialog — a status
+    /// bar is the wrong place for something that decides whether footage is usable.
+    /// </summary>
+    private sealed record ExportOutcome(bool Success, string Status, string? Detail = null);
+
+    private async Task RunDownloadAsync(string baseName, Vendor vendor, long? expectedBytes,
         Func<string, IProgress<long>, CancellationToken, Task> download)
     {
         int gen = _selectionGen;
+        // Read before the dialog opens, and used for both the suggested name and the
+        // plan: the dialog pumps the dispatcher, so a later read could disagree with
+        // the extension the operator was just shown.
+        bool remux = RemuxCheck.IsChecked == true;
         var dialog = new SaveFileDialog
         {
-            FileName = suggestedName,
-            Filter = "Video files|*.mp4;*.dav;*.mkv|All files|*.*",
+            FileName = ExportNaming.SuggestedFileName(baseName, vendor, remux),
+            Filter = ExportNaming.SaveFilter(vendor, remux),
         };
         if (dialog.ShowDialog(this) != true)
             return;
@@ -358,6 +368,55 @@ public partial class MainWindow : Window
         {
             SetStatus("Device changed while choosing a file — download not started.");
             return;
+        }
+
+        RemuxContainer? container = remux
+            ? DownloadPaths.ResolveContainer(null, dialog.FileName)
+            : null;
+        var plan = DownloadPaths.Plan(dialog.FileName, baseName, container);
+
+        // The dialog does not hand back an existing path without asking first, so a file
+        // sitting at the name the operator was shown is one they chose to replace.
+        //
+        // That permission covers only the name they were shown. Leave the extension off
+        // and the container supplies one — "Smith-v-Acme" is what the dialog asked about,
+        // "Smith-v-Acme.mp4" is where the export lands — and a "replace?" yes spent on the
+        // first must not authorize destroying the second, which may be a delivered export.
+        bool force = File.Exists(plan.FinalPath) &&
+            string.Equals(plan.FinalPath, dialog.FileName, StringComparison.OrdinalIgnoreCase);
+        if (!force && File.Exists(plan.FinalPath))
+        {
+            SetStatus($"Not started — {plan.FinalPath} already exists.");
+            MessageBox.Show(this,
+                $"{DownloadPaths.OverwriteRefusalMessage(plan.FinalPath)}\n\n" +
+                $"The remux would write it, but you were only asked about\n{dialog.FileName}\n\n" +
+                "Export again under a name that is not already taken.",
+                "Export refused", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // Remuxing into a name whose extension contradicts the container ffmpeg is about
+        // to write reproduces the exact defect remuxing exists to fix — an MP4 called
+        // ".dav" is refused by everything but VLC. The operator named the file, so this
+        // asks rather than overrides, and it asks before minutes of transfer rather than
+        // after (and before an existing export is replaced by a mislabeled one).
+        if (container is RemuxContainer named &&
+            DownloadPaths.ContainerContradictsName(plan.FinalPath, named))
+        {
+            var written = DownloadPaths.MediaContainerFor(named);
+            var answer = MessageBox.Show(this,
+                $"Remuxing writes {ContainerSniffer.DisplayName(written)} data, but you named " +
+                $"this file {Path.GetExtension(plan.FinalPath)}.\n\nMost players trust the " +
+                "extension and will refuse it — the problem remuxing exists to fix.\n\n" +
+                "Export anyway under the name you chose?\n\nChoose No to name it " +
+                $"{ContainerSniffer.ExtensionFor(written)} or .mkv instead.",
+                "That name contradicts the remux", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes)
+            {
+                SetStatus("Export canceled — that name contradicts what the remux writes.");
+                return;
+            }
         }
 
         // Serialize with any previous download so two tasks never drive the shared
@@ -390,19 +449,31 @@ public partial class MainWindow : Window
                 DownloadProgress.Value = Math.Min(100.0, 100.0 * bytes / expectedBytes.Value);
         });
 
-        var task = download(dialog.FileName, progress, cts.Token);
+        // One task spans the download *and* the remux, so a second export waits for the
+        // whole pipeline instead of starting while ffmpeg still holds this one's files.
+        var task = ExportAsync(plan, force, download, progress, cts);
         _downloadTask = task;
         try
         {
-            SetStatus($"Downloading → {dialog.FileName} …");
-            await task;
-            long size = new FileInfo(dialog.FileName).Length;
-            SetStatus($"Saved {dialog.FileName} ({size / 1048576.0:F1} MB).");
+            var outcome = await task;
+            if (ReferenceEquals(cts, _downloadCts))
+            {
+                SetStatus(outcome.Status);
+                if (outcome.Detail is { } detail)
+                    MessageBox.Show(this, detail,
+                        outcome.Success ? "Export warning" : "Export problem",
+                        MessageBoxButton.OK,
+                        outcome.Success ? MessageBoxImage.Warning : MessageBoxImage.Error);
+            }
         }
         catch (OperationCanceledException)
         {
             if (ReferenceEquals(cts, _downloadCts))
-                SetStatus("Download canceled — no file was saved.");
+                // A canceled download leaves nothing behind; a cancel during the remux
+                // leaves the raw stream, which is minutes of transfer and is the footage.
+                SetStatus(plan.NeedsRemux && File.Exists(plan.DownloadPath)
+                    ? $"Canceled — the raw download is kept at {plan.DownloadPath}."
+                    : "Download canceled — no file was saved.");
         }
         catch (Exception ex)
         {
@@ -421,7 +492,84 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Downloads the export and, when the plan calls for one, remuxes it into a
+    /// container players other than VLC will open.
+    /// </summary>
+    private async Task<ExportOutcome> ExportAsync(DownloadPlan plan, bool force,
+        Func<string, IProgress<long>, CancellationToken, Task> download,
+        IProgress<long> progress, CancellationTokenSource cts)
+    {
+        SetStatus($"Downloading → {plan.FinalPath} …");
+        await download(plan.DownloadPath, progress, cts.Token);
+
+        // An empty response creates no file at all, so there is nothing truncated to
+        // mistake for footage — and nothing to sniff or remux either.
+        if (!File.Exists(plan.DownloadPath))
+            return new ExportOutcome(false,
+                "The NVR sent no data for that range — no file was saved.");
+
+        if (plan.Container is not RemuxContainer target)
+        {
+            // A raw export keeps the name the operator typed. If the bytes contradict
+            // that name they are told, rather than handed a file that will not open on
+            // the machine it is going to.
+            var sniffed = ContainerSniffer.SniffFile(plan.FinalPath);
+            string saved = $"Saved {plan.FinalPath} ({MegabytesOf(plan.FinalPath)}).";
+            if (ContainerSniffer.ExtensionContradicts(plan.FinalPath, sniffed))
+                return new ExportOutcome(true, saved,
+                    $"{plan.FinalPath}\n\nholds {ContainerSniffer.DisplayName(sniffed)} data, " +
+                    $"not {Path.GetExtension(plan.FinalPath)}. Most players trust the extension " +
+                    "and will refuse it.\n\nTick “Remux to a playable file” and export again to " +
+                    "get a real container, or rename this one to " +
+                    $"{ContainerSniffer.ExtensionFor(sniffed)}.");
+            return new ExportOutcome(true, saved);
+        }
+
+        if (ReferenceEquals(cts, _downloadCts))
+        {
+            // The byte counter is done and ffmpeg reports no progress of its own, so
+            // the bar stops implying it knows how far along this is.
+            DownloadProgress.IsIndeterminate = true;
+            DownloadLabel.Text = "remuxing";
+            SetStatus($"Remuxing → {plan.FinalPath} …");
+        }
+
+        var result = await Remux.RemuxAsync(
+            plan.DownloadPath, plan.FinalPath, target, force, cts.Token);
+
+        if (result.RefusedOverwrite)
+            // ffmpeg did its job; only the promotion was refused. Reporting that as an
+            // ffmpeg failure would send the operator after the wrong problem.
+            return new ExportOutcome(false,
+                $"Not saved — {plan.FinalPath} appeared while this export was downloading.",
+                $"{DownloadPaths.OverwriteRefusalMessage(plan.FinalPath)}\n\n" +
+                "It appeared while this export was downloading, so the remux — which " +
+                "succeeded — was discarded instead of replacing it.\n\n" +
+                $"The raw download is kept at\n{plan.DownloadPath}\n\nVLC plays it as-is.");
+
+        if (!result.Success)
+            return new ExportOutcome(false,
+                $"Remux failed — the raw download is kept at {plan.DownloadPath}.",
+                $"ffmpeg could not remux this export.\n\n{Shorten(result.Output)}\n\n" +
+                $"The raw download is kept at\n{plan.DownloadPath}\n\nVLC plays it as-is. " +
+                "If ffmpeg is not installed, put it on PATH and export again.");
+
+        TryDelete(plan.DownloadPath);
+        return new ExportOutcome(true, $"Saved {plan.FinalPath} ({MegabytesOf(plan.FinalPath)}).");
+    }
+
     // ----- helpers -----
+
+    private static string MegabytesOf(string path) =>
+        $"{new FileInfo(path).Length / 1048576.0:F1} MB";
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 
     private Media CreateRtspMedia(Uri uri)
     {

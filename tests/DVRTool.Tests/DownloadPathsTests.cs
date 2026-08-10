@@ -123,36 +123,63 @@ public class DownloadPathsTests
     }
 
     [Fact]
-    public void ExplicitContainerContradictsName_FlagsMp4WrittenIntoAnMkvName()
+    public void ContainerContradictsName_FlagsMp4WrittenIntoAnMkvName()
     {
         // "--out clip.mkv --remux mp4": real MP4 bytes under a name that says Matroska.
-        Assert.True(DownloadPaths.ExplicitContainerContradictsName(
-            "mp4", "clip.mkv", RemuxContainer.Mp4));
-        Assert.True(DownloadPaths.ExplicitContainerContradictsName(
-            "mkv", "clip.mp4", RemuxContainer.Matroska));
-        Assert.True(DownloadPaths.ExplicitContainerContradictsName(
-            "matroska", "clip.MP4", RemuxContainer.Matroska));
+        Assert.True(DownloadPaths.ContainerContradictsName("clip.mkv", RemuxContainer.Mp4));
+        Assert.True(DownloadPaths.ContainerContradictsName("clip.mp4", RemuxContainer.Matroska));
+        Assert.True(DownloadPaths.ContainerContradictsName("clip.MP4", RemuxContainer.Matroska));
     }
 
     [Fact]
-    public void ExplicitContainerContradictsName_BareRemuxNeverWarns()
+    public void ContainerContradictsName_FlagsAVendorNameThatLettingTheNameDecideDoesNotSave()
     {
-        // With no value the --out extension picks the container, so the two agree by
-        // construction — warning there would make the common case noisy.
-        Assert.False(DownloadPaths.ExplicitContainerContradictsName(
-            "", "clip.mkv", DownloadPaths.ResolveContainer("", "clip.mkv")));
-        Assert.False(DownloadPaths.ExplicitContainerContradictsName(
-            null, "clip.mp4", RemuxContainer.Mp4));
+        // The hole this replaced an "explicit only" check to close. Bare --remux (and every
+        // GUI remux, which has no explicit form) resolves a name the resolver does not
+        // recognize to the MP4 default — so "--out case.dav --remux" writes MP4 bytes under
+        // a .dav name and used to say nothing at all. Only .mp4/.mkv/extensionless names
+        // genuinely agree by construction.
+        foreach (string name in new[] { "case.dav", "clip.mpg", "clip.mpeg", "clip.vob" })
+        {
+            var resolved = DownloadPaths.ResolveContainer(null, name);
+            Assert.Equal(RemuxContainer.Mp4, resolved);
+            Assert.True(DownloadPaths.ContainerContradictsName(name, resolved));
+        }
     }
 
     [Fact]
-    public void ExplicitContainerContradictsName_AgreementAndSilentNamesDoNotWarn()
+    public void ContainerContradictsName_NamesThatPickTheirOwnContainerNeverWarn()
     {
-        Assert.False(DownloadPaths.ExplicitContainerContradictsName(
-            "mp4", "clip.mp4", RemuxContainer.Mp4));
+        // Warning on these would make the common case noisy: the name chose the container,
+        // so the two agree.
+        foreach (string name in new[] { "clip.mkv", "clip.mp4", "clip.m4v", "clip.mov" })
+            Assert.False(DownloadPaths.ContainerContradictsName(
+                name, DownloadPaths.ResolveContainer(null, name)));
+    }
+
+    [Fact]
+    public void ContainerContradictsName_AgreementAndSilentNamesDoNotWarn()
+    {
+        Assert.False(DownloadPaths.ContainerContradictsName("clip.mp4", RemuxContainer.Mp4));
         // No --out, or an --out with no extension: nothing claimed, nothing to contradict.
-        Assert.False(DownloadPaths.ExplicitContainerContradictsName("mp4", null, RemuxContainer.Mp4));
-        Assert.False(DownloadPaths.ExplicitContainerContradictsName("mkv", "clip", RemuxContainer.Matroska));
+        Assert.False(DownloadPaths.ContainerContradictsName(null, RemuxContainer.Mp4));
+        Assert.False(DownloadPaths.ContainerContradictsName("clip", RemuxContainer.Matroska));
+    }
+
+    [Fact]
+    public void Plan_ExtensionlessNameWithRemux_LandsOnAPathTheOperatorWasNeverShown()
+    {
+        // Pins the divergence the GUI's overwrite permission has to respect: a Save-As
+        // dialog prompts about "clip", the export lands on "clip.mp4". Permission to
+        // replace the first is not permission to destroy the second.
+        var plan = DownloadPaths.Plan("clip", AutoName, RemuxContainer.Mp4);
+
+        Assert.Equal("clip.mp4", plan.FinalPath);
+        Assert.NotEqual("clip", plan.FinalPath);
+
+        // …and when the name does carry an extension, the two agree and the permission
+        // the dialog collected is the permission the export needs.
+        Assert.Equal("clip.mp4", DownloadPaths.Plan("clip.mp4", AutoName, RemuxContainer.Mp4).FinalPath);
     }
 
     [Fact]
@@ -166,8 +193,14 @@ public class DownloadPathsTests
                 () => DownloadPaths.EnsureNotOverwriting(path, force: false));
 
             Assert.Contains(Path.GetFullPath(path), ex.Message);
-            Assert.Contains("--force", ex.Message);
             Assert.True(File.Exists(path));
+
+            // The refusal itself names no flags — the WPF app surfaces the same sentence
+            // and has none to offer. Front-end advice is appended by the front end.
+            Assert.DoesNotContain("--", ex.Message);
+            var cli = Assert.Throws<ArgumentException>(() => DownloadPaths.EnsureNotOverwriting(
+                path, force: false, DownloadPaths.CliOverwriteAdvice));
+            Assert.Contains("--force", cli.Message);
         }
         finally
         {

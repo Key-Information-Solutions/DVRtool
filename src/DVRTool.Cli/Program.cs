@@ -149,7 +149,8 @@ try
                 $"ch{channel}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}", container);
 
             // Before a download that can run for minutes, not after it.
-            DownloadPaths.EnsureNotOverwriting(plan.FinalPath, force);
+            DownloadPaths.EnsureNotOverwriting(plan.FinalPath, force,
+                DownloadPaths.CliOverwriteAdvice);
 
             string outDir = Path.GetDirectoryName(Path.GetFullPath(plan.FinalPath))!;
             if (File.Exists(Path.Combine(outDir, ".env")))
@@ -185,6 +186,7 @@ try
                         "which succeeded — was discarded instead of replacing it.");
                     Console.Error.WriteLine(
                         $"  the raw download is kept at {plan.DownloadPath} — VLC plays it as-is.");
+                    Console.Error.WriteLine($"  {DownloadPaths.CliOverwriteAdvice}");
                     return 2;
                 }
                 if (!remux.Success)
@@ -200,13 +202,13 @@ try
                 // The operator named this file, so it is never silently renamed — but
                 // shipping evidence whose extension lies about its bytes is the exact
                 // defect --remux exists to fix, and it must not come from our own tool.
-                if (DownloadPaths.ExplicitContainerContradictsName(remuxValue, requestedOut, target))
+                if (DownloadPaths.ContainerContradictsName(requestedOut, target))
                     Console.Error.WriteLine(
-                        $"warning: --remux {(target == RemuxContainer.Mp4 ? "mp4" : "mkv")} wrote " +
+                        "warning: the remux wrote " +
                         $"{ContainerSniffer.DisplayName(DownloadPaths.MediaContainerFor(target))} " +
                         $"data into a file you named {Path.GetExtension(plan.FinalPath)} — most " +
-                        "players trust the extension and will refuse it. Rename it, or drop the " +
-                        "explicit --remux and let the --out name pick the container.");
+                        "players trust the extension and will refuse it. Rename it, or give " +
+                        "--out a name ending .mp4 or .mkv.");
                 return 0;
             }
 
@@ -222,7 +224,8 @@ try
                 // the one that genuinely cannot be checked before the download.
                 if (!force && File.Exists(finalPath))
                 {
-                    Console.Error.WriteLine($"\nerror: {DownloadPaths.OverwriteRefusalMessage(finalPath)}");
+                    Console.Error.WriteLine($"\nerror: {DownloadPaths.OverwriteRefusalMessage(finalPath)} " +
+                        DownloadPaths.CliOverwriteAdvice);
                     Console.Error.WriteLine($"  this download is kept at {plan.DownloadPath}.");
                     return 2;
                 }
