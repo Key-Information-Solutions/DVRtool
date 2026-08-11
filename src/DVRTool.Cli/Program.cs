@@ -13,6 +13,7 @@ const string Usage = """
     Commands:
       info            Device model / serial / firmware
       channels        List channels
+      users           List the accounts configured on the device
       search          List recordings for a channel in a window
       download        Export footage for a time span to a file
       live-url        Print the RTSP live URI (paste into VLC)
@@ -111,6 +112,28 @@ try
                 };
                 Console.WriteLine($"{ch.Id,4}  {ch.Name,-32} {online}");
             }
+            return 0;
+        }
+        case "users":
+        {
+            if (client is not IUserManagementClient userClient)
+            {
+                Console.Error.WriteLine(
+                    $"error: user management isn't implemented for {client.Vendor} devices.");
+                return 2;
+            }
+            var users = await userClient.GetUsersAsync(cts.Token);
+            if (users.Count == 0)
+            {
+                Console.WriteLine("No users reported.");
+                return 0;
+            }
+            Console.WriteLine(
+                $"{"ID",-6}  {"NAME",-20}  {"LEVEL",-14}  {"ROLE",-9}  {"RESERVED",-8}  MEMO");
+            foreach (var u in users)
+                Console.WriteLine(
+                    $"{u.Id,-6}  {u.Name,-20}  {u.NativeLevel,-14}  {u.Role,-9}  " +
+                    $"{(u.Reserved ? "yes" : ""),-8}  {u.Memo}");
             return 0;
         }
         case "search":

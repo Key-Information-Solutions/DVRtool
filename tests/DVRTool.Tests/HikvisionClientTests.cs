@@ -15,6 +15,9 @@ public class HikvisionClientTests
 
     private const string Ns = "http://www.hikvision.com/ver20/XMLSchema";
 
+    // The same firmware family serves user XML under a different namespace URI.
+    private const string UserNs = "http://www.isapi.org/ver20/XMLSchema";
+
     [Fact]
     public async Task DeviceInfo_ParsesNamespacedXml()
     {
@@ -319,6 +322,123 @@ public class HikvisionClientTests
         var t = HikvisionClient.ParseIsapiTime(input);
         Assert.Equal(new DateTime(y, mo, d, h, mi, s), t);
         Assert.Equal(DateTimeKind.Unspecified, t.Kind);
+    }
+
+    [Fact]
+    public async Task GetUsers_ParsesIsapiUserList()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Xml($"""
+            <?xml version="1.0" encoding="UTF-8"?>
+            <UserList xmlns="{UserNs}" version="2.0">
+              <User><id>1</id><userName>admin</userName><userLevel>Administrator</userLevel></User>
+              <User>
+                <id>2</id><userName>tech</userName><userLevel>Operator</userLevel>
+                <attribute><inherent>false</inherent></attribute>
+              </User>
+              <User><id>3</id><userName>guard</userName><userLevel>Viewer</userLevel></User>
+            </UserList>
+            """));
+        using var client = new HikvisionClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        Assert.Equal("/ISAPI/Security/users", handler.Requests[0].Request.RequestUri!.AbsolutePath);
+        Assert.Equal(3, users.Count);
+        Assert.Equal(new NvrUser("1", "admin", UserRole.Admin, "Administrator", Reserved: true), users[0]);
+        Assert.Equal(new NvrUser("2", "tech", UserRole.Operator, "Operator"), users[1]);
+        Assert.Equal(new NvrUser("3", "guard", UserRole.Viewer, "Viewer"), users[2]);
+    }
+
+    [Fact]
+    public async Task GetUsers_NamespaceFreeXml_ParsesIdentically()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Xml("""
+            <UserList version="2.0">
+              <User><id>1</id><userName>admin</userName><userLevel>Administrator</userLevel></User>
+              <User>
+                <id>2</id><userName>tech</userName><userLevel>Operator</userLevel>
+                <attribute><inherent>false</inherent></attribute>
+              </User>
+              <User><id>3</id><userName>guard</userName><userLevel>Viewer</userLevel></User>
+            </UserList>
+            """));
+        using var client = new HikvisionClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        Assert.Equal(3, users.Count);
+        Assert.Equal(new NvrUser("1", "admin", UserRole.Admin, "Administrator", Reserved: true), users[0]);
+        Assert.Equal(new NvrUser("2", "tech", UserRole.Operator, "Operator"), users[1]);
+        Assert.Equal(new NvrUser("3", "guard", UserRole.Viewer, "Viewer"), users[2]);
+    }
+
+    [Fact]
+    public async Task GetUsers_EmptyUserList_ReturnsEmpty()
+    {
+        var handler = new MockHttpHandler((_, _) =>
+            MockHttpHandler.Xml($"""<UserList xmlns="{UserNs}" version="2.0"/>"""));
+        using var client = new HikvisionClient(Conn, handler);
+
+        Assert.Empty(await client.GetUsersAsync());
+    }
+
+    [Fact]
+    public async Task GetUsers_UnknownLevel_MapsToCustom()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Xml($"""
+            <UserList xmlns="{UserNs}" version="2.0">
+              <User><id>7</id><userName>installer</userName><userLevel>Maintainer</userLevel></User>
+              <User><id>8</id><userLevel>Operator</userLevel></User>
+            </UserList>
+            """));
+        using var client = new HikvisionClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        // The nameless entry is unusable; only the mapped account survives.
+        var user = Assert.Single(users);
+        Assert.Equal(UserRole.Custom, user.Role);
+        Assert.Equal("Maintainer", user.NativeLevel); // raw vendor value preserved
+        Assert.False(user.Reserved);
+    }
+
+    [Fact]
+    public async Task GetUsers_UserAndGuestLevels_MapToViewer()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Xml("""
+            <UserList version="2.0">
+              <User><id>5</id><userName>frontdesk</userName><userLevel>User</userLevel></User>
+              <User><id>6</id><userName>lobby</userName><userLevel>Guest</userLevel></User>
+            </UserList>
+            """));
+        using var client = new HikvisionClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        Assert.Equal(2, users.Count);
+        Assert.Equal(UserRole.Viewer, users[0].Role);
+        Assert.Equal("User", users[0].NativeLevel);
+        Assert.Equal(UserRole.Viewer, users[1].Role);
+        Assert.Equal("Guest", users[1].NativeLevel);
+    }
+
+    [Fact]
+    public async Task GetUsers_InherentAccount_IsReserved()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Xml($"""
+            <UserList xmlns="{UserNs}" version="2.0">
+              <User>
+                <id>4</id><userName>service</userName><userLevel>Operator</userLevel>
+                <attribute><inherent>true</inherent></attribute>
+              </User>
+            </UserList>
+            """));
+        using var client = new HikvisionClient(Conn, handler);
+
+        // Built-in accounts are flagged by <inherent>, not just by the name "admin".
+        var user = Assert.Single(await client.GetUsersAsync());
+        Assert.True(user.Reserved);
+        Assert.Equal("service", user.Name);
     }
 
     private sealed class SynchronousProgress(Action<long> report) : IProgress<long>

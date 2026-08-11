@@ -22,6 +22,13 @@ public partial class MainWindow : Window
     private int _selectionGen;
     private CancellationTokenSource? _clientCts;
 
+    // Same stale-completion guard for the Users tab, which reads devices other than
+    // the selected one and so cannot ride on _selectionGen. Its own CTS/task, because
+    // the ephemeral clients it opens are not the selected device's.
+    private int _usersGen;
+    private CancellationTokenSource? _usersCts;
+    private Task? _usersTask;
+
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
     private Task? _searchTask;
@@ -33,6 +40,8 @@ public partial class MainWindow : Window
 
     private bool _cleanupStarted;
     private bool _closePending;
+
+    private sealed record UserRow(string User, string LevelA, string LevelB, string Status);
 
     private sealed record ChannelItem(Channel Channel)
     {
@@ -61,6 +70,8 @@ public partial class MainWindow : Window
         foreach (var device in DeviceStore.Load())
             _devices.Add(device);
         DeviceList.ItemsSource = _devices;
+        UsersDeviceA.ItemsSource = _devices;
+        UsersDeviceB.ItemsSource = _devices;
 
         var now = DateTime.Now;
         StartBox.Text = now.Date.ToString("yyyy-MM-dd HH:mm:ss");
@@ -81,6 +92,7 @@ public partial class MainWindow : Window
 
         _downloadCts?.Cancel();
         _clientCts?.Cancel();
+        _usersCts?.Cancel();
         if (_downloadTask is { } task)
         {
             try { await task; }
@@ -92,6 +104,13 @@ public partial class MainWindow : Window
         {
             try { await search; }
             catch { /* canceled/failed; OnSearch already reported it */ }
+        }
+        // A user read holds its own ephemeral clients — wait for its finally to
+        // release them, and so its continuation never runs against a closed window.
+        if (_usersTask is { } users)
+        {
+            try { await users; }
+            catch { /* canceled/failed; OnLoadUsers already reported it */ }
         }
 
         // Detach the views first so VideoView never renders against a disposed
@@ -120,6 +139,7 @@ public partial class MainWindow : Window
         _client?.Dispose();
         _downloadCts?.Dispose();
         _clientCts?.Dispose();
+        _usersCts?.Dispose();
         _closePending = true;
         Close();
     }
@@ -557,6 +577,188 @@ public partial class MainWindow : Window
 
         TryDelete(plan.DownloadPath);
         return new ExportOutcome(true, $"Saved {plan.FinalPath} ({MegabytesOf(plan.FinalPath)}).");
+    }
+
+    // ----- users -----
+
+    private async void OnLoadUsers(object sender, RoutedEventArgs e)
+    {
+        if (_cleanupStarted)
+            return; // window is closing; don't open clients OnClosing will not see
+
+        // A superseded read must stop its request, not run to NvrHttp's 30s timeout
+        // with its clients still open; the task is tracked so shutdown can wait for it.
+        _usersCts?.Cancel();
+        _usersCts?.Dispose();
+        _usersCts = new CancellationTokenSource();
+        var task = LoadUsersAsync(_usersCts.Token);
+        _usersTask = task;
+        try { await task; }
+        catch { /* already reported by LoadUsersAsync */ }
+        finally
+        {
+            if (ReferenceEquals(task, _usersTask))
+                _usersTask = null;
+        }
+    }
+
+    private async Task LoadUsersAsync(CancellationToken ct)
+    {
+        int gen = ++_usersGen;
+        if (UsersDeviceA.SelectedItem is not SavedDevice deviceA)
+        {
+            SetStatus("Choose a device to read users from.");
+            return;
+        }
+        // Picking the same NVR in both boxes is how an operator drops the comparison —
+        // a ComboBox bound to the device list has no way back to no selection.
+        var deviceB = ReferenceEquals(UsersDeviceB.SelectedItem, deviceA)
+            ? null
+            : UsersDeviceB.SelectedItem as SavedDevice;
+
+        // Ephemeral clients: reading users must not disturb the session the Live and
+        // Playback tabs hold on the selected device, which may be neither of these.
+        INvrClient? clientA = null;
+        INvrClient? clientB = null;
+        try
+        {
+            clientA = deviceA.CreateClient();
+            if (clientA is not IUserManagementClient usersA)
+            {
+                SetStatus($"{deviceA.Name} does not expose a user list.");
+                return;
+            }
+
+            IUserManagementClient? usersB = null;
+            if (deviceB is not null)
+            {
+                clientB = deviceB.CreateClient();
+                if (clientB is not IUserManagementClient other)
+                {
+                    SetStatus($"{deviceB.Name} does not expose a user list.");
+                    return;
+                }
+                usersB = other;
+            }
+
+            SetStatus(deviceB is null
+                ? $"Reading users from {deviceA.Name} …"
+                : $"Reading users from {deviceA.Name} and {deviceB.Name} …");
+
+            var taskA = usersA.GetUsersAsync(ct);
+            var taskB = usersB is null
+                ? Task.FromResult<IReadOnlyList<NvrUser>>([])
+                : usersB.GetUsersAsync(ct);
+            try
+            {
+                await Task.WhenAll(taskA, taskB);
+            }
+            catch (OperationCanceledException)
+            {
+                _ = taskB.Exception;
+                return;
+            }
+            catch (Exception ex)
+            {
+                // WhenAll rethrows the first fault only; observe the other so a second
+                // failure never surfaces as an unobserved task exception.
+                _ = taskB.Exception;
+                if (gen != _usersGen)
+                    return;
+                var failed = taskA.IsFaulted ? deviceA : deviceB!;
+                SetStatus($"Failed to read users from {failed.Name}: {Shorten(ex.Message)}");
+                return;
+            }
+
+            if (gen != _usersGen)
+                return;
+
+            if (deviceB is null)
+            {
+                var listed = taskA.Result
+                    .Select(u => new UserRow(u.Name, u.NativeLevel, "", ""))
+                    .ToList();
+                SetUserLevelHeaders(deviceA.Name, "Device B");
+                UsersGrid.ItemsSource = listed;
+                SetStatus($"{deviceA.Name}: {listed.Count} user(s).");
+                return;
+            }
+
+            var comparison = CompareUsers(taskA.Result, taskB.Result, deviceA.Name, deviceB.Name);
+            SetUserLevelHeaders(deviceA.Name, deviceB.Name);
+            UsersGrid.ItemsSource = comparison.Rows;
+
+            var parts = new List<string> { $"{comparison.Match} match" };
+            if (comparison.Differ > 0)
+                parts.Add($"{comparison.Differ} differ");
+            if (comparison.OnlyA > 0)
+                parts.Add($"{comparison.OnlyA} only on {deviceA.Name}");
+            if (comparison.OnlyB > 0)
+                parts.Add($"{comparison.OnlyB} only on {deviceB.Name}");
+            SetStatus($"{comparison.Rows.Count} user(s) — {string.Join(", ", parts)}.");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (gen != _usersGen)
+                return;
+            SetStatus($"Failed to read users: {Shorten(ex.Message)}");
+        }
+        finally
+        {
+            clientA?.Dispose();
+            clientB?.Dispose();
+        }
+    }
+
+    private sealed record UserComparison(List<UserRow> Rows, int Match, int Differ, int OnlyA, int OnlyB);
+
+    private static UserComparison CompareUsers(IReadOnlyList<NvrUser> a, IReadOnlyList<NvrUser> b,
+        string nameA, string nameB)
+    {
+        // Accounts are paired by name, not by Id: the vendor-native ids are numeric on
+        // Hikvision and the login name on Dahua, so only the name compares across vendors.
+        var byName = new Dictionary<string, NvrUser>(StringComparer.OrdinalIgnoreCase);
+        foreach (var user in b)
+            byName.TryAdd(user.Name, user);
+
+        var paired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<UserRow>();
+        int match = 0, differ = 0, onlyA = 0, onlyB = 0;
+        foreach (var user in a)
+        {
+            if (!byName.TryGetValue(user.Name, out var counterpart))
+            {
+                rows.Add(new UserRow(user.Name, user.NativeLevel, "", $"Only on {nameA}"));
+                onlyA++;
+                continue;
+            }
+            paired.Add(user.Name);
+            bool same = string.Equals(user.NativeLevel, counterpart.NativeLevel,
+                StringComparison.OrdinalIgnoreCase);
+            rows.Add(new UserRow(user.Name, user.NativeLevel, counterpart.NativeLevel,
+                same ? "Match" : "Level differs"));
+            if (same)
+                match++;
+            else
+                differ++;
+        }
+        foreach (var user in b)
+        {
+            if (paired.Contains(user.Name))
+                continue;
+            rows.Add(new UserRow(user.Name, "", user.NativeLevel, $"Only on {nameB}"));
+            onlyB++;
+        }
+        return new UserComparison(rows, match, differ, onlyA, onlyB);
+    }
+
+    private void SetUserLevelHeaders(string headerA, string headerB)
+    {
+        UsersGrid.Columns[1].Header = headerA;
+        UsersGrid.Columns[2].Header = headerB;
     }
 
     // ----- helpers -----

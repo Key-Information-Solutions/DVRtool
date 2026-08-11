@@ -122,6 +122,39 @@
                         </Border>
                     </Grid>
                 </TabItem>
+
+                <TabItem Header="Users">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <TextBlock Text="Device " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="UsersDeviceA" Width="150" DisplayMemberPath="Name"/>
+                            <TextBlock Text=" compare with " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="UsersDeviceB" Width="150" DisplayMemberPath="Name">
+                                <ComboBox.ToolTip>
+                                    <TextBlock>
+                                        Optional. Leave unset — or pick the same NVR as the first box —<LineBreak/>
+                                        to just list one device's accounts.
+                                    </TextBlock>
+                                </ComboBox.ToolTip>
+                            </ComboBox>
+                            <Button Content="Load" Click="OnLoadUsers" Margin="8,0,0,0"/>
+                        </ToolBar>
+
+                        <DataGrid x:Name="UsersGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" Margin="0,4">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="User" Width="180"
+                                                    Binding="{Binding User}"/>
+                                <DataGridTextColumn Header="Device A" Width="160"
+                                                    Binding="{Binding LevelA}"/>
+                                <DataGridTextColumn Header="Device B" Width="160"
+                                                    Binding="{Binding LevelB}"/>
+                                <DataGridTextColumn Header="Status" Width="200"
+                                                    Binding="{Binding Status}"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
             </TabControl>
         </Grid>
     </DockPanel>

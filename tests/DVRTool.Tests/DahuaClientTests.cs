@@ -253,4 +253,117 @@ public class DahuaClientTests
         Assert.False(File.Exists(dest));
         Assert.False(File.Exists(dest + ".part"));
     }
+
+    [Fact]
+    public async Task GetUsers_ParsesUserManagerBlock()
+    {
+        string? requested = null;
+        var handler = new MockHttpHandler((req, _) =>
+        {
+            requested = req.RequestUri!.PathAndQuery;
+            return MockHttpHandler.Text("""
+                users[0].Group=admin
+                users[0].ID=1
+                users[0].Memo=admin 's account
+                users[0].Name=admin
+                users[0].Password=******
+                users[0].Reserved=true
+                users[0].Sharable=true
+                users[1].Group=user
+                users[1].ID=2
+                users[1].Name=viewer1
+                users[1].Reserved=false
+                """);
+        });
+        using var client = new DahuaClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        Assert.Equal("/cgi-bin/userManager.cgi?action=getUserInfoAll", requested);
+        Assert.Equal(2, users.Count);
+        Assert.Equal("1", users[0].Id);
+        Assert.Equal("admin", users[0].Name);
+        Assert.Equal(UserRole.Admin, users[0].Role);
+        Assert.Equal("admin", users[0].NativeLevel);
+        Assert.True(users[0].Reserved);
+        Assert.Equal("admin 's account", users[0].Memo); // internal spacing kept verbatim
+        Assert.Equal("2", users[1].Id);
+        Assert.Equal("viewer1", users[1].Name);
+        Assert.Equal(UserRole.Operator, users[1].Role);
+        Assert.Equal("user", users[1].NativeLevel);
+        Assert.False(users[1].Reserved);
+        Assert.Null(users[1].Memo);
+    }
+
+    [Fact]
+    public async Task GetUsers_CrLfLineEndings_ParseIdentically()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Text(
+            "users[0].Group=admin\r\nusers[0].ID=1\r\nusers[0].Memo=admin 's account\r\n" +
+            "users[0].Name=admin\r\nusers[0].Reserved=true\r\n"));
+        using var client = new DahuaClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        var user = Assert.Single(users);
+        Assert.Equal("1", user.Id);
+        Assert.Equal("admin", user.Name);
+        Assert.Equal(UserRole.Admin, user.Role);
+        Assert.True(user.Reserved);
+        Assert.Equal("admin 's account", user.Memo);
+    }
+
+    [Fact]
+    public async Task GetUsers_MissingId_FallsBackToName()
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Text("""
+            users[0].Group=user
+            users[0].Name=tech
+            """));
+        using var client = new DahuaClient(Conn, handler);
+
+        var user = Assert.Single(await client.GetUsersAsync());
+
+        Assert.Equal("tech", user.Id);
+        Assert.Equal("tech", user.Name);
+        Assert.False(user.Reserved); // Reserved absent → not a built-in account
+    }
+
+    [Fact]
+    public async Task GetUsers_UnknownGroup_MapsToCustom_AndSkipsNamelessEntries()
+    {
+        // Sparse, out-of-order indices: response order wins over index order.
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Text("""
+            users[3].Group=guest
+            users[3].ID=4
+            users[3].Name=lobbykiosk
+            users[7].AuthorityList[0]=Monitor_01
+            users[7].Sharable=true
+            users[1].Group=ADMIN
+            users[1].ID=2
+            users[1].Name=installer
+            """));
+        using var client = new DahuaClient(Conn, handler);
+
+        var users = await client.GetUsersAsync();
+
+        Assert.Equal(2, users.Count);
+        Assert.Equal("lobbykiosk", users[0].Name);
+        Assert.Equal(UserRole.Custom, users[0].Role);
+        Assert.Equal("guest", users[0].NativeLevel); // raw group survives normalization
+        Assert.Equal("installer", users[1].Name);
+        Assert.Equal(UserRole.Admin, users[1].Role); // group match is case-insensitive
+        Assert.Equal("ADMIN", users[1].NativeLevel);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  \r\n\r\n  ")]
+    public async Task GetUsers_EmptyResponse_ReturnsEmptyList(string body)
+    {
+        var handler = new MockHttpHandler((_, _) => MockHttpHandler.Text(body));
+        using var client = new DahuaClient(Conn, handler);
+
+        Assert.Empty(await client.GetUsersAsync());
+    }
 }

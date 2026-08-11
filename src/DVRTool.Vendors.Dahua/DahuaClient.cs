@@ -20,7 +20,7 @@ namespace DVRTool.Vendors.Dahua;
 ///
 /// Downloads arrive as .dav (DHAV container); remux with <see cref="Remux"/>.
 /// </summary>
-public sealed class DahuaClient : INvrClient
+public sealed class DahuaClient : INvrClient, IUserManagementClient
 {
     private const string CgiTimeFormat = "yyyy-MM-dd HH:mm:ss";
     private const string RtspTimeFormat = "yyyy_MM_dd_HH_mm_ss";
@@ -257,6 +257,34 @@ public sealed class DahuaClient : INvrClient
             destinationPath, bytesProgress, ct);
     }
 
+    public async Task<IReadOnlyList<NvrUser>> GetUsersAsync(CancellationToken ct = default)
+    {
+        // users[0].Name=admin / users[0].Group=admin / users[0].Reserved=true / ...
+        // Password is always masked ("******"); Sharable and AuthorityList[*] are ignored.
+        string text = await GetTextAsync("/cgi-bin/userManager.cgi?action=getUserInfoAll", ct);
+        var kv = ParseKeyValues(text);
+
+        var users = new List<NvrUser>();
+        foreach (int index in UserIndexesInOrder(text))
+        {
+            string Field(string name) => kv.GetValueOrDefault($"users[{index}].{name}", "");
+            string userName = Field("Name");
+            if (userName.Length == 0)
+                continue;
+
+            string group = Field("Group");
+            string id = Field("ID");
+            users.Add(new NvrUser(
+                id.Length > 0 ? id : userName,
+                userName,
+                MapUserRole(group),
+                group,
+                bool.TryParse(Field("Reserved"), out bool reserved) && reserved,
+                kv.GetValueOrDefault($"users[{index}].Memo")));
+        }
+        return users;
+    }
+
     // ----- helpers -----
 
     private string CredentialPrefix(bool include) => include
@@ -312,6 +340,34 @@ public sealed class DahuaClient : INvrClient
             _ => RecordingType.Continuous, // Marker / Mosaic / Cutout
         };
     }
+
+    private const string UserKeyPrefix = "users[";
+
+    // The parsed map is unordered and getUserInfoAll may skip indices after a
+    // deletion, so take the index sequence off the raw body: accounts come back
+    // in the order the device lists them in its own UI.
+    private static IEnumerable<int> UserIndexesInOrder(string text)
+    {
+        var seen = new HashSet<int>();
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith(UserKeyPrefix, StringComparison.Ordinal))
+                continue;
+            int close = line.IndexOf(']', UserKeyPrefix.Length);
+            if (close < 0 || !int.TryParse(line[UserKeyPrefix.Length..close], out int index))
+                continue;
+            if (seen.Add(index))
+                yield return index;
+        }
+    }
+
+    private static UserRole MapUserRole(string group) => group.ToLowerInvariant() switch
+    {
+        "admin" => UserRole.Admin,
+        "user" => UserRole.Operator,
+        _ => UserRole.Custom,
+    };
 
     /// <summary>Parses Dahua's "key=value" line format into a dictionary.</summary>
     internal static Dictionary<string, string> ParseKeyValues(string text)
