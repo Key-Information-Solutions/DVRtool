@@ -335,6 +335,15 @@ internal static class AccessCommands
         {
             throw new ArgumentException("--valid-from also needs --valid-until");
         }
+        else if (existing?.ValidUntil is null)
+        {
+            // Every fob provisioned on these panels by iVMS carries a window (typically ten
+            // years). A credential with none never expires on its own, so the only thing that
+            // ever removes it is somebody remembering to — which is what offboarding misses.
+            Console.WriteLine(
+                "  note:   no validity window — this fob will not expire on its own. " +
+                "Pass --valid-until to bound it.");
+        }
 
         if (!force)
         {

@@ -11,7 +11,7 @@ can't do at all).
 |---|---|---|
 | Hikvision (incl. LT Security OEM) | ISAPI over HTTP (digest) + RTSP | In progress — first target |
 | Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Driver written, needs live verification |
-| Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over port 8000 (P/Invoke) | Reads live-verified; writes coded, untested on hardware |
+| Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over port 8000 (P/Invoke) | Reads and writes live-verified |
 | DW Spectrum | Nx REST `/media/` | Planned |
 | UniFi Protect | Private `/api/video/export` | Planned |
 
@@ -147,7 +147,8 @@ dvrtool access grant   --card 9001 --doors 1,2 --panel 192.0.2.223 --force
 dvrtool access revoke  --card 9001 --force
 ```
 
-**These panels store no cardholder names.** A credential on a DS-K2604 is a fob number,
+**These panels store no cardholder names**, and cannot be made to — writing the name field
+is accepted and then silently discarded. A credential on a DS-K2604 is a fob number,
 the doors it opens, and a validity window — nothing else. The name/employee fields exist in
 the wire format but are empty on this firmware, and the card→name lookup is unsupported by
 it, so names live only in whatever provisioned the fobs (iVMS-4200). `access find --name`
@@ -166,7 +167,11 @@ hold subsets — so a thorough check queries every panel, which is the default.
 run: they print what they would change and exit non-zero. With `--force` they write and then
 **read the fob back**, printing the state the device actually holds — a write the SDK
 acknowledged is not proof the door changed. Revoking targets only panels that actually hold
-the fob, and a revoke is `byCardValid = 0`, which is the device's own delete mechanism.
+the fob, and a revoke is `byCardValid = 0`, which is the device's own delete mechanism — the
+record disappears outright rather than lingering as deactivated.
+
+A fob granted without `--valid-until` never expires, so `grant` says so; every fob iVMS
+provisioned on these panels carries a window.
 
 Writes are read-modify-write: the existing record is fetched and only the fields being
 changed are touched, so week plans, holiday groups, card passwords and lock/room codes

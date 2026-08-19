@@ -107,10 +107,16 @@ The offboarding question "does this departed employee still have door access?" i
 only answerable via the fob number. The CLI reports this explicitly rather than returning an
 empty result that would read as "no access found" — see `AccessRoster.AnyPanelStoresNames`.
 
-`byName` *is* a writable field in the struct the panels accept, so DVRTool populating it is a
-plausible way to make the tool self-sufficient — but whether this firmware persists and
-returns it is **unverified**, and testing it means writing to production doors. That is the
-open decision below.
+`byName` is a writable field in the struct the panels accept, so writing names *into* the
+panels looked like a way to make DVRTool self-sufficient. **It does not work.** The canary
+write (§5a) set `byName` to `Test.Canary` with the `CARD_PARAM_NAME` bit set; the panel
+accepted the write, created the card correctly, and **silently discarded the name** — it reads
+back empty. Consistent with Hikvision's own note that `byName` is required only for
+attendance-terminal models (DS-K1T803F, DS-K1A801F) and optional elsewhere: on a DS-K2604
+there is simply nowhere to put it.
+
+So the person↔fob mapping **cannot** live on these panels. It has to live either in iVMS or
+in DVRTool.
 
 ## 5. Live fleet shape (2026-08-19)
 
@@ -133,6 +139,32 @@ model string for access controllers), so model/firmware/door-count are parsed fr
 see `PanelIdentity`. iVMS renders the firmware zero-padded ("V2.0.004") where we render
 "V2.0.4"; the raw serial is always reported alongside.
 
+## 5a. Write path — verified live (2026-08-19)
+
+A canary round trip was run against .223 (the quietest panel, 6 fobs) on an unused fob
+number, with operator approval:
+
+```
+access grant  --card 9001 --doors 1 --panel 192.0.2.223 --name Test.Canary --force
+access find   --card 9001
+access revoke --card 9001 --force
+```
+
+Results:
+
+- **The write works.** `NET_DVR_SET_CARD_CFG_V50` (2179) created fob 9001 with door 1, and the
+  read-back confirmed it.
+- **Read-modify-write is safe.** A full before/after listing of .223 differed by exactly the
+  one added line; the six existing fobs were untouched.
+- **`byName` is discarded** (see §4).
+- **Revoke deletes rather than deactivates.** After `byCardValid = 0` the record is *gone*
+  from the enumeration entirely, not present-and-invalid. So `FullyRevoked` describes a state
+  these panels don't actually keep — it's there for firmware/vendors that do.
+- **After the revoke, .223 was byte-identical to its pre-canary listing.** Clean rollback.
+- A card written with no validity period is created active and **never expires**. Every fob
+  iVMS provisioned here carries a ~10-year window, so `grant` prints a notice when no
+  `--valid-until` is given.
+
 ## 6. Deployment
 
 the relay host has .NET 5/6/8 but not 10, so the CLI must be published self-contained:
@@ -148,12 +180,10 @@ purpose: loading the whole plugin folder pulls in the audio plugins, whose initi
 
 ## 7. Still open for the operator
 
-1. **Does `byName` round-trip?** Needs one write to a throwaway fob number on the least-busy
-   panel (.223, 6 fobs), then a read-back, then a revoke. Until this is answered, DVRTool can
-   be the authority for *fob → doors* but not for *person → fob*.
-2. **Where does person↔fob live?** Either write names onto the panels (pending #1), or import
-   the mapping out of iVMS-4200 once and keep it in DVRTool. iVMS is currently the only place
-   the mapping exists at all.
-3. **Authority vs iVMS.** Unchanged from handoff §4.4: iVMS's "Get from Device" pulls a panel
+1. **Where does person↔fob live?** Not on the panels — §4 settles that. Either import the
+   mapping out of iVMS-4200 once and keep it in DVRTool, or stay fob-number-only and let iVMS
+   remain the name authority. Until this is decided DVRTool is the authority for
+   *fob → doors* across the fleet, but *person → fob* still requires iVMS.
+2. **Authority vs iVMS.** Unchanged from handoff §4.4: iVMS's "Get from Device" pulls a panel
    *into* iVMS, so an SDK write lands on the panel and iVMS won't know until someone
    re-syncs. Decide direction before routine writes.
