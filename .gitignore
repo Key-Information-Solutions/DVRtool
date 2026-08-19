@@ -13,3 +13,6 @@ artifacts/
 identity-map*.json
 *.ivmskey
 ivms-keys/
+# iVMS reconnaissance notes — hold a live SQLCipher key and real cardholder names.
+# Kept as a local on-disk reference only; must never enter git history.
+docs/ivms-integration-findings.md
