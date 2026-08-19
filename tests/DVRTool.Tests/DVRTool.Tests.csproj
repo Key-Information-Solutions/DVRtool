@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\src\DVRTool.Vendors.Hikvision\DVRTool.Vendors.Hikvision.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.Dahua\DVRTool.Vendors.Dahua.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionAccess\DVRTool.Vendors.HikvisionAccess.csproj" />
+    <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionIvms\DVRTool.Vendors.HikvisionIvms.csproj" />
   </ItemGroup>
 
 

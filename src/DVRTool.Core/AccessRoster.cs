@@ -42,6 +42,13 @@ public sealed record RosterEntry
     /// </summary>
     public string? Name { get; init; }
 
+    /// <summary>
+    /// Cardholder's organization/department, when a name enrichment supplied one. Always
+    /// null from a panel read — the controllers store no identity at all — so this is only
+    /// ever populated by <see cref="AccessRoster.EnrichWith"/> from an iVMS import.
+    /// </summary>
+    public string? Organization { get; init; }
+
     public required IReadOnlyList<PanelPresence> Presence { get; init; }
 
     public IEnumerable<string> Panels => Presence.Select(p => p.PanelHost);
@@ -131,6 +138,38 @@ public sealed record AccessRoster
             .ToList();
 
     public bool AnyPanelStoresNames => Entries.Any(e => e.Name is not null);
+
+    /// <summary>
+    /// True once any entry carries a name, whether a panel reported it or an iVMS import
+    /// filled it. This is the post-enrichment signal the CLI gates <c>find --name</c> on;
+    /// <see cref="AnyPanelStoresNames"/> stays the pre-enrichment "did a *panel* know a name"
+    /// question and is computed identically — the distinction is which roster you ask.
+    /// </summary>
+    public bool HasNames => Entries.Any(e => e.Name is not null);
+
+    /// <summary>
+    /// Returns a new roster with cardholder names (and organizations) filled in from an
+    /// iVMS import, joined on fob number. Pure — no I/O, panels untouched.
+    /// </summary>
+    /// <remarks>
+    /// A panel-supplied name always wins: enrichment only fills entries a panel left blank,
+    /// so an authoritative on-device identity is never overwritten by an imported guess. The
+    /// map is one-way (iVMS → DVRTool); nothing here writes back toward iVMS or a panel.
+    /// </remarks>
+    public AccessRoster EnrichWith(IdentityMap map)
+    {
+        var enriched = Entries.Select(entry =>
+        {
+            if (!string.IsNullOrWhiteSpace(entry.Name))
+                return entry;
+            var identity = map.Lookup(entry.CardNo);
+            if (identity is null)
+                return entry;
+            return entry with { Name = identity.Name, Organization = identity.Organization };
+        }).ToList();
+
+        return this with { Entries = enriched };
+    }
 
     /// <summary>Cards on <paramref name="panelHost"/> that are absent from every other panel.</summary>
     public IReadOnlyList<RosterEntry> OnlyOn(string panelHost) =>

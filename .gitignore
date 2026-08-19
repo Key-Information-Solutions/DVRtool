@@ -8,3 +8,8 @@ downloads/
 TestResults/
 # build output, and exported fob rosters (live door credentials — never commit)
 artifacts/
+# iVMS name-enrichment: the imported name map and captured per-install DB keys are
+# operator/customer data and secrets — never commit them.
+identity-map*.json
+*.ivmskey
+ivms-keys/

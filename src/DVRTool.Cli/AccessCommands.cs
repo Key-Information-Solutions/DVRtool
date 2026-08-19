@@ -1,6 +1,7 @@
 using System.Globalization;
 using DVRTool.Core;
 using DVRTool.Vendors.HikvisionAccess;
+using DVRTool.Vendors.HikvisionIvms;
 
 namespace DVRTool.Cli;
 
@@ -27,8 +28,27 @@ internal static class AccessCommands
           find       Locate a fob (--card) or cardholder (--name) across the fleet
           compare    Which fobs one panel has that another is missing
           export     Write the roster to CSV
+          identity   Import cardholder names from iVMS to enrich the roster (see below)
           grant      Create or update a fob's door rights          (needs --force)
           revoke     Invalidate a fob — the device's own delete     (needs --force)
+
+        The panels store no cardholder names. Once names are imported from iVMS they are
+        cached in a DVRTool-owned map and applied AUTOMATICALLY to roster, cards, find,
+        compare and export — no flag needed. Import is one-way (iVMS → DVRTool only).
+
+        identity options (one-way name enrichment):
+          --import-csv <file>     import the supported iVMS Person export (plaintext card
+                                  numbers) — the complete, recommended path
+          --import-ivms           read the live iVMS SQLCipher DB and correlate names to
+                                  fobs by unique expiry (PARTIAL) — also needs --panels
+          --ivms-db <path>        the iVMS person DB (or its UserData root); default:
+                                  auto-discover the local install
+          --db-key <b64>          the per-install SQLCipher key, base64 (or IVMS_DB_KEY,
+                                  or the cached key from --capture-key)
+          --capture-key <b64>     cache a per-install DB key that an external one-time
+                                  step captured (DVRTool never derives it)
+          --where                 show the name-map's location and current contents
+          --clear                 delete the cached name map
 
         Options:
           --panels <ip[,ip...]>   panels to talk to, or OCB_PANELS
@@ -76,6 +96,7 @@ internal static class AccessCommands
             "find" => await FindAsync(opts, ct),
             "compare" => await CompareAsync(opts, ct),
             "export" => await ExportAsync(opts, ct),
+            "identity" => await IdentityAsync(opts, ct),
             "grant" => await GrantAsync(opts, ct),
             "revoke" => await RevokeAsync(opts, ct),
             _ => UnknownSubcommand(subcommand),
@@ -126,7 +147,7 @@ internal static class AccessCommands
     private static async Task<int> CardsAsync(Dictionary<string, string> opts, CancellationToken ct)
     {
         var settings = AccessSettings.From(opts);
-        var roster = await BuildRosterAsync(settings, ct);
+        var roster = await BuildEnrichedRosterAsync(settings, ct);
         ReportFailures(roster);
 
         foreach (var panel in roster.Panels.Where(p => p.Ok))
@@ -136,10 +157,13 @@ internal static class AccessCommands
                 continue;
             Console.WriteLine($"{"CARD",-14} {"DOORS",-12} {"TYPE",-10} {"VALID",-7} {"UNTIL",-19} NAME");
             foreach (var c in panel.Cards.OrderBy(c => AccessRoster.NormalizeCardNo(c.CardNo).PadLeft(20)))
+                // The panel's own name is blank on this firmware; fall back to the enriched
+                // roster entry so an imported iVMS name shows here too.
                 Console.WriteLine(
                     $"{c.CardNo,-14} {c.DoorSummary,-12} {c.Type,-10} " +
                     $"{(c.Valid ? "yes" : "REVOKED"),-7} " +
-                    $"{c.ValidUntil?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",-19} {c.Name}");
+                    $"{c.ValidUntil?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",-19} " +
+                    (string.IsNullOrWhiteSpace(c.Name) ? roster.FindCard(c.CardNo)?.Name : c.Name));
         }
 
         return roster.Panels.All(p => !p.Ok) ? 1 : 0;
@@ -148,7 +172,7 @@ internal static class AccessCommands
     private static async Task<int> RosterAsync(Dictionary<string, string> opts, CancellationToken ct)
     {
         var settings = AccessSettings.From(opts);
-        var roster = await BuildRosterAsync(settings, ct);
+        var roster = await BuildEnrichedRosterAsync(settings, ct);
         ReportFailures(roster);
 
         var panels = roster.Panels.Where(p => p.Ok).Select(p => p.PanelHost).ToList();
@@ -188,7 +212,7 @@ internal static class AccessCommands
                 (only.Count > 0 ? $", {only.Count} found nowhere else" : ""));
         }
 
-        if (!roster.AnyPanelStoresNames)
+        if (!roster.HasNames)
             Console.WriteLine("\n" + NoNamesNotice);
         return 0;
     }
@@ -201,7 +225,7 @@ internal static class AccessCommands
             throw new ArgumentException("give --card <no> or --name <text>");
 
         var settings = AccessSettings.From(opts);
-        var roster = await BuildRosterAsync(settings, ct);
+        var roster = await BuildEnrichedRosterAsync(settings, ct);
         ReportFailures(roster);
         if (roster.Panels.All(p => !p.Ok))
             return 1;
@@ -219,7 +243,7 @@ internal static class AccessCommands
             return 0;
         }
 
-        if (!roster.AnyPanelStoresNames)
+        if (!roster.HasNames)
         {
             Console.Error.WriteLine(
                 $"error: cannot search by name — {NoNamesNotice}");
@@ -241,7 +265,7 @@ internal static class AccessCommands
             ?? throw new ArgumentException("compare needs --against <ip>");
 
         var settings = AccessSettings.From(opts) with { Panels = [primary, against] };
-        var roster = await BuildRosterAsync(settings, ct);
+        var roster = await BuildEnrichedRosterAsync(settings, ct);
         ReportFailures(roster);
         if (roster.IsPartial)
         {
@@ -264,7 +288,7 @@ internal static class AccessCommands
     private static async Task<int> ExportAsync(Dictionary<string, string> opts, CancellationToken ct)
     {
         var settings = AccessSettings.From(opts);
-        var roster = await BuildRosterAsync(settings, ct);
+        var roster = await BuildEnrichedRosterAsync(settings, ct);
         ReportFailures(roster);
         if (roster.Panels.All(p => !p.Ok))
             return 1;
@@ -297,6 +321,157 @@ internal static class AccessCommands
         if (roster.IsPartial)
             Console.Error.WriteLine("warning: the export is PARTIAL — see the panel errors above.");
         return roster.IsPartial ? 1 : 0;
+    }
+
+    // ---------- identity (one-way iVMS → DVRTool name enrichment) ----------
+
+    /// <summary>
+    /// The <c>identity</c> subcommand: import cardholder names from iVMS and manage the
+    /// cached name map. Option-driven so it stays one dispatch token in Program.cs.
+    /// </summary>
+    /// <remarks>
+    /// Everything here is one-way (iVMS → DVRTool). Nothing writes back into iVMS, and the
+    /// DB key is only ever supplied by the operator — never derived or embedded.
+    /// </remarks>
+    private static async Task<int> IdentityAsync(Dictionary<string, string> opts, CancellationToken ct)
+    {
+        if (Value(opts, "capture-key") is string captured)
+            return CaptureKey(opts, captured);
+        if (Value(opts, "import-csv") is string csv)
+            return ImportCsv(csv);
+        if (opts.ContainsKey("import-ivms"))
+            return await ImportIvmsAsync(opts, ct);
+        if (opts.ContainsKey("where"))
+            return IdentityWhere();
+        if (opts.ContainsKey("clear"))
+            return IdentityClear();
+
+        Console.Error.WriteLine(
+            "error: `access identity` needs one of --import-csv, --import-ivms, " +
+            "--capture-key, --where or --clear.\n");
+        Console.WriteLine(Usage);
+        return 2;
+    }
+
+    private static int ImportCsv(string csvPath)
+    {
+        if (!File.Exists(csvPath))
+            throw new ArgumentException($"CSV file not found: {csvPath}");
+
+        var imported = IvmsCsvImporter.Import(csvPath);
+        var merged = MergeIntoStore(imported);
+        Console.WriteLine(
+            $"imported {imported.Count} name(s) from {csvPath}; " +
+            $"map now holds {merged.Count} (saved to {IdentityMapStore.DefaultPath}).");
+        return 0;
+    }
+
+    private static async Task<int> ImportIvmsAsync(Dictionary<string, string> opts,
+        CancellationToken ct)
+    {
+        var install = ResolveInstall(opts);
+        byte[] key = IvmsKeyStore.Resolve(Value(opts, "db-key"), install.Id);
+        var persons = IvmsPersonReader.ReadPersons(install.PersonDbPath, key);
+        Console.WriteLine($"read {persons.Count} person(s) from {install.Product} ({install.PersonDbPath}).");
+
+        var settings = AccessSettings.From(opts);
+        var roster = await BuildRosterAsync(settings, ct);
+        ReportFailures(roster);
+
+        var result = IvmsExpiryCorrelator.Correlate(persons, roster);
+        var merged = MergeIntoStore(result.Map);
+
+        Console.WriteLine(
+            $"\ncorrelated by unique expiry: {result.Matched} matched, " +
+            $"{result.AmbiguousExpiries} ambiguous, {result.UnmatchedPersons} unmatched.");
+        foreach (string note in result.Notes)
+            Console.WriteLine($"  {note}");
+        Console.WriteLine($"map now holds {merged.Count} name(s), saved to {IdentityMapStore.DefaultPath}.");
+        Console.Error.WriteLine(
+            "note: expiry correlation is PARTIAL — only fobs whose expiry is unique on both " +
+            "sides are bound. For complete coverage, use the supported export: " +
+            "`dvrtool access identity --import-csv <export.csv>`.");
+        return 0;
+    }
+
+    private static int CaptureKey(Dictionary<string, string> opts, string base64)
+    {
+        var install = ResolveInstall(opts);
+        IvmsKeyStore.Store(install.Id, base64);
+        Console.WriteLine(
+            $"cached the SQLCipher key for {install.Product} (install '{install.Id}'). " +
+            "It will be used automatically by `--import-ivms`.");
+        return 0;
+    }
+
+    private static int IdentityWhere()
+    {
+        string path = IdentityMapStore.DefaultPath;
+        var map = IdentityMapStore.Load();
+        if (map is null)
+        {
+            Console.WriteLine($"no name map yet. It will be created at {path}.");
+            return 0;
+        }
+        Console.WriteLine($"name map: {path}");
+        Console.WriteLine($"  {map.Count} name(s), source: {map.Source}" +
+            (map.CapturedAtUtc is DateTime at ? $", captured {at:yyyy-MM-dd HH:mm:ss}Z" : ""));
+        return 0;
+    }
+
+    private static int IdentityClear()
+    {
+        string path = IdentityMapStore.DefaultPath;
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+            Console.WriteLine($"deleted the name map at {path}.");
+        }
+        else
+        {
+            Console.WriteLine($"no name map to delete (none at {path}).");
+        }
+        return 0;
+    }
+
+    /// <summary>Merges an imported map on top of the cached one (import wins) and saves it.</summary>
+    private static IdentityMap MergeIntoStore(IdentityMap imported)
+    {
+        var existing = IdentityMapStore.Load();
+        var merged = existing is null ? imported : existing.Merge(imported);
+        IdentityMapStore.Save(merged);
+        return merged;
+    }
+
+    /// <summary>
+    /// Resolves which iVMS install to act on: an explicit <c>--ivms-db</c> (a person DB file
+    /// or a UserData root), otherwise the single auto-discovered install.
+    /// </summary>
+    private static IvmsInstall ResolveInstall(Dictionary<string, string> opts)
+    {
+        if (Value(opts, "ivms-db") is string path)
+        {
+            if (Directory.Exists(path))
+                return IvmsInstall.FromUserData(path);
+            // A file path points at the DB itself; the UserData root is two levels up
+            // (…\UserData\PersonalManagement.S\PersonalManagement).
+            string? personalMgmtDir = Path.GetDirectoryName(path);
+            string? userData = personalMgmtDir is null ? null : Path.GetDirectoryName(personalMgmtDir);
+            if (userData is { Length: > 0 })
+                return IvmsInstall.FromUserData(userData) with { PersonDbPath = path };
+            throw new ArgumentException($"could not derive an iVMS install from --ivms-db '{path}'.");
+        }
+
+        var installs = IvmsInstall.Discover().ToList();
+        if (installs.Count == 0)
+            throw new NvrException(
+                "no iVMS/NVMS install found on this machine — pass --ivms-db <path> to point " +
+                "at the person database or its UserData root.");
+        if (installs.Count > 1)
+            throw new NvrException(
+                $"multiple iVMS installs found ({string.Join(", ", installs.Select(i => i.Product))}) " +
+                "— name one with --ivms-db <path>.");
+        return installs[0];
     }
 
     // ---------- writes ----------
@@ -474,7 +649,8 @@ internal static class AccessCommands
     private const string NoNamesNotice =
         "these panels store no cardholder identity: every credential is a fob number plus " +
         "door rights, and the card→name channel is unsupported on this firmware. Names live " +
-        "only in whatever provisioned the fobs (iVMS-4200).";
+        "only in whatever provisioned the fobs (iVMS-4200). Import them from iVMS with " +
+        "`dvrtool access identity --import-csv <export.csv>`.";
 
     /// <summary>Reads every panel, keeping per-panel failures instead of dropping them.</summary>
     private static async Task<AccessRoster> BuildRosterAsync(AccessSettings settings,
@@ -502,6 +678,19 @@ internal static class AccessCommands
             }
         }
         return AccessRoster.Build(results);
+    }
+
+    /// <summary>
+    /// Reads every panel and then applies the cached iVMS name map, if one exists, so the
+    /// read verbs show cardholder names automatically. Enrichment is pure and additive — a
+    /// panel-supplied name still wins, and a missing map simply leaves the roster as-read.
+    /// </summary>
+    private static async Task<AccessRoster> BuildEnrichedRosterAsync(AccessSettings settings,
+        CancellationToken ct)
+    {
+        var roster = await BuildRosterAsync(settings, ct);
+        var map = IdentityMapStore.Load();
+        return map is null ? roster : roster.EnrichWith(map);
     }
 
     private static void ReportFailures(AccessRoster roster)

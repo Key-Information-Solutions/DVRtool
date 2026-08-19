@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- SQLitePCLRaw's SQLCipher bundle ships a native e_sqlcipher.dll per RID; iVMS is
+         a 64-bit install, so pin the host to x64 to load the matching native asset. -->
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SQLCipher read path (validated): Microsoft.Data.Sqlite.Core over the
+         bundle_e_sqlcipher native provider, opened with PRAGMA cipher_compatibility = 3. -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DVRTool.Core\DVRTool.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DVRTool.Tests" />
+  </ItemGroup>
+
+</Project>
