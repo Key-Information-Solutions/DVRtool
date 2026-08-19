@@ -11,6 +11,7 @@ can't do at all).
 |---|---|---|
 | Hikvision (incl. LT Security OEM) | ISAPI over HTTP (digest) + RTSP | In progress — first target |
 | Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Driver written, needs live verification |
+| Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over port 8000 (P/Invoke) | Reads live-verified; writes coded, untested on hardware |
 | DW Spectrum | Nx REST `/media/` | Planned |
 | UniFi Protect | Private `/api/video/export` | Planned |
 
@@ -19,6 +20,7 @@ can't do at all).
 - `src/DVRTool.Core` — vendor-neutral contracts (`INvrClient`), models, digest HTTP, ffmpeg remux helper
 - `src/DVRTool.Vendors.Hikvision` — ISAPI driver (search / download / live + playback RTSP URIs)
 - `src/DVRTool.Vendors.Dahua` — CGI driver (`mediaFileFind` / `loadfile` / RTSP by time)
+- `src/DVRTool.Vendors.HikvisionAccess` — door-panel driver (Hikvision SDK P/Invoke; no HTTP)
 - `src/DVRTool.Cli` — headless test harness & tech-friendly CLI
 - `src/DVRTool.App` — WPF GUI (LibVLCSharp video panes)
 - `tests/DVRTool.Tests` — unit tests against canned NVR responses
@@ -116,6 +118,60 @@ contradicts the bytes gets a warning rather than a silent rename — you named t
 file, so we don't second-guess it.
 
 ffmpeg must be on `PATH`.
+
+## Access control (door panels)
+
+Hikvision DS-K door controllers (including OEM rebrands like the "OCB" DS-K2604) are a
+separate device class, not NVRs: they run no web server at all, so the ISAPI driver cannot
+reach them. They speak only Hikvision's private SDK on **port 8000**, which means the
+`access` command group needs **Windows, a 64-bit process, and HCNetSDK.dll** — installing
+iVMS-4200 or HikCentral Lite provides it, and it is found automatically (override with
+`--sdk-dir` or `OCB_SDK_DIR`).
+
+Panels have their own credentials, kept alongside the NVR ones in `.env`:
+
+```
+OCB_PANELS=192.0.2.221,192.0.2.222,192.0.2.223
+OCB_USER=admin
+OCB_PASS=...
+```
+
+```
+dvrtool access panels                       # model / firmware / doors / fob count per panel
+dvrtool access roster                       # every fob and the doors it opens, across all panels
+dvrtool access cards   --panel 192.0.2.221
+dvrtool access find    --card 2375          # where one fob is provisioned
+dvrtool access compare --panel 192.0.2.222 --against 192.0.2.221
+dvrtool access export  --out roster.csv
+dvrtool access grant   --card 9001 --doors 1,2 --panel 192.0.2.223 --force
+dvrtool access revoke  --card 9001 --force
+```
+
+**These panels store no cardholder names.** A credential on a DS-K2604 is a fob number,
+the doors it opens, and a validity window — nothing else. The name/employee fields exist in
+the wire format but are empty on this firmware, and the card→name lookup is unsupported by
+it, so names live only in whatever provisioned the fobs (iVMS-4200). `access find --name`
+therefore says so outright instead of returning nothing, because an empty result would read
+as "this person has no access" — the wrong conclusion to hand someone doing an offboarding
+check. Look fobs up by number.
+
+For the same reason, a panel that could not be reached is reported loudly and the view is
+marked **PARTIAL**: a fob may still be active on it, so "no access found" is not a safe
+conclusion. `compare` refuses to report drift at all from a partial read.
+
+Access is per-door, not fleet-wide — one panel typically holds the full roster while others
+hold subsets — so a thorough check queries every panel, which is the default.
+
+`grant` and `revoke` change **physical door access**, so without `--force` they are a dry
+run: they print what they would change and exit non-zero. With `--force` they write and then
+**read the fob back**, printing the state the device actually holds — a write the SDK
+acknowledged is not proof the door changed. Revoking targets only panels that actually hold
+the fob, and a revoke is `byCardValid = 0`, which is the device's own delete mechanism.
+
+Writes are read-modify-write: the existing record is fetched and only the fields being
+changed are touched, so week plans, holiday groups, card passwords and lock/room codes
+survive instead of being zeroed by a rewrite.
+
 
 ## GUI exports
 

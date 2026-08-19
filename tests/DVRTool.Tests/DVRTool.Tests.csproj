@@ -17,6 +17,12 @@
     <ProjectReference Include="..\..\src\DVRTool.Core\DVRTool.Core.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.Hikvision\DVRTool.Vendors.Hikvision.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.Dahua\DVRTool.Vendors.Dahua.csproj" />
+    <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionAccess\DVRTool.Vendors.HikvisionAccess.csproj" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <None Include="Fixtures\card-records.b64" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

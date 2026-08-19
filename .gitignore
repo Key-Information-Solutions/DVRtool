@@ -6,3 +6,5 @@ obj/
 *.lnk
 downloads/
 TestResults/
+# build output, and exported fob rosters (live door credentials — never commit)
+artifacts/

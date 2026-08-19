@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using DVRTool.Cli;
 using DVRTool.Core;
 using DVRTool.Vendors.Dahua;
 using DVRTool.Vendors.Hikvision;
@@ -14,6 +15,7 @@ const string Usage = """
       info            Device model / serial / firmware
       channels        List channels
       users           List the accounts configured on the device
+      access          Door-access panels (see: dvrtool access --help)
       search          List recordings for a channel in a window
       download        Export footage for a time span to a file
       live-url        Print the RTSP live URI (paste into VLC)
@@ -44,6 +46,9 @@ const string Usage = """
       --with-creds                 embed user:pass into printed RTSP URIs
       --env <path>                 .env file to load (default: .env in the working dir)
 
+    Door-access panels are a separate device class with their own credentials
+    (OCB_PANELS / OCB_USER / OCB_PASS) — run `dvrtool access --help`.
+
     Credentials can live in a .env file (DVR_HOST / DVR_USER / DVR_PASS). The
     password is stored there in PLAINTEXT — never keep .env inside footage/export
     folders that get zipped up and shared.
@@ -56,10 +61,19 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 }
 
 string command = args[0].ToLowerInvariant();
+
+// `access` is a command group: `dvrtool access <subcommand> [options]`, so its
+// subcommand must be pulled off before the rest is parsed as options.
+bool isAccess = command == "access";
+string accessSubcommand = isAccess && args.Length > 1 &&
+        !args[1].StartsWith("--", StringComparison.Ordinal)
+    ? args[1].ToLowerInvariant()
+    : "";
+
 Dictionary<string, string> opts;
 try
 {
-    opts = ParseOptions(args.Skip(1).ToArray());
+    opts = ParseOptions(args.Skip(isAccess && accessSubcommand.Length > 0 ? 2 : 1).ToArray());
     LoadDotEnv(opts.GetValueOrDefault("env"));
 }
 catch (ArgumentException ex)
@@ -77,6 +91,11 @@ Console.CancelKeyPress += (_, e) =>
 
 try
 {
+    // Access panels are not NVRs: different protocol, port and credentials, so they
+    // are dispatched before any INvrClient is built.
+    if (isAccess)
+        return await AccessCommands.RunAsync(accessSubcommand, opts, cts.Token);
+
     // URL-only commands don't authenticate; only demand a password when it is
     // actually used (so `dvrtool live-url` never blocks on a prompt).
     bool needsPassword = command is not ("live-url" or "playback-url")
@@ -494,7 +513,12 @@ static void LoadDotEnv(string? explicitPath)
     }
     // Only the keys this tool understands — a planted .env must not be able to
     // inject arbitrary environment variables (inherited by the ffmpeg child).
-    string[] allowed = ["DVR_HOST", "DVR_USER", "DVR_PASS"];
+    string[] allowed =
+    [
+        "DVR_HOST", "DVR_USER", "DVR_PASS",
+        // Door-access panels (see AccessCommands).
+        "OCB_PANELS", "OCB_USER", "OCB_PASS", "OCB_SDK_PORT", "OCB_SDK_DIR",
+    ];
     var applied = new List<string>();
     foreach (string raw in File.ReadAllLines(path))
     {
