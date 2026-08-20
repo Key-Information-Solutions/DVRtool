@@ -77,6 +77,8 @@ public partial class MainWindow : Window
         StartBox.Text = now.Date.ToString("yyyy-MM-dd HH:mm:ss");
         EndBox.Text = now.ToString("yyyy-MM-dd HH:mm:ss");
 
+        InitializeAccessTab();
+
         if (_devices.Count > 0)
             DeviceList.SelectedIndex = 0;
     }
@@ -93,6 +95,7 @@ public partial class MainWindow : Window
         _downloadCts?.Cancel();
         _clientCts?.Cancel();
         _usersCts?.Cancel();
+        _accessCts?.Cancel();
         if (_downloadTask is { } task)
         {
             try { await task; }
@@ -111,6 +114,13 @@ public partial class MainWindow : Window
         {
             try { await users; }
             catch { /* canceled/failed; OnLoadUsers already reported it */ }
+        }
+        // Likewise for the Access tab: its panel clients hold an SDK login each, and the
+        // shared HCNetSDK runtime is only torn down once the last one is disposed.
+        if (_accessTask is { } access)
+        {
+            try { await access; }
+            catch { /* canceled/failed; the Access tab already reported it */ }
         }
 
         // Detach the views first so VideoView never renders against a disposed
@@ -140,6 +150,7 @@ public partial class MainWindow : Window
         _downloadCts?.Dispose();
         _clientCts?.Dispose();
         _usersCts?.Dispose();
+        _accessCts?.Dispose();
         _closePending = true;
         Close();
     }

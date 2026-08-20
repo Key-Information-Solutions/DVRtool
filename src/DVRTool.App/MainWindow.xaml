@@ -155,6 +155,123 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
+
+                <TabItem Header="Access">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <TextBlock Text="Panels " VerticalAlignment="Center"/>
+                            <TextBox x:Name="AccessPanelsBox" Width="165">
+                                <TextBox.ToolTip>
+                                    <TextBlock>
+                                        Door-panel addresses, comma separated (e.g. 192.0.2.221,192.0.2.222).<LineBreak/>
+                                        <LineBreak/>
+                                        Every panel is read: door rights are per-panel, and a fob present on<LineBreak/>
+                                        one controller says nothing about the others.
+                                    </TextBlock>
+                                </TextBox.ToolTip>
+                            </TextBox>
+                            <TextBlock Text=" User " VerticalAlignment="Center"/>
+                            <TextBox x:Name="AccessUserBox" Width="85"/>
+                            <TextBlock Text=" Password " VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="AccessPassBox" Width="85"/>
+                            <TextBlock Text=" SDK port " VerticalAlignment="Center"/>
+                            <TextBox x:Name="AccessPortBox" Width="45" Text="8000"/>
+                            <TextBlock Text=" SDK dir " VerticalAlignment="Center"/>
+                            <TextBox x:Name="AccessSdkDirBox" Width="110">
+                                <TextBox.ToolTip>
+                                    <TextBlock>
+                                        Optional. Folder holding HCNetSDK.dll — iVMS-4200 and HikCentral<LineBreak/>
+                                        Lite bundle it, and those install paths are probed automatically.
+                                    </TextBlock>
+                                </TextBox.ToolTip>
+                            </TextBox>
+                            <Button Content="Load roster" Click="OnLoadRoster" Margin="8,0,0,0"/>
+                        </ToolBar>
+
+                        <TextBlock x:Name="AccessWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
+                                   TextWrapping="Wrap" Foreground="DarkRed" FontWeight="Bold"
+                                   Visibility="Collapsed"/>
+
+                        <GroupBox DockPanel.Dock="Bottom" Margin="0,6,0,0"
+                                  Header="Cardholder names (from iVMS)">
+                            <Grid Margin="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="105"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock x:Name="IdentityStatus" Grid.Row="0" Grid.Column="0"
+                                           Grid.ColumnSpan="3" TextWrapping="Wrap" Margin="0,0,0,6"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="iVMS database"
+                                           VerticalAlignment="Center"/>
+                                <TextBox x:Name="IvmsDbBox" Grid.Row="1" Grid.Column="1" Margin="0,3">
+                                    <TextBox.ToolTip>
+                                        <TextBlock>
+                                            Blank auto-discovers the local iVMS-4200 / NVMS V3 install.<LineBreak/>
+                                            <LineBreak/>
+                                            Otherwise give the person database itself<LineBreak/>
+                                            (…\UserData\PersonalManagement.S\PersonalManagement)<LineBreak/>
+                                            or the site's UserData folder.
+                                        </TextBlock>
+                                    </TextBox.ToolTip>
+                                </TextBox>
+                                <Button Grid.Row="1" Grid.Column="2" Content="Browse…"
+                                        Click="OnBrowseIvmsDb" Margin="6,3,0,3" Padding="10,2"/>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Database key"
+                                           VerticalAlignment="Center"/>
+                                <PasswordBox x:Name="IvmsKeyBox" Grid.Row="2" Grid.Column="1" Margin="0,3">
+                                    <PasswordBox.ToolTip>
+                                        <TextBlock>
+                                            The per-install SQLCipher key, base64. Blank uses the IVMS_DB_KEY<LineBreak/>
+                                            environment variable or the key cached for this install.<LineBreak/>
+                                            <LineBreak/>
+                                            DVRTool never derives this key and never displays it back.
+                                        </TextBlock>
+                                    </PasswordBox.ToolTip>
+                                </PasswordBox>
+                                <Button Grid.Row="2" Grid.Column="2" Content="Cache key"
+                                        Click="OnCacheIvmsKey" Margin="6,3,0,3" Padding="10,2"/>
+
+                                <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
+                                            Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button Content="Import CSV…" Click="OnImportIdentityCsv"
+                                            Padding="10,4"/>
+                                    <Button Content="Import from iVMS database" Click="OnImportFromIvms"
+                                            Margin="8,0,0,0" Padding="10,4"/>
+                                    <Button Content="Clear map" Click="OnClearIdentityMap"
+                                            Margin="8,0,0,0" Padding="10,4"/>
+                                </StackPanel>
+                            </Grid>
+                        </GroupBox>
+
+                        <DataGrid x:Name="AccessGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" Margin="0,4">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Card" Width="110"
+                                                    Binding="{Binding Card}"/>
+                                <DataGridTextColumn Header="Name" Width="180"
+                                                    Binding="{Binding Name}"/>
+                                <DataGridTextColumn Header="Panel" Width="130"
+                                                    Binding="{Binding Panel}"/>
+                                <DataGridTextColumn Header="Doors" Width="90"
+                                                    Binding="{Binding Doors}"/>
+                                <DataGridTextColumn Header="Valid" Width="70"
+                                                    Binding="{Binding Valid}"/>
+                                <DataGridTextColumn Header="Valid until" Width="150"
+                                                    Binding="{Binding ValidUntil}"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
             </TabControl>
         </Grid>
     </DockPanel>
