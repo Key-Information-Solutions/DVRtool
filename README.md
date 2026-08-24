@@ -46,9 +46,22 @@ a lesser path.
 
 **Add NVR…** opens a dialog for the name, vendor, host/IP, the HTTP, RTSP and SDK ports,
 credentials, and an optional **Use HTTPS** (which pins the self-signed cert trust-on-first-
-use, exactly as the CLI does). The **SDK port** is where the vendor's private SDK answers
-(Hikvision HCNetSDK, Dahua DHNetSDK) — 8000 from the factory, but it is changeable from
-the recorder's own network menu, so it is recorded per NVR rather than assumed.
+use, exactly as the CLI does).
+
+The third port row follows the **vendor** you pick, because the two vendors do not agree on
+it: Hikvision answers its HCNetSDK on the **SDK port** it calls the "Server Port" (8000),
+while Dahua answers DHNetSDK on the **TCP port** (37777). The row retitles itself to match
+the label on the device's own network page, and switching vendors re-defaults the number —
+but only if the box still holds the other vendor's factory value, so a port read off a
+recorder is never silently renumbered. Either way it is changeable from the recorder, so it
+is recorded per NVR rather than assumed.
+
+No DVRTool feature actually dials that port on a recorder; the hint under the box says so.
+It is there because the port check answers a question installers ask anyway — whether
+iVMS-4200 / SmartPSS could reach this box from here. (The Access tab's SDK port is a
+different field for different hardware: door panels, on their own address list.) See
+[docs/device-ports.md](docs/device-ports.md) for the full per-vendor matrix, including why
+Dahua's UDP port and Hikvision's Enhanced SDK port are deliberately absent.
 
 **Test connection** checks all three ports at once, one line each, filled in as they
 answer:
@@ -60,15 +73,16 @@ answer:
   Note that Hikvision firmware answers `404` to an `OPTIONS` on `/` and is perfectly
   healthy — any well-formed RTSP status line proves the service, so the code is reported,
   never used to fail the port;
-* **SDK** — a TCP connect only. Both vendors' SDK ports speak a proprietary binary
-  protocol, so this reports a listener, never a working login.
+* **SDK** / **TCP** — a TCP connect only. Both vendors' SDK ports speak a proprietary
+  binary protocol, so this reports a listener, never a working login.
 
 Silence is the only real failure: a refused, dropped or unroutable port is red, while
 anything that *answered* — an error reply, a rejected password, the wrong protocol — is
 amber, because the port is demonstrably open and the fix is on the device rather than the
 firewall. A closing line names the consequence, since which port fell short decides which
-feature breaks: nothing works without the web port, playback and export need RTSP, and the
-Access tab needs the SDK port. A partial pass does not block **Save**.
+feature breaks: nothing works without the web port, playback and export need RTSP, and a
+dead SDK port costs no DVRTool feature at all — it only means the vendor's own software
+cannot reach the recorder from here. A partial pass does not block **Save**.
 
 **Save** adds the NVR to the list. Saved NVRs
 persist to `%APPDATA%\DVRTool\devices.json`, and each password is **DPAPI-protected for
@@ -177,7 +191,7 @@ user.)
 DVR_HOST=192.0.2.10
 DVR_USER=admin
 DVR_PASS=...
-DVR_SDK_PORT=8000      # only when the recorder's SDK port was moved off 8000
+DVR_SDK_PORT=8000      # only when the recorder's SDK port was moved off the default
 ```
 
 ```
@@ -199,8 +213,10 @@ self-signed, so the cert is pinned trust-on-first-use into
 downloads are encrypted.
 
 `--sdk-port <n>` (or `DVR_SDK_PORT`) sets the vendor SDK port, the same field the desktop
-app's Add-NVR dialog records. It defaults to 8000 but is not assumed: the port is
-changeable from the recorder itself, and a moved port has to be given here to match.
+app's Add-NVR dialog records. Its default follows `--vendor` — 8000 for Hikvision's
+HCNetSDK, 37777 for Dahua's DHNetSDK — and neither is assumed: the port is changeable from
+the recorder itself, and a moved port has to be given here to match. Nothing but
+`dvrtool test` reads it; see [docs/device-ports.md](docs/device-ports.md).
 
 Downloads and exports go through the shared `AtomicDownload` engine, so these guarantees
 hold whichever front end wrote the file. A download streams to a `.part` file and is

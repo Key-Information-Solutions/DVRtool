@@ -9,11 +9,11 @@ namespace DVRTool.Core;
 public sealed record AccessPanelConnection
 {
     public required string Host { get; init; }
-    public int SdkPort { get; init; } = 8000;
+    public int SdkPort { get; init; } = VendorPorts.HikvisionSdk;
     public required string Username { get; init; }
     public required string Password { get; init; }
 
-    public string Label => SdkPort == 8000 ? Host : $"{Host}:{SdkPort}";
+    public string Label => SdkPort == VendorPorts.HikvisionSdk ? Host : $"{Host}:{SdkPort}";
 }
 
 /// <summary>

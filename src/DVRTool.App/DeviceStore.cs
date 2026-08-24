@@ -19,14 +19,25 @@ public sealed class SavedDevice
     public int RtspPort { get; set; } = 554;
 
     /// <summary>
-    /// Vendor SDK port. Devices saved before this field existed deserialize to 8000, which
-    /// is the factory default — an operator who moved it has to say so here.
+    /// Vendor SDK port. The default is Hikvision's; Dahua's is
+    /// <see cref="VendorPorts.DahuaSdk"/>, and <see cref="DeviceStore.Load"/> corrects saved
+    /// Dahua entries that predate this being vendor-aware.
     /// </summary>
-    public int SdkPort { get; set; } = 8000;
+    public int SdkPort { get; set; } = VendorPorts.HikvisionSdk;
 
     public bool UseTls { get; set; }
     public string Username { get; set; } = "";
     public string ProtectedPassword { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="Vendor"/> as the enum. The stored form stays a string so an unknown value
+    /// in <c>devices.json</c> degrades to Hikvision instead of failing to deserialize.
+    /// </summary>
+    [JsonIgnore]
+    public DVRTool.Core.Vendor VendorKind =>
+        Vendor.Equals("dahua", StringComparison.OrdinalIgnoreCase)
+            ? DVRTool.Core.Vendor.Dahua
+            : DVRTool.Core.Vendor.Hikvision;
 
     public void SetPassword(string plain) =>
         ProtectedPassword = Convert.ToBase64String(ProtectedData.Protect(
@@ -49,11 +60,9 @@ public sealed class SavedDevice
         UseTls = UseTls,
     };
 
-    public INvrClient CreateClient() => Vendor.ToLowerInvariant() switch
-    {
-        "dahua" => new DahuaClient(ToConnection()),
-        _ => new HikvisionClient(ToConnection()),
-    };
+    public INvrClient CreateClient() => VendorKind == DVRTool.Core.Vendor.Dahua
+        ? new DahuaClient(ToConnection())
+        : new HikvisionClient(ToConnection());
 }
 
 public static class DeviceStore
@@ -69,12 +78,36 @@ public static class DeviceStore
         {
             if (!File.Exists(FilePath))
                 return [];
-            return JsonSerializer.Deserialize<List<SavedDevice>>(File.ReadAllText(FilePath)) ?? [];
+            var devices = JsonSerializer.Deserialize<List<SavedDevice>>(File.ReadAllText(FilePath))
+                ?? [];
+            foreach (var device in devices)
+                MigrateDahuaSdkPort(device);
+            return devices;
         }
         catch (Exception)
         {
             return [];
         }
+    }
+
+    /// <summary>
+    /// Repoints a Dahua entry still carrying Hikvision's SDK port at Dahua's own.
+    /// </summary>
+    /// <remarks>
+    /// The SDK port used to default to 8000 regardless of vendor, so every Dahua unit added
+    /// before that was fixed carries a number that means nothing on Dahua hardware — the port
+    /// check reports it dead and the operator is sent chasing a firewall rule for a port the
+    /// recorder never opened. Rewriting it is safe in a way most silent migrations are not:
+    /// nothing dials this port, so a wrong guess costs one misleading line in
+    /// <b>Test connection</b> rather than a failed connection, and 8000 is not a port Dahua
+    /// firmware puts anything on. A port the operator actually moved is left alone, since only
+    /// the exact old default is touched.
+    /// </remarks>
+    private static void MigrateDahuaSdkPort(SavedDevice device)
+    {
+        if (device.VendorKind == DVRTool.Core.Vendor.Dahua &&
+            device.SdkPort == VendorPorts.HikvisionSdk)
+            device.SdkPort = VendorPorts.DahuaSdk;
     }
 
     public static void Save(IEnumerable<SavedDevice> devices)

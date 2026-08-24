@@ -4,6 +4,14 @@
 CLI (`src/DVRTool.Cli`) as its automation/scripting surface; both front ends ride the shared
 `src/DVRTool.Core` engine, so export/remux/overwrite and name-enrichment behavior is identical between them.
 
+**Device ports:** The three ports an NVR record carries are per-vendor, not universal — the
+vendor SDK port is 8000 on Hikvision and **37777** on Dahua (`VendorPorts.Sdk` in
+`DVRTool.Core`, honoured by the GUI Add-NVR dialog, `dvrtool --sdk-port` and `dvrtool test`).
+Read `docs/device-ports.md` before adding or changing a port field: it records why Dahua's UDP
+port and Hikvision's Enhanced SDK port are deliberately absent, and that the recorder's SDK
+port drives no DVRTool feature at all (the Access tab's port is a separate field for separate
+hardware).
+
 **Access control:** Hikvision/OEM door panels are surfaced primarily in the GUI Access tab
 (`src/DVRTool.App`, `MainWindow.Access.cs`) for viewing rosters and importing cardholder names; the
 `access` CLI command group provides the same reads **plus** the gated writes (`grant`/`revoke`) for

@@ -6,6 +6,35 @@ public enum Vendor
     Dahua,
 }
 
+/// <summary>
+/// Factory port numbers, by vendor. Only the SDK port actually differs — both vendors ship
+/// HTTP on 80, HTTPS on 443 and RTSP on 554 — but it differs by a lot, and handing a Dahua
+/// recorder Hikvision's 8000 makes the connectivity check report healthy hardware as dead.
+/// </summary>
+public static class VendorPorts
+{
+    /// <summary>Hikvision's "Server Port": where HCNetSDK answers.</summary>
+    public const int HikvisionSdk = 8000;
+
+    /// <summary>
+    /// Dahua's "TCP Port": where DHNetSDK answers, and what SmartPSS and DSS connect on.
+    /// </summary>
+    /// <remarks>
+    /// Dahua publishes a second SDK port alongside it — "UDP Port", 37778 by default — for
+    /// the same SDK's datagram login mode and for broadcast device discovery. DVRTool drives
+    /// Dahua over HTTP CGI and RTSP and uses neither, so it is deliberately not carried; see
+    /// <c>docs/device-ports.md</c>.
+    /// </remarks>
+    public const int DahuaSdk = 37777;
+
+    /// <summary>The factory SDK port for <paramref name="vendor"/>.</summary>
+    public static int Sdk(Vendor vendor) => vendor switch
+    {
+        Vendor.Dahua => DahuaSdk,
+        _ => HikvisionSdk,
+    };
+}
+
 public enum StreamType
 {
     Main = 0,
@@ -30,16 +59,24 @@ public sealed record NvrConnection
     public int RtspPort { get; init; } = 554;
 
     /// <summary>
-    /// The vendor's private SDK port (Hikvision HCNetSDK, Dahua DHNetSDK) — 8000 out of
-    /// the box on both, but operators can and do change it from the device's own network
-    /// menu, so it is carried per system rather than assumed.
+    /// The vendor's private SDK port (Hikvision HCNetSDK, Dahua DHNetSDK). Operators can
+    /// and do change it from the device's own network menu, so it is carried per system
+    /// rather than assumed.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Nothing on the HTTP/RTSP paths reads this: it exists for the SDK transports, which
     /// are the only way to reach some features (see
     /// <see cref="AccessPanelConnection.SdkPort"/> for the same field on door panels).
+    /// </para>
+    /// <para>
+    /// The default here is <em>Hikvision's</em> — the vendors do not agree on this port, and
+    /// a record cannot pick for itself because it does not carry a vendor. Anything building
+    /// a Dahua connection must set this from <see cref="VendorPorts.Sdk"/>; leaving it at the
+    /// default points the port check at 8000, which means nothing on a Dahua recorder.
+    /// </para>
     /// </remarks>
-    public int SdkPort { get; init; } = 8000;
+    public int SdkPort { get; init; } = VendorPorts.HikvisionSdk;
 
     public required string Username { get; init; }
     public required string Password { get; init; }

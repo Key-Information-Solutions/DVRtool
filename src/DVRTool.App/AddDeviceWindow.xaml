@@ -1,7 +1,7 @@
 <Window x:Class="DVRTool.App.AddDeviceWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Add NVR" Height="520" Width="400"
+        Title="Add NVR" Height="560" Width="400"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Grid Margin="12">
         <Grid.ColumnDefinitions>
@@ -20,6 +20,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -27,7 +28,8 @@
         <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="0,3"/>
 
         <TextBlock Grid.Row="1" Grid.Column="0" Text="Vendor" VerticalAlignment="Center"/>
-        <ComboBox x:Name="VendorCombo" Grid.Row="1" Grid.Column="1" Margin="0,3" SelectedIndex="0">
+        <ComboBox x:Name="VendorCombo" Grid.Row="1" Grid.Column="1" Margin="0,3" SelectedIndex="0"
+                  SelectionChanged="OnVendorChanged">
             <ComboBoxItem Content="Hikvision / LTS"/>
             <ComboBoxItem Content="Dahua / Amcrest"/>
         </ComboBox>
@@ -41,32 +43,30 @@
         <TextBlock Grid.Row="4" Grid.Column="0" Text="RTSP port" VerticalAlignment="Center"/>
         <TextBox x:Name="RtspPortBox" Grid.Row="4" Grid.Column="1" Margin="0,3" Text="554"/>
 
-        <TextBlock Grid.Row="5" Grid.Column="0" Text="SDK port" VerticalAlignment="Center"/>
-        <TextBox x:Name="SdkPortBox" Grid.Row="5" Grid.Column="1" Margin="0,3" Text="8000">
-            <TextBox.ToolTip>
-                <TextBlock>
-                    Port for the vendor's private SDK (Hikvision HCNetSDK, Dahua DHNetSDK).<LineBreak/>
-                    8000 from the factory, but it is changeable from the recorder's own<LineBreak/>
-                    network menu — if it was moved there, set it here to match.
-                </TextBlock>
-            </TextBox.ToolTip>
-        </TextBox>
+        <!-- Label, default and hint are all rewritten by OnVendorChanged: the vendors put
+             this port in different places and call it different things. -->
+        <TextBlock x:Name="SdkPortLabel" Grid.Row="5" Grid.Column="0" Text="SDK port"
+                   VerticalAlignment="Center"/>
+        <TextBox x:Name="SdkPortBox" Grid.Row="5" Grid.Column="1" Margin="0,3" Text="8000"/>
 
-        <CheckBox x:Name="TlsCheck" Grid.Row="6" Grid.Column="1" Margin="0,3"
+        <TextBlock x:Name="SdkPortHint" Grid.Row="6" Grid.Column="1" Margin="0,0,0,4"
+                   TextWrapping="Wrap" FontStyle="Italic" Foreground="Gray"/>
+
+        <CheckBox x:Name="TlsCheck" Grid.Row="7" Grid.Column="1" Margin="0,3"
                   Content="Use HTTPS (cert pinned on first use)"
                   Checked="OnTlsChecked" Unchecked="OnTlsUnchecked"/>
 
-        <TextBlock Grid.Row="7" Grid.Column="0" Text="Username" VerticalAlignment="Center"/>
-        <TextBox x:Name="UserBox" Grid.Row="7" Grid.Column="1" Margin="0,3"/>
+        <TextBlock Grid.Row="8" Grid.Column="0" Text="Username" VerticalAlignment="Center"/>
+        <TextBox x:Name="UserBox" Grid.Row="8" Grid.Column="1" Margin="0,3"/>
 
-        <TextBlock Grid.Row="8" Grid.Column="0" Text="Password" VerticalAlignment="Center"/>
-        <PasswordBox x:Name="PassBox" Grid.Row="8" Grid.Column="1" Margin="0,3"/>
+        <TextBlock Grid.Row="9" Grid.Column="0" Text="Password" VerticalAlignment="Center"/>
+        <PasswordBox x:Name="PassBox" Grid.Row="9" Grid.Column="1" Margin="0,3"/>
 
-        <TextBlock x:Name="PasswordHint" Grid.Row="9" Grid.Column="1"
+        <TextBlock x:Name="PasswordHint" Grid.Row="10" Grid.Column="1"
                    Text="Leave blank to keep the current password."
                    FontStyle="Italic" Foreground="Gray" Visibility="Collapsed"/>
 
-        <StackPanel Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="2"
+        <StackPanel Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="2"
                     Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button x:Name="TestButton" Content="Test connection" Click="OnTest" Padding="10,4"/>
             <Button Content="Save" Click="OnSave" Margin="8,0,0,0" Padding="14,4" IsDefault="True"/>
@@ -74,7 +74,7 @@
         </StackPanel>
 
         <!-- Scrolls because four wrapped result lines can outgrow the fixed dialog. -->
-        <ScrollViewer Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,10,0,0"
+        <ScrollViewer Grid.Row="12" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,10,0,0"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel x:Name="TestResults"/>
         </ScrollViewer>

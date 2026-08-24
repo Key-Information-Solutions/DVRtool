@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -21,6 +22,7 @@ public partial class AddDeviceWindow : Window
     public AddDeviceWindow()
     {
         InitializeComponent();
+        ApplyVendorToSdkPort();
     }
 
     public AddDeviceWindow(SavedDevice device)
@@ -32,14 +34,65 @@ public partial class AddDeviceWindow : Window
         NameBox.Text = device.Name;
         VendorCombo.SelectedIndex = device.Vendor.Equals("dahua", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         HostBox.Text = device.Host;
-        // TLS before the ports: checking the box runs OnTlsChecked, which rewrites an
-        // HTTP port of 80 to 443. Prefilling the stored port afterwards lets it win.
+        // TLS and vendor before the ports: checking the box runs OnTlsChecked, which rewrites
+        // an HTTP port of 80 to 443, and picking the vendor runs OnVendorChanged, which can
+        // rewrite the SDK port. Prefilling the stored ports afterwards lets them win — this
+        // dialog must never quietly renumber a port an operator already saved.
         TlsCheck.IsChecked = device.UseTls;
         HttpPortBox.Text = device.HttpPort.ToString();
         RtspPortBox.Text = device.RtspPort.ToString();
         SdkPortBox.Text = device.SdkPort.ToString();
         UserBox.Text = device.Username;
         PasswordHint.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>The vendor the combo is currently on.</summary>
+    private Vendor SelectedVendor =>
+        VendorCombo.SelectedIndex == 1 ? Vendor.Dahua : Vendor.Hikvision;
+
+    private void OnVendorChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Fires while XAML is still applying SelectedIndex="0", before the rest of the dialog
+        // is built. The hint is the last of the three controls this touches to be declared, so
+        // it is the one worth testing. Nothing to paint yet — the add-mode constructor calls
+        // ApplyVendorToSdkPort itself once everything exists.
+        if (SdkPortHint is null)
+            return;
+        ApplyVendorToSdkPort();
+    }
+
+    /// <summary>
+    /// Retitles and re-defaults the SDK-port row for the selected vendor. The two vendors
+    /// disagree on this port by a wide margin — 8000 for Hikvision's HCNetSDK, 37777 for
+    /// Dahua's DHNetSDK — so a Dahua recorder left on the Hikvision default gets reported as
+    /// having a dead port by <b>Test connection</b> when nothing is wrong with it.
+    /// </summary>
+    private void ApplyVendorToSdkPort()
+    {
+        var vendor = SelectedVendor;
+        int mine = VendorPorts.Sdk(vendor);
+        int theirs = VendorPorts.Sdk(vendor == Vendor.Dahua ? Vendor.Hikvision : Vendor.Dahua);
+
+        // Only overwrite a box still holding the *other* vendor's factory number (or nothing
+        // at all). A port the operator read off the device is theirs to keep: flipping the
+        // vendor combo must not silently discard it.
+        string current = SdkPortBox.Text.Trim();
+        if (current.Length == 0 || current == theirs.ToString(CultureInfo.InvariantCulture))
+            SdkPortBox.Text = mine.ToString(CultureInfo.InvariantCulture);
+
+        // Name the port the way the device's own web UI names it, so an installer reading
+        // values off a recorder is matching labels rather than translating them. The hint
+        // says outright that no DVRTool feature dials this port, because the honest answer to
+        // "do I need to get this right?" is "only if the vendor's own software has to work".
+        (SdkPortLabel.Text, SdkPortHint.Text) = vendor == Vendor.Dahua
+            ? ("TCP port",
+               "Dahua's \"TCP Port\" (DHNetSDK) — 37777 from the factory. DVRTool drives Dahua " +
+               "over HTTP + RTSP and never dials it; Test connection just reports whether " +
+               "SmartPSS / DSS could reach it from here.")
+            : ("SDK port",
+               "Hikvision's \"Server Port\" (HCNetSDK) — 8000 from the factory. DVRTool's video " +
+               "paths never dial it; Test connection just reports whether iVMS-4200 / " +
+               "HikCentral could reach it from here.");
     }
 
     private SavedDevice? BuildDevice(out string? error)
@@ -62,7 +115,7 @@ public partial class AddDeviceWindow : Window
         var device = new SavedDevice
         {
             Name = NameBox.Text.Trim().Length > 0 ? NameBox.Text.Trim() : host,
-            Vendor = VendorCombo.SelectedIndex == 1 ? "dahua" : "hikvision",
+            Vendor = SelectedVendor == Vendor.Dahua ? "dahua" : "hikvision",
             Host = host,
             HttpPort = httpPort,
             RtspPort = rtspPort,
@@ -106,7 +159,13 @@ public partial class AddDeviceWindow : Window
         var conn = device.ToConnection();
         string webLabel = device.UseTls ? $"HTTPS {conn.HttpPort}" : $"HTTP {conn.HttpPort}";
         string rtspLabel = $"RTSP {conn.RtspPort}";
-        string sdkLabel = $"SDK {conn.SdkPort}";
+        // Named the way the device names it, matching the dialog's own row label above. Taken
+        // from the snapshot in `device`, not the live combo: the operator is free to keep
+        // editing while the probes run, and every line of this report has to describe the
+        // system that was actually tested.
+        string sdkLabel = device.VendorKind == Vendor.Dahua
+            ? $"TCP {conn.SdkPort}"
+            : $"SDK {conn.SdkPort}";
 
         TestResults.Children.Clear();
         var webRow = AddRow(webLabel);
@@ -122,7 +181,7 @@ public partial class AddDeviceWindow : Window
                 RenderWhenDone(webRow, webLabel, web),
                 RenderWhenDone(rtspRow, rtspLabel, rtsp),
                 RenderWhenDone(sdkRow, sdkLabel, sdk));
-            AddSummary(results);
+            AddSummary(results, device.VendorKind);
         }
         catch (OperationCanceledException)
         {
@@ -154,7 +213,7 @@ public partial class AddDeviceWindow : Window
     /// Spells out what a partial pass actually costs, because the failing port decides which
     /// feature breaks: web is fatal, RTSP kills playback and export, SDK kills only Access.
     /// </summary>
-    private void AddSummary(ProbeResult[] results)
+    private void AddSummary(ProbeResult[] results, Vendor vendor)
     {
         var worst = results.Max(r => r.Severity);
         if (worst == ProbeSeverity.Pass)
@@ -171,28 +230,36 @@ public partial class AddDeviceWindow : Window
 
         var notes = new List<string>();
         if (dead.Count > 0)
-            notes.Add("no answer on " + string.Join(" and ", dead.Select(PortName)) +
-                " — " + string.Join("; ", dead.Select(Consequence)));
+            notes.Add("no answer on " + string.Join(" and ", dead.Select(t => PortName(t, vendor))) +
+                " — " + string.Join("; ", dead.Select(t => Consequence(t, vendor))));
         if (iffy.Count > 0)
-            notes.Add(string.Join(" and ", iffy.Select(PortName)) +
+            notes.Add(string.Join(" and ", iffy.Select(t => PortName(t, vendor))) +
                 " answered but not as expected — the port is open; check the device side");
 
         ShowLine("Saving is still allowed. " + string.Join(". ", notes) + ".",
             worst == ProbeSeverity.Fail ? Brushes.Firebrick : Brushes.DarkGoldenrod, italic: true);
     }
 
-    private static string PortName(ProbeTarget target) => target switch
+    private static string PortName(ProbeTarget target, Vendor vendor) => target switch
     {
         ProbeTarget.Web => "the web port",
         ProbeTarget.RtspPort => "RTSP",
-        _ => "the SDK port",
+        _ => vendor == Vendor.Dahua ? "the TCP port" : "the SDK port",
     };
 
-    private static string Consequence(ProbeTarget target) => target switch
+    /// <summary>
+    /// What a failed port actually costs. The SDK row is the odd one out: no DVRTool feature
+    /// reaches an NVR over the vendor SDK — the Access tab talks to door panels, on its own
+    /// address list and its own port — so a dead one here is worth reporting without dressing
+    /// it up as a broken app.
+    /// </summary>
+    private static string Consequence(ProbeTarget target, Vendor vendor) => target switch
     {
         ProbeTarget.Web => "nothing works without it",
         ProbeTarget.RtspPort => "playback and export need it",
-        _ => "the Access tab needs it",
+        _ => "no DVRTool feature needs it, so this only means " +
+             (vendor == Vendor.Dahua ? "SmartPSS / DSS" : "iVMS-4200 / HikCentral") +
+             " cannot reach this recorder from here",
     };
 
     private TextBlock AddRow(string pending)

@@ -13,6 +13,7 @@ const string Usage = """
 
     Commands:
       info            Device model / serial / firmware
+      test            Probe the web, RTSP and SDK ports and say what each one costs
       channels        List channels
       users           List the accounts configured on the device
       access          Door-access panels (see: dvrtool access --help)
@@ -29,8 +30,9 @@ const string Usage = """
       --pass <password>            or DVR_PASS; omit both to be prompted (avoid the
                                    flag: it persists in shell history and audit logs)
       --rtsp-port <n>              default: 554
-      --sdk-port <n>               vendor SDK port, or DVR_SDK_PORT (default 8000 —
-                                   changeable from the recorder, so don't assume it)
+      --sdk-port <n>               vendor SDK port, or DVR_SDK_PORT (default 8000 on
+                                   Hikvision, 37777 on Dahua — changeable from the
+                                   recorder, so don't assume it)
       --tls                        HTTPS to the NVR (self-signed cert pinned on first use)
       --channel <n>                1-based display channel
       --start / --end              "yyyy-MM-dd HH:mm[:ss]" (NVR-local time)
@@ -97,6 +99,15 @@ try
     // are dispatched before any INvrClient is built.
     if (isAccess)
         return await AccessCommands.RunAsync(accessSubcommand, opts, cts.Token);
+
+    // `test` probes ports instead of driving a client, and ConnectivityProbe disposes every
+    // client its factory hands it — so it gets the connection plus a factory rather than the
+    // single shared client below, which the other commands own for the whole call.
+    if (command == "test")
+    {
+        var (testConn, testVendor) = BuildConnection(opts);
+        return await RunTestAsync(testConn, testVendor, cts.Token);
+    }
 
     // URL-only commands don't authenticate; only demand a password when it is
     // actually used (so `dvrtool live-url` never blocks on a prompt).
@@ -347,7 +358,91 @@ catch (HttpRequestException ex)
 
 // ----- helpers -----
 
+/// <summary>
+/// The CLI half of the desktop app's <b>Test connection</b>: the same
+/// <see cref="ConnectivityProbe"/> over the same three ports, so an installer on a phone SSH
+/// session gets the answer the dialog would have given.
+/// </summary>
+/// <remarks>
+/// Rows print in a fixed order even though the probes run concurrently — interleaved console
+/// output as each lands is harder to read than a stable table, and the slowest port is a
+/// 5-second timeout, not a wait worth optimising.
+/// <para>
+/// The exit code reports only what DVRTool needs: the web and RTSP ports. A dead SDK port
+/// exits 0, because nothing here dials it (see docs/device-ports.md) and a script gating a
+/// download on this command should not fail over a port no download touches.
+/// </para>
+/// </remarks>
+static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, CancellationToken ct)
+{
+    // Padded so the three verdicts line up under each other.
+    string webLabel = $"{(conn.UseTls ? "HTTPS" : "HTTP "),-5} {conn.HttpPort,-5}";
+    string rtspLabel = $"{"RTSP",-5} {conn.RtspPort,-5}";
+    // Named the way the vendor's own network page names it, matching the desktop dialog.
+    string sdkLabel = $"{(vendor == Vendor.Dahua ? "TCP" : "SDK"),-5} {conn.SdkPort,-5}";
+
+    var (web, rtsp, sdk) = ConnectivityProbe.StartAll(conn, () => ClientFor(conn, vendor), ct);
+
+    var results = new List<ProbeResult>();
+    foreach (var (label, probe) in new[] { (webLabel, web), (rtspLabel, rtsp), (sdkLabel, sdk) })
+    {
+        var result = await probe;
+        results.Add(result);
+        string glyph = result.Severity switch
+        {
+            ProbeSeverity.Pass => "ok  ",
+            ProbeSeverity.Caution => "warn",
+            _ => "FAIL",
+        };
+        Console.WriteLine($"{glyph}  {label}  {result.Detail} ({result.Elapsed.TotalSeconds:0.0}s)");
+    }
+
+    // Which port fell short decides which feature breaks, so name the consequence rather
+    // than leaving three lines for the reader to interpret.
+    var dead = results.Where(r => r.Severity == ProbeSeverity.Fail).Select(r => r.Target).ToList();
+    if (dead.Count == 0 && results.All(r => r.Severity == ProbeSeverity.Pass))
+    {
+        Console.WriteLine("All three ports reachable.");
+        return 0;
+    }
+
+    Console.WriteLine();
+    foreach (var target in dead)
+        Console.WriteLine(target switch
+        {
+            ProbeTarget.Web => "The web port is the one nothing works without — every command needs it.",
+            ProbeTarget.RtspPort => "RTSP is dead: live view, playback and export all need it.",
+            _ => "The vendor SDK port is dead. No DVRTool feature needs it — this only means " +
+                 (vendor == Vendor.Dahua ? "SmartPSS / DSS" : "iVMS-4200 / HikCentral") +
+                 " cannot reach this recorder from here.",
+        });
+    foreach (var result in results.Where(r => r.Severity == ProbeSeverity.Caution))
+        Console.WriteLine($"{result.Target}: answered, but not as expected — the port is open, " +
+            "so the fix is on the device rather than the firewall.");
+
+    // Only the ports DVRTool actually drives decide the exit code.
+    return dead.Any(t => t is ProbeTarget.Web or ProbeTarget.RtspPort) ? 1 : 0;
+}
+
 static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPassword = true)
+{
+    var (conn, vendor) = BuildConnection(opts, needsPassword);
+    return ClientFor(conn, vendor);
+}
+
+static INvrClient ClientFor(NvrConnection conn, Vendor vendor) => vendor switch
+{
+    Vendor.Dahua => new DahuaClient(conn),
+    _ => new HikvisionClient(conn),
+};
+
+/// <summary>
+/// Resolves the connection and its vendor without building a client, so a caller that needs
+/// several clients (the port probe disposes each one it opens) resolves the password — and
+/// any interactive prompt for it — exactly once.
+/// </summary>
+static (NvrConnection Conn, Vendor Vendor) BuildConnection(
+    Dictionary<string, string> opts, bool needsPassword = true)
 {
     string host = Require(opts, "host", "DVR_HOST");
     bool useTls = opts.ContainsKey("tls");
@@ -360,6 +455,18 @@ static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPasswor
     }
 
     string user = Require(opts, "user", "DVR_USER");
+
+    // Vendor is resolved before the connection, not after, because the SDK port's default
+    // depends on it: 8000 is Hikvision's and 37777 is Dahua's. Defaulting a Dahua recorder
+    // to 8000 would make `test` call a perfectly healthy unit's SDK port dead.
+    string vendorName = opts.GetValueOrDefault("vendor", "hikvision").ToLowerInvariant();
+    Vendor vendor = vendorName switch
+    {
+        "hikvision" or "hik" => Vendor.Hikvision,
+        "dahua" or "amcrest" => Vendor.Dahua,
+        _ => throw new ArgumentException($"unknown vendor '{vendorName}' (use hikvision or dahua)"),
+    };
+
     var conn = new NvrConnection
     {
         Host = host,
@@ -370,19 +477,13 @@ static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPasswor
             ? ParsePort(sp, "--sdk-port")
             : Environment.GetEnvironmentVariable("DVR_SDK_PORT") is { Length: > 0 } envSdk
                 ? ParsePort(envSdk, "DVR_SDK_PORT")
-                : 8000,
+                : VendorPorts.Sdk(vendor),
         Username = user,
         Password = GetPassword(opts, user, host, needsPassword),
         UseTls = useTls,
     };
 
-    string vendor = opts.GetValueOrDefault("vendor", "hikvision").ToLowerInvariant();
-    return vendor switch
-    {
-        "hikvision" or "hik" => new HikvisionClient(conn),
-        "dahua" or "amcrest" => new DahuaClient(conn),
-        _ => throw new ArgumentException($"unknown vendor '{vendor}' (use hikvision or dahua)"),
-    };
+    return (conn, vendor);
 }
 
 static string Require(Dictionary<string, string> opts, string flag, string envVar)
