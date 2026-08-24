@@ -124,6 +124,10 @@ public partial class MainWindow : Window
             catch { /* canceled/failed; the Access tab already reported it */ }
         }
 
+        // Before the players: an SDK preview is the source feeding one of them, and its
+        // teardown blocks on the SDK's own receive thread.
+        await DisposeSdkLiveAsync();
+
         // Detach the views first so VideoView never renders against a disposed
         // player, then run the blocking Stop/Dispose chain off the UI thread —
         // libvlc 3.x Stop blocks (and can hang while a connect is pending).
@@ -208,6 +212,12 @@ public partial class MainWindow : Window
         int gen = ++_selectionGen;
         ChannelList.ItemsSource = null;
         ResultsGrid.ItemsSource = null;
+
+        // An SDK preview holds one of the old recorder's stream slots and a login on it.
+        // Neither belongs to the device the operator just picked.
+        QueuePlayerStop(_livePlayer);
+        StopSdkLive();
+        UpdateLiveTransportLabels(DeviceList.SelectedItem as SavedDevice);
 
         _clientCts?.Cancel();
         _clientCts?.Dispose();
@@ -350,29 +360,7 @@ public partial class MainWindow : Window
         ResultsGrid.ItemsSource = null;
     }
 
-    // ----- live -----
-
-    private void OnLivePlay(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || _currentDevice is null || _libVlc is null || _livePlayer is null)
-        {
-            SetStatus("Select a device and channel first.");
-            return;
-        }
-        if (ChannelList.SelectedItem is not ChannelItem item)
-        {
-            SetStatus("Select a channel first.");
-            return;
-        }
-
-        var stream = LiveStreamCombo.SelectedIndex == 1 ? StreamType.Sub : StreamType.Main;
-        var uri = _client.GetLiveUri(item.Channel.Id, stream);
-        using var media = CreateRtspMedia(uri);
-        _livePlayer.Play(media);
-        SetStatus($"Live: channel {item.Channel.Id} ({stream}).");
-    }
-
-    private void OnLiveStop(object sender, RoutedEventArgs e) => QueuePlayerStop(_livePlayer);
+    // ----- live: see MainWindow.Live.cs -----
 
     // ----- playback / export -----
 

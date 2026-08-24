@@ -4,6 +4,7 @@ using DVRTool.Cli;
 using DVRTool.Core;
 using DVRTool.Vendors.Dahua;
 using DVRTool.Vendors.Hikvision;
+using DVRTool.Vendors.HikvisionSdk;
 
 const string Usage = """
     dvrtool — multi-vendor NVR footage tool (Key Information Solutions)
@@ -19,6 +20,8 @@ const string Usage = """
       access          Door-access panels (see: dvrtool access --help)
       search          List recordings for a channel in a window
       download        Export footage for a time span to a file
+      live            Record live video over the SDK port (Hikvision) — the transport
+                      that works when RTSP is closed
       live-url        Print the RTSP live URI (paste into VLC)
       playback-url    Print the RTSP playback-by-time URI
 
@@ -41,6 +44,10 @@ const string Usage = """
       --channel <n>                1-based display channel
       --start / --end              "yyyy-MM-dd HH:mm[:ss]" (NVR-local time)
       --stream <main|sub>          default: main
+      --seconds <n>                how long `live` records (default 10, max 3600)
+      --sdk-dir <path>             folder holding HCNetSDK.dll, or DVR_SDK_DIR — only
+                                   `live` needs it (default: the iVMS-4200 /
+                                   HikCentral install)
       --out <file>                 download target (default: auto-named after the
                                    container the device actually sent)
       --remux [mp4|mkv]            stream-copy the download into a real container via
@@ -60,6 +67,11 @@ const string Usage = """
     just as happily against the wrong one — so a mistyped or re-forwarded port is
     caught here rather than in an export that holds the wrong site's footage. Pins
     live in %APPDATA%\DVRTool\identities.json.
+
+    `live` does not use the web or RTSP port at all: Hikvision's private protocol
+    carries login and media together over the SDK port, which is how iVMS-4200 shows
+    video on sites where only 8000 is forwarded. Hikvision/OEM only, Windows x64 only,
+    and it needs HCNetSDK.dll — see docs/hikvision-sdk-live.md.
 
     Door-access panels are a separate device class with their own credentials
     (OCB_PANELS / OCB_USER / OCB_PASS) — run `dvrtool access --help`.
@@ -119,6 +131,15 @@ try
         var (testConn, testVendor) = BuildConnection(opts);
         return await RunTestAsync(testConn, testVendor, opts.GetValueOrDefault("expect-serial"),
             cts.Token);
+    }
+
+    // `live` speaks the SDK protocol, not HTTP, and verifies identity from the SDK
+    // login itself — so it builds no INvrClient and skips VerifyIdentityAsync, whose
+    // check it performs for itself against the same pin.
+    if (command == "live")
+    {
+        var (liveConn, liveVendor) = BuildConnection(opts);
+        return await RunLiveAsync(liveConn, liveVendor, opts, cts.Token);
     }
 
     // URL-only commands don't authenticate; only demand a password when it is
@@ -389,6 +410,226 @@ catch (HttpRequestException ex)
 // ----- helpers -----
 
 /// <summary>
+/// `dvrtool live` — records live video over the vendor SDK port instead of RTSP.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This exists because RTSP is the port sites do not forward. Across our installed base 554
+/// is reachable at a handful of recorders and the SDK port at nearly all of them, so on most
+/// systems this is not the fallback transport — it is the only one that works remotely
+/// without a router change. Hikvision's private protocol multiplexes the media back over the
+/// same TCP session the login authenticated on, which is why one open port is enough.
+/// </para>
+/// <para>
+/// It writes a file rather than streaming to stdout on purpose: the SDK's preview plugins
+/// print their own banners to stdout as they initialize, so a piped stream would arrive with
+/// "Load HCPreview.dll success!" spliced into the video.
+/// </para>
+/// </remarks>
+static async Task<int> RunLiveAsync(NvrConnection conn, Vendor vendor,
+    Dictionary<string, string> opts, CancellationToken ct)
+{
+    if (vendor == Vendor.Dahua)
+    {
+        Console.Error.WriteLine(
+            "error: `live` is Hikvision-only. Dahua's equivalent is CLIENT_RealPlayEx in " +
+            "dhnetsdk.dll on port 37777, which DVRTool does not link — see " +
+            "docs/device-ports.md. On Dahua, use `dvrtool live-url` and RTSP.");
+        return 2;
+    }
+
+    // Checked here rather than left to SdkRuntime so the message names the command, and so
+    // the platform analyzer can see that everything below is Windows-only.
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine(
+            "error: `live` needs Hikvision's HCNetSDK, which is Windows x64 only. Every " +
+            "other command in this tool is cross-platform; this one is the exception.");
+        return 2;
+    }
+
+    int channel = RequireChannel(opts);
+    var stream = ParseStream(opts);
+
+    int seconds = 10;
+    if (opts.TryGetValue("seconds", out var secondsText))
+    {
+        if (!int.TryParse(secondsText, NumberStyles.None, CultureInfo.InvariantCulture,
+                out seconds) || seconds is < 1 or > 3600)
+            throw new ArgumentException("--seconds must be a whole number of seconds, 1-3600");
+    }
+
+    bool force = opts.ContainsKey("force");
+    string? requestedOut = opts.GetValueOrDefault("out") is { Length: > 0 } o ? o : null;
+    RemuxContainer? container = opts.TryGetValue("remux", out var remuxValue)
+        ? DownloadPaths.ResolveContainer(remuxValue, requestedOut)
+        : null;
+    var plan = DownloadPaths.Plan(requestedOut,
+        $"live_ch{channel}_{DateTime.Now:yyyyMMdd_HHmmss}", container);
+
+    // Before the recording, not after it.
+    DownloadPaths.EnsureNotOverwriting(plan.FinalPath, force, DownloadPaths.CliOverwriteAdvice);
+
+    if (opts.TryGetValue("expect-serial", out var expectRaw) && expectRaw.Length == 0)
+        throw new ArgumentException("--expect-serial needs the serial to expect");
+    string? expect = expectRaw is { Length: > 0 } ? expectRaw : null;
+
+    if (opts.ContainsKey("trust-new-device"))
+    {
+        Console.Error.WriteLine(
+            "error: --trust-new-device is not accepted here. Re-pinning a replaced recorder " +
+            "is a deliberate act and belongs on a command whose job is identity — run " +
+            "`dvrtool info --trust-new-device` first, then `live`.");
+        return 2;
+    }
+
+    string? sdkDir = opts.GetValueOrDefault("sdk-dir") is { Length: > 0 } d
+        ? d
+        : Environment.GetEnvironmentVariable("DVR_SDK_DIR");
+
+    using var session = HikvisionSdkSession.Open(conn, expect,
+        expect is null ? null : "--expect-serial", sdkDir,
+        onIdentityChecked: check => Console.Error.WriteLine(
+            (check.Verdict == IdentityVerdict.Unverifiable ? "warning: " : "note: ") +
+            check.Message +
+            (check.Verdict == IdentityVerdict.FirstContact
+                ? " It was the SDK port that answered, not the web port this pin is named for."
+                : "")));
+
+    Console.WriteLine($"Serial:    {session.DeviceInfo.SerialNumber}");
+    Console.WriteLine($"Channels:  {session.Channels.Describe()}");
+
+    using var live = session.StartLive(channel, stream);
+    Console.WriteLine(
+        $"Live:      channel {live.DisplayChannel} -> device channel {live.SdkChannel}, " +
+        $"{stream.ToString().ToLowerInvariant()} stream, {seconds}s");
+
+    // The device can accept a preview request and then send nothing — an offline camera, or
+    // a channel number the firmware tolerates but has no video for. That silence has to
+    // become a finite, explained failure rather than a recording of zero bytes.
+    if (!await live.Media.WaitForDataAsync(TimeSpan.FromSeconds(15), ct))
+    {
+        Console.Error.WriteLine(
+            $"error: the device accepted the request but sent no video for channel {channel} " +
+            "within 15s. An offline camera is the usual cause — check `dvrtool channels`.");
+        return 1;
+    }
+
+    long written = await WriteLiveAsync(live.Media, plan.DownloadPath,
+        TimeSpan.FromSeconds(seconds), ct);
+
+    if (written == 0)
+    {
+        Console.Error.WriteLine("error: the stream ended before any video was written.");
+        TryDelete(plan.DownloadPath);
+        return 1;
+    }
+
+    Console.WriteLine($"  {written / 1048576.0:F1} MB received.");
+    if (live.Media.BytesDropped > 0)
+        Console.Error.WriteLine(
+            $"warning: {live.Media.BytesDropped / 1048576.0:F1} MB was dropped because the " +
+            "writer could not keep up, so the recording has gaps.");
+    if (live.Media.Stalled)
+        Console.Error.WriteLine(
+            "warning: the stream went quiet before the time was up, so the recording is short.");
+
+    if (plan.Container is RemuxContainer target)
+    {
+        Console.WriteLine($"Remuxing -> {plan.FinalPath} …");
+        var remux = await Remux.RemuxAsync(plan.DownloadPath, plan.FinalPath, target, force, ct);
+        if (!remux.Success)
+        {
+            Console.Error.WriteLine(remux.RefusedOverwrite
+                ? $"error: {remux.Output}"
+                : $"  ffmpeg failed:\n{remux.Output}");
+            Console.Error.WriteLine(
+                $"  the raw stream is kept at {plan.DownloadPath} — VLC plays it as-is.");
+            return remux.RefusedOverwrite ? 2 : 1;
+        }
+        TryDelete(plan.DownloadPath);
+        Console.WriteLine(
+            $"  {new FileInfo(plan.FinalPath).Length / 1048576.0:F1} MB — saved {plan.FinalPath}");
+        if (DownloadPaths.ContainerContradictsName(requestedOut, target))
+            Console.Error.WriteLine(
+                "warning: the remux wrote " +
+                $"{ContainerSniffer.DisplayName(DownloadPaths.MediaContainerFor(target))} data " +
+                $"into a file you named {Path.GetExtension(plan.FinalPath)} — most players " +
+                "trust the extension and will refuse it. Rename it, or give --out a name " +
+                "ending .mp4 or .mkv.");
+        return 0;
+    }
+
+    // No remux: name the file after what the SDK actually delivered. The callback stream is
+    // an MPEG program stream, but that is this firmware's behavior rather than a promise, so
+    // the bytes decide — exactly as they do for a download.
+    var sniffed = ContainerSniffer.SniffFile(plan.DownloadPath);
+    string finalPath = plan.DownloadPath;
+    if (requestedOut is null)
+    {
+        finalPath += ContainerSniffer.ExtensionFor(sniffed) ?? ".bin";
+        if (!force && File.Exists(finalPath))
+        {
+            Console.Error.WriteLine($"error: {DownloadPaths.OverwriteRefusalMessage(finalPath)} " +
+                DownloadPaths.CliOverwriteAdvice);
+            Console.Error.WriteLine($"  this recording is kept at {plan.DownloadPath}.");
+            return 2;
+        }
+        File.Move(plan.DownloadPath, finalPath, overwrite: force);
+    }
+    Console.WriteLine($"  saved {finalPath}");
+    if (ContainerSniffer.ExtensionContradicts(finalPath, sniffed))
+        Console.Error.WriteLine(
+            $"warning: that file holds {ContainerSniffer.DisplayName(sniffed)} data, not " +
+            $"{Path.GetExtension(finalPath)} — most players will refuse it. Re-run with " +
+            "--remux to get a real container.");
+    else if (sniffed is MediaContainer.MpegProgramStream)
+        Console.WriteLine(
+            $"  ({ContainerSniffer.DisplayName(sniffed)} straight off the SDK; pass --remux " +
+            "for a file Windows plays by default)");
+    else if (sniffed is MediaContainer.Unknown)
+        Console.WriteLine("  (unrecognized container — try --remux, or open it in VLC)");
+    return 0;
+}
+
+/// <summary>
+/// Copies the live stream to disk for <paramref name="duration"/>, reporting as it goes.
+/// </summary>
+/// <remarks>
+/// The deadline is checked between reads rather than imposed on them: a read on a healthy
+/// live stream returns as fast as the video arrives, which is real time by definition. A
+/// stream that goes silent is bounded by <see cref="SdkMediaStream.StallTimeout"/>, which
+/// ends the read with 0 instead of hanging.
+/// </remarks>
+static async Task<long> WriteLiveAsync(SdkMediaStream media, string path, TimeSpan duration,
+    CancellationToken ct)
+{
+    var deadline = DateTime.UtcNow + duration;
+    long total = 0;
+    long lastShown = 0;
+    var buffer = new byte[64 * 1024];
+
+    await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+    while (DateTime.UtcNow < deadline)
+    {
+        ct.ThrowIfCancellationRequested();
+        int read = media.Read(buffer, 0, buffer.Length);
+        if (read == 0)
+            break; // completed, or quiet for longer than the stall timeout
+        await file.WriteAsync(buffer.AsMemory(0, read), ct);
+        total += read;
+        if (total - lastShown >= 1_000_000)
+        {
+            lastShown = total;
+            Console.Write($"\r  {total / 1048576.0:F1} MB");
+        }
+    }
+    if (lastShown > 0)
+        Console.Write("\r");
+    return total;
+}
+
+/// <summary>
 /// The CLI half of the desktop app's <b>Test connection</b>: the same
 /// <see cref="ConnectivityProbe"/> over the same three ports, so an installer on a phone SSH
 /// session gets the answer the dialog would have given.
@@ -398,11 +639,11 @@ catch (HttpRequestException ex)
 /// output as each lands is harder to read than a stable table, and the slowest port is a
 /// 5-second timeout, not a wait worth optimising.
 /// <para>
-/// The exit code reports only what DVRTool needs: the web and RTSP ports. A dead SDK port
-/// exits 0, because nothing here dials it (see docs/device-ports.md) and a script gating a
-/// download on this command should not fail over a port no download touches. The one
-/// non-port verdict — the web port answering as a <em>different</em> device — exits 2, since
-/// no firewall rule fixes it.
+/// The exit code reports only what an export needs: the web and RTSP ports. A dead SDK port
+/// still exits 0 even though <c>dvrtool live</c> now dials it on Hikvision — a script gating
+/// a download on this command should not fail over a port no download touches — but the
+/// consequence line no longer says nothing needs it. The one non-port verdict — the web port
+/// answering as a <em>different</em> device — exits 2, since no firewall rule fixes it.
 /// </para>
 /// </remarks>
 static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? expectSerial,
@@ -459,14 +700,31 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? e
         Console.WriteLine(target switch
         {
             ProbeTarget.Web => "The web port is the one nothing works without — every command needs it.",
+            ProbeTarget.RtspPort when vendor == Vendor.Hikvision =>
+                "RTSP is dead: RTSP live view and playback-by-time need it. Live view has a " +
+                $"second route on Hikvision — `dvrtool live` streams over the SDK port " +
+                $"({conn.SdkPort}) instead, so the SDK row above is the one to read next.",
             ProbeTarget.RtspPort => "RTSP is dead: live view, playback and export all need it.",
-            _ => "The vendor SDK port is dead. No DVRTool feature needs it — this only means " +
-                 (vendor == Vendor.Dahua ? "SmartPSS / DSS" : "iVMS-4200 / HikCentral") +
-                 " cannot reach this recorder from here.",
+            _ when vendor == Vendor.Hikvision =>
+                "The SDK port is dead. That costs SDK live view — `dvrtool live` and the " +
+                "desktop app's SDK transport, the route that works when RTSP is closed — and " +
+                "means iVMS-4200 / HikCentral cannot reach this recorder from here either.",
+            _ => "The vendor SDK port is dead. No DVRTool feature needs it on Dahua — this " +
+                 "only means SmartPSS / DSS cannot reach this recorder from here.",
         });
     foreach (var result in results.Where(r => r.Severity == ProbeSeverity.Caution))
         Console.WriteLine($"{result.Target}: answered, but not as expected — the port is open, " +
             "so the fix is on the device rather than the firewall.");
+
+    // The common shape of a remote site: nobody forwarded 554, everybody forwarded the SDK
+    // port for iVMS. Worth saying, because it turns a "live view is broken here" reading
+    // into a working command.
+    if (vendor == Vendor.Hikvision &&
+        dead.Contains(ProbeTarget.RtspPort) &&
+        results.Any(r => r.Target == ProbeTarget.SdkPort && r.Severity == ProbeSeverity.Pass))
+        Console.WriteLine(
+            $"Live view still works here: `dvrtool live --channel N` goes over {conn.SdkPort}, " +
+            "and the desktop app's Live tab has the same transport in its dropdown.");
 
     // Only the ports DVRTool actually drives decide the exit code.
     return dead.Any(t => t is ProbeTarget.Web or ProbeTarget.RtspPort) ? 1 : 0;
@@ -757,7 +1015,7 @@ static void LoadDotEnv(string? explicitPath)
     // inject arbitrary environment variables (inherited by the ffmpeg child).
     string[] allowed =
     [
-        "DVR_HOST", "DVR_USER", "DVR_PASS", "DVR_SDK_PORT",
+        "DVR_HOST", "DVR_USER", "DVR_PASS", "DVR_SDK_PORT", "DVR_SDK_DIR",
         // Door-access panels (see AccessCommands).
         "OCB_PANELS", "OCB_USER", "OCB_PASS", "OCB_SDK_PORT", "OCB_SDK_DIR",
     ];

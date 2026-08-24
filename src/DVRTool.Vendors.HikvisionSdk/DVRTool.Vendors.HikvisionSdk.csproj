@@ -11,7 +11,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DVRTool.Core\DVRTool.Core.csproj" />
-    <ProjectReference Include="..\DVRTool.Vendors.HikvisionSdk\DVRTool.Vendors.HikvisionSdk.csproj" />
   </ItemGroup>
 
   <ItemGroup>

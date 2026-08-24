@@ -98,18 +98,18 @@ public partial class AddDeviceWindow : Window
             SdkPortBox.Text = mine.ToString(CultureInfo.InvariantCulture);
 
         // Name the port the way the device's own web UI names it, so an installer reading
-        // values off a recorder is matching labels rather than translating them. The hint
-        // says outright that no DVRTool feature dials this port, because the honest answer to
-        // "do I need to get this right?" is "only if the vendor's own software has to work".
+        // values off a recorder is matching labels rather than translating them. The two
+        // hints differ on how much the number matters, because the answer differs: on
+        // Hikvision the Live tab streams over it, on Dahua nothing in DVRTool dials it.
         (SdkPortLabel.Text, SdkPortHint.Text) = vendor == Vendor.Dahua
             ? ("TCP port",
                "Dahua's \"TCP Port\" (DHNetSDK) — 37777 from the factory. DVRTool drives Dahua " +
                "over HTTP + RTSP and never dials it; Test connection just reports whether " +
                "SmartPSS / DSS could reach it from here.")
             : ("SDK port",
-               "Hikvision's \"Server Port\" (HCNetSDK) — 8000 from the factory. DVRTool's video " +
-               "paths never dial it; Test connection just reports whether iVMS-4200 / " +
-               "HikCentral could reach it from here.");
+               "Hikvision's \"Server Port\" (HCNetSDK) — 8000 from the factory. The Live tab's " +
+               "SDK transport streams over it, which is the route that works when RTSP is " +
+               "closed — so on Hikvision this one is worth getting right.");
     }
 
     private SavedDevice? BuildDevice(out string? error)
@@ -280,7 +280,8 @@ public partial class AddDeviceWindow : Window
 
     /// <summary>
     /// Spells out what a partial pass actually costs, because the failing port decides which
-    /// feature breaks: web is fatal, RTSP kills playback and export, SDK kills only Access.
+    /// feature breaks: web is fatal, RTSP kills playback-by-time, and on Hikvision the SDK
+    /// port kills the Live tab's other transport.
     /// </summary>
     private void AddSummary(ProbeResult[] results, Vendor vendor)
     {
@@ -317,18 +318,23 @@ public partial class AddDeviceWindow : Window
     };
 
     /// <summary>
-    /// What a failed port actually costs. The SDK row is the odd one out: no DVRTool feature
-    /// reaches an NVR over the vendor SDK — the Access tab talks to door panels, on its own
-    /// address list and its own port — so a dead one here is worth reporting without dressing
-    /// it up as a broken app.
+    /// What a failed port actually costs. The SDK row is the one that differs by vendor: on
+    /// Hikvision the Live tab can stream over it, and does so on the many sites that never
+    /// forwarded RTSP; on Dahua nothing in DVRTool dials it, and the Access tab is not the
+    /// answer either — that talks to door panels, on its own address list and its own port.
     /// </summary>
     private static string Consequence(ProbeTarget target, Vendor vendor) => target switch
     {
         ProbeTarget.Web => "nothing works without it",
+        ProbeTarget.RtspPort when vendor == Vendor.Hikvision =>
+            "playback and export need it, and so does RTSP live view — but the Live tab's " +
+            "SDK transport does not",
         ProbeTarget.RtspPort => "playback and export need it",
-        _ => "no DVRTool feature needs it, so this only means " +
-             (vendor == Vendor.Dahua ? "SmartPSS / DSS" : "iVMS-4200 / HikCentral") +
-             " cannot reach this recorder from here",
+        _ when vendor == Vendor.Hikvision =>
+            "the Live tab's SDK transport needs it — the one that works when RTSP is closed — " +
+            "and iVMS-4200 / HikCentral cannot reach this recorder from here either",
+        _ => "no DVRTool feature needs it on Dahua, so this only means SmartPSS / DSS cannot " +
+             "reach this recorder from here",
     };
 
     private TextBlock AddRow(string pending)

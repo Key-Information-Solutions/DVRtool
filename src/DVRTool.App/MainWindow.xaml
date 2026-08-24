@@ -45,6 +45,25 @@
                                 <ComboBoxItem Content="Main"/>
                                 <ComboBoxItem Content="Sub"/>
                             </ComboBox>
+                            <TextBlock Text=" over " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="LiveTransportCombo" Width="130" SelectedIndex="0">
+                                <ComboBoxItem x:Name="LiveTransportRtsp" Content="RTSP"/>
+                                <ComboBoxItem x:Name="LiveTransportSdk" Content="SDK"/>
+                                <ComboBox.ToolTip>
+                                    <TextBlock>
+                                        Which port the video comes over.<LineBreak/>
+                                        <LineBreak/>
+                                        <Bold>RTSP</Bold> is the standard route, and needs the RTSP port forwarded.<LineBreak/>
+                                        Most sites do not forward it.<LineBreak/>
+                                        <LineBreak/>
+                                        <Bold>SDK</Bold> is Hikvision's private protocol, which carries the video back<LineBreak/>
+                                        over the same port it logs in on — so it works wherever iVMS-4200<LineBreak/>
+                                        works, with nothing forwarded but the SDK port. Hikvision only,<LineBreak/>
+                                        and it needs HCNetSDK.dll (iVMS-4200 or HikCentral installs it).<LineBreak/>
+                                        Each viewer uses one of the recorder's stream slots.
+                                    </TextBlock>
+                                </ComboBox.ToolTip>
+                            </ComboBox>
                             <Button Content="▶ Play" Click="OnLivePlay" Margin="8,0,0,0"/>
                             <Button Content="⏹ Stop" Click="OnLiveStop"/>
                         </ToolBar>

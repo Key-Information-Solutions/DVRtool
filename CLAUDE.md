@@ -8,9 +8,23 @@ CLI (`src/DVRTool.Cli`) as its automation/scripting surface; both front ends rid
 vendor SDK port is 8000 on Hikvision and **37777** on Dahua (`VendorPorts.Sdk` in
 `DVRTool.Core`, honoured by the GUI Add-NVR dialog, `dvrtool --sdk-port` and `dvrtool test`).
 Read `docs/device-ports.md` before adding or changing a port field: it records why Dahua's UDP
-port and Hikvision's Enhanced SDK port are deliberately absent, and that the recorder's SDK
-port drives no DVRTool feature at all (the Access tab's port is a separate field for separate
-hardware).
+port and Hikvision's Enhanced SDK port are deliberately absent, and which of the three ports
+each feature actually needs. Note the recorder's SDK port is **load-bearing on Hikvision**
+(live video, below) and pure recon on Dahua; the Access tab's port is a third field again,
+for separate hardware.
+
+**SDK live video:** Hikvision live view does not need RTSP. `NET_DVR_RealPlay_V40` with
+`dwLinkMode = 0` brings the media back over the same SDK-port session the login authenticated
+on, which across our fleet is the difference between live view working at 3 sites and at 14
+(`src/DVRTool.Vendors.HikvisionSdk` — `HikvisionSdkSession`, the GUI Live tab's transport
+dropdown, and `dvrtool live`). The HTTP alternative was probed on all 17 recorders and
+answered 403 on every one, so do not design around `httpPreview`. Read
+`docs/hikvision-sdk-live.md` before touching it — notably: an NVR's **display channel 1 is
+device channel 33** and getting it wrong shows no error at all (`SdkChannelMap` reads the
+mapping off the login response); the data callback runs on an SDK thread that must never be
+blocked, so `SdkMediaStream` drops the oldest bytes rather than applying back-pressure; and
+the SDK login is verified against the **web port's** identity pin, which works only because
+the SDK's serial is byte-identical to ISAPI's.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs
@@ -28,8 +42,8 @@ the rest" handlers do not swallow it.
 **Access control:** Hikvision/OEM door panels are surfaced primarily in the GUI Access tab
 (`src/DVRTool.App`, `MainWindow.Access.cs`) for viewing rosters and importing cardholder names; the
 `access` CLI command group provides the same reads **plus** the gated writes (`grant`/`revoke`) for
-automation. Both go through `src/DVRTool.Vendors.HikvisionAccess` (HCNetSDK P/Invoke over the
-SDK port, 8000 by default). Reads and writes are both live-verified against Site A's
+automation. Both go through `src/DVRTool.Vendors.HikvisionAccess`, which rides the shared
+HCNetSDK P/Invoke surface in `src/DVRTool.Vendors.HikvisionSdk` (SDK port, 8000 by default). Reads and writes are both live-verified against Site A's
 three OCB panels (writes via an approved canary round trip on a throwaway fob, rolled back
 clean; the GUI tab stays read-only toward the panels).
 Read `docs/hikvision-access-control-findings.md` before touching it — notably: these panels store **no

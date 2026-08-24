@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 using DVRTool.Core;
+using DVRTool.Vendors.HikvisionSdk;
 
 namespace DVRTool.Vendors.HikvisionAccess;
 

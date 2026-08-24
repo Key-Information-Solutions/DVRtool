@@ -5,7 +5,9 @@
     <Project Path="src/DVRTool.Core/DVRTool.Core.csproj" />
     <Project Path="src/DVRTool.Vendors.Dahua/DVRTool.Vendors.Dahua.csproj" />
     <Project Path="src/DVRTool.Vendors.Hikvision/DVRTool.Vendors.Hikvision.csproj" />
+    <Project Path="src/DVRTool.Vendors.HikvisionAccess/DVRTool.Vendors.HikvisionAccess.csproj" />
     <Project Path="src/DVRTool.Vendors.HikvisionIvms/DVRTool.Vendors.HikvisionIvms.csproj" />
+    <Project Path="src/DVRTool.Vendors.HikvisionSdk/DVRTool.Vendors.HikvisionSdk.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DVRTool.Tests/DVRTool.Tests.csproj" />

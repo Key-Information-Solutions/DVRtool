@@ -14,6 +14,7 @@ door-access writes.
 |---|---|---|
 | Hikvision (incl. LT Security OEM) | ISAPI over HTTP (digest) + RTSP | In progress — first target |
 | Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Driver written, needs live verification |
+| Hikvision live video without RTSP | HCNetSDK `RealPlay_V40` over the SDK port (P/Invoke) | Live-verified on a DS-7716NI |
 | Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over the SDK port (P/Invoke) | Reads and writes live-verified |
 | DW Spectrum | Nx REST `/media/` | Planned |
 | UniFi Protect | Private `/api/video/export` | Planned |
@@ -29,7 +30,10 @@ door-access writes.
   cardholder identity map
 - `src/DVRTool.Vendors.Hikvision` — ISAPI driver (search / download / live + playback RTSP URIs)
 - `src/DVRTool.Vendors.Dahua` — CGI driver (`mediaFileFind` / `loadfile` / RTSP by time)
-- `src/DVRTool.Vendors.HikvisionAccess` — door-panel driver (Hikvision SDK P/Invoke; no HTTP)
+- `src/DVRTool.Vendors.HikvisionSdk` — every HCNetSDK P/Invoke, the reference-counted SDK
+  runtime, and SDK live video (`RealPlay_V40` over the SDK port, for sites with no RTSP)
+- `src/DVRTool.Vendors.HikvisionAccess` — door-panel driver, riding the SDK project above
+  (no HTTP: these controllers run no web server)
 - `src/DVRTool.Vendors.HikvisionIvms` — one-way iVMS → DVRTool name-enrichment reader (SQLCipher)
 - `tests/DVRTool.Tests` — unit tests against canned NVR responses
 
@@ -56,12 +60,14 @@ but only if the box still holds the other vendor's factory value, so a port read
 recorder is never silently renumbered. Either way it is changeable from the recorder, so it
 is recorded per NVR rather than assumed.
 
-No DVRTool feature actually dials that port on a recorder; the hint under the box says so.
-It is there because the port check answers a question installers ask anyway — whether
-iVMS-4200 / SmartPSS could reach this box from here. (The Access tab's SDK port is a
-different field for different hardware: door panels, on their own address list.) See
-[docs/device-ports.md](docs/device-ports.md) for the full per-vendor matrix, including why
-Dahua's UDP port and Hikvision's Enhanced SDK port are deliberately absent.
+On **Hikvision** that port is load-bearing: the Live tab can stream over it, which is the
+route that works when RTSP is closed — so getting it right matters. On **Dahua** nothing in
+DVRTool dials it, and the port check is pure recon: whether SmartPSS / DSS could reach the
+box from here. The hint under the box says which of the two you are looking at. (The Access
+tab's SDK port is a third thing again — a different field for different hardware: door
+panels, on their own address list.) See [docs/device-ports.md](docs/device-ports.md) for the
+full per-vendor matrix, including why Dahua's UDP port and Hikvision's Enhanced SDK port are
+deliberately absent.
 
 **Test connection** checks all three ports at once, one line each, filled in as they
 answer:
@@ -84,8 +90,8 @@ anything that *answered* — an error reply, a rejected password, the wrong prot
 amber, because the port is demonstrably open and the fix is on the device rather than the
 firewall. A closing line names the consequence, since which port fell short decides which
 feature breaks: nothing works without the web port, playback and export need RTSP, and a
-dead SDK port costs no DVRTool feature at all — it only means the vendor's own software
-cannot reach the recorder from here. A partial pass does not block **Save**.
+dead SDK port costs Hikvision live view over the SDK transport (plus iVMS-4200 reaching the
+box) while costing a Dahua recorder nothing DVRTool does. A partial pass does not block **Save**.
 
 **Save** adds the NVR to the list. Saved NVRs
 persist to `%APPDATA%\DVRTool\devices.json`, and each password is **DPAPI-protected for
@@ -127,10 +133,25 @@ defence against misconfiguration rather than against an attacker on the path —
 
 ### Live
 
-Pick a channel, choose **Main** or **Sub**, and **▶ Play** opens the live RTSP stream in
-the embedded player; **⏹ Stop** ends it. Credentials are handed to libVLC as stream
-options rather than embedded in the URL, so the password never appears in the stream MRL
-or the player's logs.
+Pick a channel, choose **Main** or **Sub**, pick the transport, and **▶ Play** opens the
+stream in the embedded player; **⏹ Stop** ends it.
+
+The transport dropdown is labelled with this device's own port numbers:
+
+* **RTSP `<port>`** — the standard route. Credentials are handed to libVLC as stream options
+  rather than embedded in the URL, so the password never appears in the stream MRL or the
+  player's logs.
+* **SDK `<port>`** — Hikvision's private protocol, which brings the video back over the same
+  port it logs in on. **This is the one that works when RTSP is closed**, which on our
+  installed base is most sites: RTSP is forwarded at 3 of 17, the SDK port at 14 of 17. It
+  is what iVMS-4200 does. Hikvision/OEM only, and it needs `HCNetSDK.dll` (iVMS-4200 or
+  HikCentral installs it).
+
+Either way the picture goes through the same player, so nothing else about the tab changes.
+The SDK route holds one of the recorder's stream slots while it runs, so **⏹ Stop**, a device
+switch and closing the app all release it. Full details, including the channel-numbering trap
+and how identity is checked over a port the web pin does not cover, are in
+[docs/hikvision-sdk-live.md](docs/hikvision-sdk-live.md).
 
 ### Playback / Export
 
@@ -224,6 +245,7 @@ DVR_HOST=192.0.2.10
 DVR_USER=admin
 DVR_PASS=...
 DVR_SDK_PORT=8000      # only when the recorder's SDK port was moved off the default
+DVR_SDK_DIR=...        # folder holding HCNetSDK.dll; only `dvrtool live` needs it
 ```
 
 ```
@@ -231,6 +253,7 @@ dvrtool info                                   # device model / serial / firmwar
 dvrtool channels                               # list channels
 dvrtool search   --channel 3 --start "2026-07-21 00:00" --end "2026-07-22 00:00"
 dvrtool download --channel 3 --start "2026-07-21 08:00" --end "2026-07-21 08:05" --out clip.mp4 --remux
+dvrtool live     --channel 3 --seconds 30 --out clip.mp4 --remux  # over the SDK port, no RTSP
 dvrtool live-url --channel 3 [--stream sub] [--with-creds]     # paste into VLC
 dvrtool playback-url --channel 3 --start ... --end ... [--with-creds]
 ```
@@ -247,8 +270,27 @@ downloads are encrypted.
 `--sdk-port <n>` (or `DVR_SDK_PORT`) sets the vendor SDK port, the same field the desktop
 app's Add-NVR dialog records. Its default follows `--vendor` — 8000 for Hikvision's
 HCNetSDK, 37777 for Dahua's DHNetSDK — and neither is assumed: the port is changeable from
-the recorder itself, and a moved port has to be given here to match. Nothing but
-`dvrtool test` reads it; see [docs/device-ports.md](docs/device-ports.md).
+the recorder itself, and a moved port has to be given here to match. On Hikvision it is what
+`dvrtool live` streams over; on Dahua only `dvrtool test` reads it. See
+[docs/device-ports.md](docs/device-ports.md).
+
+`dvrtool live` records live video **over the SDK port instead of RTSP**, which is how you get
+a picture from a site that never forwarded 554:
+
+```
+dvrtool live --channel 3 --seconds 30 --out clip.mp4 --remux
+dvrtool live --channel 3 --stream sub --seconds 10        # auto-named, raw MPEG-PS
+```
+
+It is Hikvision-only (Dahua's `dhnetsdk.dll` is not linked), Windows x64 only, and needs
+`HCNetSDK.dll` — found via `--sdk-dir` / `DVR_SDK_DIR`, or the usual iVMS-4200 / HikCentral
+install paths. It writes a file rather than to stdout on purpose: the SDK's preview plugins
+print banners to stdout, which would end up spliced into a piped stream. `--seconds` defaults
+to 10 and caps at 3600. Everything else behaves like `download` — `--remux`, `--force`, the
+overwrite refusal and the container sniffing are the same code. `--trust-new-device` is
+refused here; re-pin with `dvrtool info --trust-new-device` first, because re-pinning a
+replaced recorder is a deliberate act and not a side effect of watching video. See
+[docs/hikvision-sdk-live.md](docs/hikvision-sdk-live.md).
 
 Downloads and exports go through the shared `AtomicDownload` engine, so these guarantees
 hold whichever front end wrote the file. A download streams to a `.part` file and is
