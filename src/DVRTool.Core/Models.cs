@@ -28,6 +28,19 @@ public sealed record NvrConnection
     public required string Host { get; init; }
     public int HttpPort { get; init; } = 80;
     public int RtspPort { get; init; } = 554;
+
+    /// <summary>
+    /// The vendor's private SDK port (Hikvision HCNetSDK, Dahua DHNetSDK) — 8000 out of
+    /// the box on both, but operators can and do change it from the device's own network
+    /// menu, so it is carried per system rather than assumed.
+    /// </summary>
+    /// <remarks>
+    /// Nothing on the HTTP/RTSP paths reads this: it exists for the SDK transports, which
+    /// are the only way to reach some features (see
+    /// <see cref="AccessPanelConnection.SdkPort"/> for the same field on door panels).
+    /// </remarks>
+    public int SdkPort { get; init; } = 8000;
+
     public required string Username { get; init; }
     public required string Password { get; init; }
     public bool UseTls { get; init; }

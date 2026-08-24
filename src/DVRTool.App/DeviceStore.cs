@@ -17,6 +17,13 @@ public sealed class SavedDevice
     public string Host { get; set; } = "";
     public int HttpPort { get; set; } = 80;
     public int RtspPort { get; set; } = 554;
+
+    /// <summary>
+    /// Vendor SDK port. Devices saved before this field existed deserialize to 8000, which
+    /// is the factory default — an operator who moved it has to say so here.
+    /// </summary>
+    public int SdkPort { get; set; } = 8000;
+
     public bool UseTls { get; set; }
     public string Username { get; set; } = "";
     public string ProtectedPassword { get; set; } = "";
@@ -36,6 +43,7 @@ public sealed class SavedDevice
         Host = Host,
         HttpPort = HttpPort,
         RtspPort = RtspPort,
+        SdkPort = SdkPort,
         Username = Username,
         Password = Password,
         UseTls = UseTls,

@@ -13,7 +13,9 @@ the panels. §4's safety rules and §3's access details below remain accurate an
 
 ## 1. Mission
 
-Add door-access-control support to DVRTool so onboarding/offboarding can be automated:
+Add door-access-control support to DVRTool so onboarding/offboarding can be automated —
+surfaced for everyday use in the desktop app's Access tab, with the CLI adding the same reads
+plus the gated writes for scripting:
 
 - **Read (build first):** enumerate the persons and their fobs (cards) provisioned on each door panel; look a person up by name. This closes the last manual step in Site A's offboarding — verifying a departed employee's door access is actually gone.
 - **Write (build second, gated):** create a fob for a new hire, revoke/delete a person or fob for a leaver.
@@ -133,6 +135,10 @@ Writes use `NET_DVR_SetDeviceConfig` (or the corresponding remote-config SET com
 **Person vs card model caveat:** DS-K2604 at V2.0 firmware may use the older **card + user** model rather than the newer **"person"** model. Determine which these panels speak early — it changes the structs. Join key for offboarding is the **person name** (Site A convention is `First.Last`); a **fob = a card number** attached to a person/user.
 
 ## 8. Architecture (match the existing repo patterns)
+
+The reads belong in the desktop app's Access tab (the everyday operator surface); the CLI
+carries the same reads plus the gated writes for automation. Both sit on the shared engine and
+the vendor driver below.
 
 - **`DVRTool.Core`**
   - `IAccessControlClient` — sibling to `IUserManagementClient`. Suggested surface:

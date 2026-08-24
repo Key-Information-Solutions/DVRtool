@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using DVRTool.Core;
 using LibVLCSharp.Shared;
 using Microsoft.Win32;
@@ -167,6 +168,29 @@ public partial class MainWindow : Window
             DeviceList.SelectedItem = dialog.Result;
         }
     }
+
+    private void OnEditDevice(object sender, RoutedEventArgs e)
+    {
+        if (DeviceList.SelectedItem is not SavedDevice device)
+            return;
+        int index = _devices.IndexOf(device);
+        if (index < 0)
+            return;
+
+        var dialog = new AddDeviceWindow(device) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.Result is null)
+            return;
+
+        // Replace the item rather than mutate it: SavedDevice raises no change
+        // notification, so DeviceList (and the other tabs' device pickers) would keep
+        // showing the stale name until something else refreshed them.
+        _devices[index] = dialog.Result;
+        DeviceStore.Save(_devices);
+        DeviceList.SelectedItem = dialog.Result;
+    }
+
+    private void OnDeviceListDoubleClick(object sender, MouseButtonEventArgs e) =>
+        OnEditDevice(sender, e);
 
     private void OnRemoveDevice(object sender, RoutedEventArgs e)
     {

@@ -29,6 +29,8 @@ const string Usage = """
       --pass <password>            or DVR_PASS; omit both to be prompted (avoid the
                                    flag: it persists in shell history and audit logs)
       --rtsp-port <n>              default: 554
+      --sdk-port <n>               vendor SDK port, or DVR_SDK_PORT (default 8000 —
+                                   changeable from the recorder, so don't assume it)
       --tls                        HTTPS to the NVR (self-signed cert pinned on first use)
       --channel <n>                1-based display channel
       --start / --end              "yyyy-MM-dd HH:mm[:ss]" (NVR-local time)
@@ -364,6 +366,11 @@ static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPasswor
         HttpPort = httpPort,
         RtspPort = opts.TryGetValue("rtsp-port", out var rp)
             ? ParsePort(rp, "--rtsp-port") : 554,
+        SdkPort = opts.TryGetValue("sdk-port", out var sp)
+            ? ParsePort(sp, "--sdk-port")
+            : Environment.GetEnvironmentVariable("DVR_SDK_PORT") is { Length: > 0 } envSdk
+                ? ParsePort(envSdk, "DVR_SDK_PORT")
+                : 8000,
         Username = user,
         Password = GetPassword(opts, user, host, needsPassword),
         UseTls = useTls,
@@ -515,7 +522,7 @@ static void LoadDotEnv(string? explicitPath)
     // inject arbitrary environment variables (inherited by the ffmpeg child).
     string[] allowed =
     [
-        "DVR_HOST", "DVR_USER", "DVR_PASS",
+        "DVR_HOST", "DVR_USER", "DVR_PASS", "DVR_SDK_PORT",
         // Door-access panels (see AccessCommands).
         "OCB_PANELS", "OCB_USER", "OCB_PASS", "OCB_SDK_PORT", "OCB_SDK_DIR",
     ];

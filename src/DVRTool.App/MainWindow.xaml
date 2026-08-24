@@ -22,11 +22,13 @@
             <DockPanel Grid.Column="0" Margin="8">
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
                     <Button Content="Add NVR…" Click="OnAddDevice" Padding="10,4"/>
+                    <Button Content="Edit…" Click="OnEditDevice" Margin="6,0,0,0" Padding="10,4"/>
                     <Button Content="Remove" Click="OnRemoveDevice" Margin="6,0,0,0" Padding="10,4"/>
                 </StackPanel>
                 <TextBlock DockPanel.Dock="Top" Text="Devices" FontWeight="Bold"/>
                 <ListBox x:Name="DeviceList" DockPanel.Dock="Top" Height="170"
                          DisplayMemberPath="Name" SelectionChanged="OnDeviceSelected"
+                         MouseDoubleClick="OnDeviceListDoubleClick"
                          Margin="0,2,0,10"/>
                 <TextBlock DockPanel.Dock="Top" Text="Channels" FontWeight="Bold"/>
                 <ListBox x:Name="ChannelList" Margin="0,2,0,0" DisplayMemberPath="Display"/>

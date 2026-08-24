@@ -104,8 +104,10 @@ There is no person, no name, no employee number.
 **Consequence:** `dvrtool access find --name "First.Last"` cannot be answered from the panels,
 because the panels do not know anyone's name. Names exist only in iVMS-4200's own database.
 The offboarding question "does this departed employee still have door access?" is therefore
-only answerable via the fob number. The CLI reports this explicitly rather than returning an
-empty result that would read as "no access found" — see `AccessRoster.AnyPanelStoresNames`.
+only answerable via the fob number. DVRTool reports this explicitly rather than returning an
+empty result that would read as "no access found" — the CLI's `find --name` gates on
+`AccessRoster.AnyPanelStoresNames`, and the GUI Access tab fills its Name column only from the
+imported iVMS map, since the panels supply none.
 
 `byName` is a writable field in the struct the panels accept, so writing names *into* the
 panels looked like a way to make DVRTool self-sufficient. **It does not work.** The canary
