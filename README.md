@@ -76,7 +76,10 @@ answer:
 * **SDK** / **TCP** — a TCP connect only. Both vendors' SDK ports speak a proprietary
   binary protocol, so this reports a listener, never a working login.
 
-Silence is the only real failure: a refused, dropped or unroutable port is red, while
+The web line does one more thing: it says **which** recorder answered, and refuses one that
+is not the one this record means — see *Which system am I talking to?* below.
+
+Silence is the only real *port* failure: a refused, dropped or unroutable port is red, while
 anything that *answered* — an error reply, a rejected password, the wrong protocol — is
 amber, because the port is demonstrably open and the fix is on the device rather than the
 firewall. A closing line names the consequence, since which port fell short decides which
@@ -92,6 +95,35 @@ primary, more-secure config path; the CLI's plaintext `.env` (below) is the auto
 alternative. **Edit…** (or a double-click in the list) reopens the dialog on the selected
 NVR; leaving the password blank keeps the stored one. **Remove** drops the selected NVR
 after a confirmation.
+
+### Which system am I talking to?
+
+Sites routinely put several systems behind one address, separated only by forwarded port,
+all sharing one account — so authenticating proves the password is good *somewhere*, not
+that the recorder on the far end is the one you meant. A port typed as `8081` instead of
+`8082` logs in cleanly, lists channels, plays a stream, and hands back a three-hour export
+filed under the wrong site's name.
+
+So the first successful connection to a `host:port` records the device's **serial number**,
+and every later one must present the same serial: trust-on-first-use, exactly like the
+certificate pin, in `%APPDATA%\DVRTool\identities.json`. A saved NVR is bound to its serial
+too (`ExpectedSerial` in `devices.json`) — the record is what an export is filed under, so
+the record is what has to mean one specific box. Selecting a device that answers with a
+different serial refuses the connection outright rather than loading its channels, and the
+Users tab identifies both sides before comparing accounts.
+
+The **Edit NVR** dialog shows the binding and can release it — **Unbind** — for the one case
+where a mismatch is legitimate: the recorder was physically replaced. Adding two records on
+the identical host *and* port is refused (they cannot both be right, and with a shared
+password both would connect); adding a second record on the same host with a *different*
+port is normal, and the dialog says so. If two records turn out to be the same recorder — the
+same serial at two addresses — **Test connection** says that too.
+
+The CLI does the same, with `--expect-serial <s>` to assert one in a script and
+`--trust-new-device` to accept and re-pin a replacement. Full rationale and the deliberate
+limits — including why RTSP and the SDK port are not separately pinned, and why this is a
+defence against misconfiguration rather than against an attacker on the path — are in
+[docs/device-identity.md](docs/device-identity.md).
 
 ### Live
 
@@ -298,6 +330,14 @@ OCB_PANELS=192.0.2.221,192.0.2.222,192.0.2.223
 OCB_USER=admin
 OCB_PASS=...
 ```
+
+An entry may carry its own port (`OCB_PANELS=203.0.113.9,203.0.113.9:8001`) for a site that
+forwards several controllers through one address; `--port` / `OCB_SDK_PORT` is then just the
+default for entries without one. Give each its own port and mean it: with one account across
+the fleet, the port is the only thing telling those controllers apart, and a `grant` sent to
+the wrong one is a working fob on someone else's building. Every panel is identified by
+serial before it is read, and before *both* legs of a write — see
+[docs/device-identity.md](docs/device-identity.md).
 
 ```
 dvrtool access panels                       # model / firmware / doors / fob count per panel

@@ -34,6 +34,10 @@ const string Usage = """
                                    Hikvision, 37777 on Dahua — changeable from the
                                    recorder, so don't assume it)
       --tls                        HTTPS to the NVR (self-signed cert pinned on first use)
+      --expect-serial <s>          refuse to act unless the device answers with this serial
+      --trust-new-device           accept a device whose serial differs from the pinned
+                                   one, and re-pin it (a replaced recorder — not a
+                                   mistyped port)
       --channel <n>                1-based display channel
       --start / --end              "yyyy-MM-dd HH:mm[:ss]" (NVR-local time)
       --stream <main|sub>          default: main
@@ -49,6 +53,13 @@ const string Usage = """
                                    before a remux is moved onto the target)
       --with-creds                 embed user:pass into printed RTSP URIs
       --env <path>                 .env file to load (default: .env in the working dir)
+
+    Identity: the first successful login to a host:port records the device's serial,
+    and every later one must match it. Sites routinely put several systems behind one
+    IP on different forwarded ports, and a fleet sharing one account authenticates
+    just as happily against the wrong one — so a mistyped or re-forwarded port is
+    caught here rather than in an export that holds the wrong site's footage. Pins
+    live in %APPDATA%\DVRTool\identities.json.
 
     Door-access panels are a separate device class with their own credentials
     (OCB_PANELS / OCB_USER / OCB_PASS) — run `dvrtool access --help`.
@@ -106,7 +117,8 @@ try
     if (command == "test")
     {
         var (testConn, testVendor) = BuildConnection(opts);
-        return await RunTestAsync(testConn, testVendor, cts.Token);
+        return await RunTestAsync(testConn, testVendor, opts.GetValueOrDefault("expect-serial"),
+            cts.Token);
     }
 
     // URL-only commands don't authenticate; only demand a password when it is
@@ -114,6 +126,13 @@ try
     bool needsPassword = command is not ("live-url" or "playback-url")
         || opts.ContainsKey("with-creds");
     using INvrClient client = BuildClient(opts, needsPassword);
+
+    // Before anything acts on the device. Authentication only proves the credentials are
+    // good *somewhere*; on a fleet with one shared account, a wrong port logs in cleanly and
+    // every command downstream reports another system's channels, footage and accounts as if
+    // they were this one's.
+    await VerifyIdentityAsync(client, command, opts, cts.Token);
+
     switch (command)
     {
         case "info":
@@ -335,6 +354,17 @@ catch (OperationCanceledException ex)
         : $"Request canceled unexpectedly: {ex.Message}");
     return 1;
 }
+catch (DeviceIdentityException ex)
+{
+    Console.Error.WriteLine($"error: {ex.Message}");
+    Console.Error.WriteLine(
+        "  refusing to go on: every command past this point would report, export or change " +
+        "the wrong system.");
+    Console.Error.WriteLine(
+        "  if this recorder was legitimately replaced, re-run once with --trust-new-device " +
+        $"(or delete its line from {DeviceIdentityStore.Default.FilePath}).");
+    return 2;
+}
 catch (ArgumentException ex)
 {
     Console.Error.WriteLine($"error: {ex.Message}");
@@ -370,10 +400,13 @@ catch (HttpRequestException ex)
 /// <para>
 /// The exit code reports only what DVRTool needs: the web and RTSP ports. A dead SDK port
 /// exits 0, because nothing here dials it (see docs/device-ports.md) and a script gating a
-/// download on this command should not fail over a port no download touches.
+/// download on this command should not fail over a port no download touches. The one
+/// non-port verdict — the web port answering as a <em>different</em> device — exits 2, since
+/// no firewall rule fixes it.
 /// </para>
 /// </remarks>
-static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, CancellationToken ct)
+static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? expectSerial,
+    CancellationToken ct)
 {
     // Padded so the three verdicts line up under each other.
     string webLabel = $"{(conn.UseTls ? "HTTPS" : "HTTP "),-5} {conn.HttpPort,-5}";
@@ -381,7 +414,8 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, Cancellat
     // Named the way the vendor's own network page names it, matching the desktop dialog.
     string sdkLabel = $"{(vendor == Vendor.Dahua ? "TCP" : "SDK"),-5} {conn.SdkPort,-5}";
 
-    var (web, rtsp, sdk) = ConnectivityProbe.StartAll(conn, () => ClientFor(conn, vendor), ct);
+    var (web, rtsp, sdk) = ConnectivityProbe.StartAll(conn, () => ClientFor(conn, vendor), ct,
+        expectSerial, expectSerial is { Length: > 0 } ? "--expect-serial" : null);
 
     var results = new List<ProbeResult>();
     foreach (var (label, probe) in new[] { (webLabel, web), (rtspLabel, rtsp), (sdkLabel, sdk) })
@@ -395,6 +429,20 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, Cancellat
             _ => "FAIL",
         };
         Console.WriteLine($"{glyph}  {label}  {result.Detail} ({result.Elapsed.TotalSeconds:0.0}s)");
+    }
+
+    // A wrong device outranks every port verdict: all three ports can be perfect and the
+    // answer still worthless. An installer told "all three ports reachable" here would go on
+    // to export another site's footage.
+    if (results.FirstOrDefault(r => r.Status == ProbeStatus.WrongDevice) is { } wrong)
+    {
+        Console.WriteLine();
+        Console.WriteLine(wrong.Detail);
+        Console.WriteLine(
+            "The ports are open — this is a port-forward or wiring problem, not a firewall " +
+            "one. If the recorder was legitimately replaced, re-run once with " +
+            "--trust-new-device.");
+        return 2;
     }
 
     // Which port fell short decides which feature breaks, so name the consequence rather
@@ -422,6 +470,92 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, Cancellat
 
     // Only the ports DVRTool actually drives decide the exit code.
     return dead.Any(t => t is ProbeTarget.Web or ProbeTarget.RtspPort) ? 1 : 0;
+}
+
+/// <summary>
+/// Confirms the device on the far end is the one this invocation meant, before any command
+/// reads or writes a thing.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The mistake this catches cannot be caught by authenticating. A site with several systems
+/// behind one IP tells them apart by forwarded port alone, and one shared account across the
+/// fleet means a mistyped or re-forwarded port produces a clean login, a full channel list,
+/// and an export of the wrong building. So the serial is pinned per host:port on first
+/// contact and compared on every later run.
+/// </para>
+/// <para>
+/// The URL-printing commands are exempt, even when a password happens to be in the
+/// environment: they build a string and contact nothing, which is the point of them — they
+/// work offline, and on a site where RTSP is reachable and the web port is not. Verifying
+/// would mean an HTTP round trip, and a timeout on it would turn a working command into a
+/// failing one. Instead, when the address is one we have seen before, they report what it
+/// was, rather than implying the URL was checked.
+/// </para>
+/// </remarks>
+static async Task VerifyIdentityAsync(INvrClient client, string command,
+    Dictionary<string, string> opts, CancellationToken ct)
+{
+    // A bare --expect-serial asserts nothing; treating it as "no expectation" would turn a
+    // safety flag into a silent no-op.
+    if (opts.TryGetValue("expect-serial", out var expectRaw) && expectRaw.Length == 0)
+        throw new ArgumentException("--expect-serial needs the serial to expect");
+    string? expect = expectRaw is { Length: > 0 } ? expectRaw : null;
+
+    var store = DeviceIdentityStore.Default;
+    string address = DeviceIdentityGuard.AddressOf(client.Connection);
+
+    if (command is "live-url" or "playback-url")
+    {
+        if (expect is not null)
+            throw new ArgumentException(
+                $"--expect-serial cannot be checked by `{command}`: it prints a URL without " +
+                "contacting the device. Check the device with `dvrtool info` instead.");
+        if (store.Pinned(address) is { } known)
+            Console.Error.WriteLine(
+                $"note: {address} was last seen as {known.Describe()}, but this command prints " +
+                "a URL without contacting it — nothing here confirms that is still what " +
+                "answers on that port.");
+        return;
+    }
+
+    // Nothing to verify with, and nothing that could have been fooled either: without a
+    // password no request was made.
+    if (client.Connection.Password.Length == 0)
+        return;
+
+    if (opts.ContainsKey("trust-new-device"))
+    {
+        var info = await client.GetDeviceInfoAsync(ct);
+        var seen = DeviceFingerprint.From(info);
+
+        // An explicit --expect-serial still decides. The two flags answer different
+        // questions, and "accept whatever is there now" must not overrule "it must be this
+        // one" — otherwise a script that passes both silently loses its assertion.
+        if (expect is not null)
+            DeviceIdentityGuard.Ensure(store.Verify(address, seen, expect, "--expect-serial"));
+
+        if (!seen.IsUsable)
+        {
+            Console.Error.WriteLine(
+                $"warning: {address} reports no serial number — there is nothing to pin, so " +
+                "--trust-new-device changed nothing.");
+            return;
+        }
+        var previous = store.Pinned(address);
+        store.Repin(address, seen);
+        Console.Error.WriteLine(previous is null
+            ? $"pinned {address} to {seen.Describe()}."
+            : $"re-pinned {address}: was serial {previous.Serial.Trim()}, now {seen.Describe()}.");
+        return;
+    }
+
+    var check = await DeviceIdentityGuard.CheckAsync(client, expect,
+        expect is null ? null : "--expect-serial", store, ct);
+    DeviceIdentityGuard.Ensure(check);
+    if (check.Message.Length > 0)
+        Console.Error.WriteLine(
+            (check.Verdict == IdentityVerdict.Unverifiable ? "warning: " : "note: ") + check.Message);
 }
 
 static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPassword = true)
@@ -590,7 +724,7 @@ static Dictionary<string, string> ParseOptions(string[] args)
     // Flags without a value (or followed by another --flag) are stored as "".
     // --remux is deliberately absent: it takes an optional container name, and bare
     // "--remux" still lands here as "" via the lookahead below.
-    string[] boolFlags = ["with-creds", "tls", "force"];
+    string[] boolFlags = ["with-creds", "tls", "force", "trust-new-device"];
     var opts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     for (int i = 0; i < args.Length; i++)
     {

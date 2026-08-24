@@ -12,6 +12,19 @@ port and Hikvision's Enhanced SDK port are deliberately absent, and that the rec
 port drives no DVRTool feature at all (the Access tab's port is a separate field for separate
 hardware).
 
+**Device identity:** A successful login proves the credentials, not the hardware. Sites put
+several systems behind one address on different forwarded ports, and one shared account logs
+into any of them — so DVRTool pins each device's **serial** per `host:port`
+(trust-on-first-use, `identities.json`, sibling of the cert pins) and refuses to act when a
+different serial answers. `DeviceIdentity.cs` / `DeviceIdentityGuard.cs` in `DVRTool.Core`;
+saved GUI devices also carry `ExpectedSerial`; panels are verified before reads and before
+both legs of a `grant`/`revoke`; `FleetAudit` catches two records on one address and one
+recorder saved twice. Read `docs/device-identity.md` before touching any of it — notably:
+a blank serial is *unverifiable*, never a match; `AccessCard.PanelHost` is the
+**port-qualified** label, so panel addresses are `ip[:port]` throughout; and
+`DeviceIdentityException` is deliberately not an `NvrException`, so per-device "carry on with
+the rest" handlers do not swallow it.
+
 **Access control:** Hikvision/OEM door panels are surfaced primarily in the GUI Access tab
 (`src/DVRTool.App`, `MainWindow.Access.cs`) for viewing rosters and importing cardholder names; the
 `access` CLI command group provides the same reads **plus** the gated writes (`grant`/`revoke`) for

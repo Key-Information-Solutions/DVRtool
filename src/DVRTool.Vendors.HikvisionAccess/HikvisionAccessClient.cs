@@ -115,7 +115,9 @@ public sealed class HikvisionAccessClient : IAccessControlClient
     {
         ThrowIfDisposed();
         var records = await Task.Run(() => Enumerate(cardNo: null, ct), ct).ConfigureAwait(false);
-        return records.Select(r => r.ToAccessCard(Connection.Host)).ToList();
+        // Stamped with the port-qualified label, not the bare host: two panels behind one
+        // address would otherwise stamp their cards identically and merge in the roster.
+        return records.Select(r => r.ToAccessCard(Connection.Label)).ToList();
     }
 
     public async Task<AccessCard?> GetCardAsync(string cardNo, CancellationToken ct = default)
@@ -128,7 +130,7 @@ public sealed class HikvisionAccessClient : IAccessControlClient
         // rather than nothing at all, so match on the number we asked for.
         var match = records.FirstOrDefault(r =>
             AccessRoster.NormalizeCardNo(r.CardNo) == AccessRoster.NormalizeCardNo(cardNo));
-        return match?.ToAccessCard(Connection.Host);
+        return match?.ToAccessCard(Connection.Label);
     }
 
     public async Task UpsertCardAsync(AccessCard card, CancellationToken ct = default)

@@ -56,19 +56,10 @@ public partial class MainWindow
     /// constructs <see cref="AccessPanelConnection"/> directly.
     /// </remarks>
     private sealed record PanelConnectionSettings(
-        IReadOnlyList<string> Panels, string Username, string Password, int SdkPort,
-        string? SdkDirectory)
+        IReadOnlyList<AccessPanelConnection> Panels, string? SdkDirectory)
     {
-        internal IAccessControlClient Connect(string host) =>
-            new HikvisionAccessClient(
-                new AccessPanelConnection
-                {
-                    Host = host,
-                    SdkPort = SdkPort,
-                    Username = Username,
-                    Password = Password,
-                },
-                SdkDirectory);
+        internal IAccessControlClient Connect(AccessPanelConnection panel) =>
+            new HikvisionAccessClient(panel, SdkDirectory);
     }
 
     private void InitializeAccessTab()
@@ -135,19 +126,31 @@ public partial class MainWindow
         Task.Run(async () =>
         {
             var results = new List<AccessPanelResult>();
-            foreach (string host in settings.Panels)
+            foreach (var panel in settings.Panels)
             {
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    using var client = settings.Connect(host);
+                    using var client = settings.Connect(panel);
                     var info = await client.GetDeviceInfoAsync(ct);
-                    var cards = await client.GetCardsAsync(ct);
+
+                    // Which controller answered, not just that one did. Panels behind a shared
+                    // address differ only by port, and the fleet's one account logs into any of
+                    // them — so a roster built without this can describe another building
+                    // under this panel's name.
+                    var identity = DeviceIdentityGuard.Check(
+                        DeviceIdentityGuard.AddressOf(panel), info);
+                    if (identity.Verdict == IdentityVerdict.Mismatch)
+                    {
+                        results.Add(AccessPanelResult.Failed(panel.Label, identity.Message));
+                        continue;
+                    }
+
                     results.Add(new AccessPanelResult
                     {
-                        PanelHost = host,
+                        PanelHost = panel.Label,
                         Serial = info.SerialNumber,
-                        Cards = cards,
+                        Cards = await client.GetCardsAsync(ct),
                     });
                 }
                 catch (Exception ex) when (ex is NvrException or ArgumentException)
@@ -155,7 +158,7 @@ public partial class MainWindow
                     // A panel that could not be read is carried as a failure, never dropped:
                     // omitting it would make every fob on it look revoked, which is the exact
                     // wrong answer for the question this tab exists to answer.
-                    results.Add(AccessPanelResult.Failed(host, ex.Message));
+                    results.Add(AccessPanelResult.Failed(panel.Label, ex.Message));
                 }
             }
             return AccessRoster.Build(results);
@@ -500,10 +503,10 @@ public partial class MainWindow
     {
         settings = null;
 
-        var panels = AccessPanelsBox.Text
+        var entries = AccessPanelsBox.Text
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
-        if (panels.Count == 0)
+        if (entries.Count == 0)
         {
             SetStatus("Enter at least one panel address.");
             return false;
@@ -531,9 +534,38 @@ public partial class MainWindow
             return false;
         }
 
+        // Each entry may carry its own port ("10.0.0.5:8001"), because a site can forward
+        // several controllers through one address — and then the port is the only thing
+        // telling them apart, since one account opens all of them.
+        var panels = new List<AccessPanelConnection>();
+        foreach (string entry in entries)
+        {
+            if (!DeviceAddress.TryParse(entry, port, out string? host, out int entryPort,
+                    out string? addressError))
+            {
+                SetStatus($"Panel list: {addressError}.");
+                return false;
+            }
+            panels.Add(new AccessPanelConnection
+            {
+                Host = host,
+                SdkPort = entryPort,
+                Username = user,
+                Password = AccessPassBox.Password,
+            });
+        }
+
+        if (panels
+                .GroupBy(p => DeviceIdentityGuard.AddressOf(p), StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(g => g.Count() > 1) is { } duplicate)
+        {
+            SetStatus($"Panel {duplicate.Key} is listed twice — it would be read twice and " +
+                "every fob on it counted twice. Give each controller its own port (ip:port).");
+            return false;
+        }
+
         string sdkDir = AccessSdkDirBox.Text.Trim();
-        settings = new PanelConnectionSettings(
-            panels, user, AccessPassBox.Password, port, sdkDir.Length > 0 ? sdkDir : null);
+        settings = new PanelConnectionSettings(panels, sdkDir.Length > 0 ? sdkDir : null);
         return true;
     }
 }

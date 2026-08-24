@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
@@ -38,6 +37,12 @@ public enum ProbeStatus
     /// <summary>Something answered but did not speak the expected protocol.</summary>
     WrongService,
 
+    /// <summary>
+    /// The right kind of service answered, and the login worked — but the device behind it
+    /// is not the one this record is pinned to. The port is fine; the wiring is not.
+    /// </summary>
+    WrongDevice,
+
     /// <summary>Reached the host, but the port is closed (RST).</summary>
     Refused,
 
@@ -74,14 +79,23 @@ public sealed record ProbeResult(
     TimeSpan Elapsed)
 {
     /// <summary>
-    /// Silence is the only real failure. Anything that replied — even an error, even the
-    /// wrong protocol — proves the port is open and reachable, which is the question an
-    /// installer is actually asking, so it caps out at a caution.
+    /// Who answered the web probe, when it got far enough to ask. Carried so a front end can
+    /// pin the serial it just learned onto the record being tested.
+    /// </summary>
+    public IdentityCheck? Identity { get; init; }
+
+    /// <summary>
+    /// Silence is the only <em>port</em> failure: anything that replied — even an error, even
+    /// the wrong protocol — proves the port is open and reachable, which is the question an
+    /// installer is actually asking, so it caps out at a caution. The one exception is
+    /// <see cref="ProbeStatus.WrongDevice"/>, which is not a port verdict at all — the port
+    /// is perfect and the answer is still wrong, and that must never render as a pass.
     /// </summary>
     public ProbeSeverity Severity => Status switch
     {
         ProbeStatus.Ok or ProbeStatus.Listening => ProbeSeverity.Pass,
-        ProbeStatus.Refused or ProbeStatus.Timeout or ProbeStatus.Unreachable => ProbeSeverity.Fail,
+        ProbeStatus.Refused or ProbeStatus.Timeout or ProbeStatus.Unreachable
+            or ProbeStatus.WrongDevice => ProbeSeverity.Fail,
         _ => ProbeSeverity.Caution,
     };
 
@@ -111,8 +125,16 @@ public static class ConnectivityProbe
     /// client so the probe owns its disposal, and so a caller that only wants the port
     /// checks can pass null.
     /// </param>
+    /// <param name="expectedSerial">
+    /// The serial this record is bound to, when it has one. The web probe reports a
+    /// different device as a failure — the port being open is no comfort when what is behind
+    /// it is another site's recorder.
+    /// </param>
+    /// <param name="expectedBy">Whose expectation <paramref name="expectedSerial"/> is.</param>
     public static (Task<ProbeResult> Web, Task<ProbeResult> Rtsp, Task<ProbeResult> Sdk) StartAll(
-        NvrConnection conn, Func<INvrClient>? clientFactory, CancellationToken ct = default)
+        NvrConnection conn, Func<INvrClient>? clientFactory, CancellationToken ct = default,
+        string? expectedSerial = null, string? expectedBy = null,
+        DeviceIdentityStore? identities = null)
     {
         // The vendor's own channel-1 live URL, so the RTSP probe can DESCRIBE a path the
         // device actually serves instead of guessing one. Pure string building — no I/O.
@@ -127,17 +149,20 @@ public static class ConnectivityProbe
             clientFactory is null
                 ? Task.FromResult(new ProbeResult(ProbeTarget.Web, conn.HttpPort, ProbeStatus.WrongService,
                     "No vendor client available.", TimeSpan.Zero))
-                : ProbeWebAsync(conn, clientFactory, ct),
+                : ProbeWebAsync(conn, clientFactory, ct, expectedSerial, expectedBy, identities),
             ProbeRtspAsync(conn, streamTarget, ct),
             ProbeSdkAsync(conn, ct));
     }
 
     /// <summary>
     /// The deepest of the three: a real API call, so success also proves TLS (including the
-    /// pinned certificate) and the credentials, not just that the port is open.
+    /// pinned certificate), the credentials, and — the part authentication cannot answer —
+    /// that the device on the far end is the one this record means.
     /// </summary>
     public static async Task<ProbeResult> ProbeWebAsync(
-        NvrConnection conn, Func<INvrClient> clientFactory, CancellationToken ct = default)
+        NvrConnection conn, Func<INvrClient> clientFactory, CancellationToken ct = default,
+        string? expectedSerial = null, string? expectedBy = null,
+        DeviceIdentityStore? identities = null)
     {
         var started = DateTime.UtcNow;
         try
@@ -147,8 +172,30 @@ public static class ConnectivityProbe
             using var client = clientFactory();
             var info = await client.GetDeviceInfoAsync(timeout.Token);
             string model = info.Model.Length > 0 ? info.Model : "unknown model";
-            return Done(ProbeTarget.Web, conn.HttpPort, ProbeStatus.Ok,
-                $"{model} (serial {info.SerialNumber}, fw {info.FirmwareVersion})", started);
+            string reached = $"{model} (serial {info.SerialNumber}, fw {info.FirmwareVersion})";
+
+            // The login succeeded, which on a fleet sharing one account says nothing about
+            // *which* system answered. This is the check that does.
+            var identity = DeviceIdentityGuard.Check(
+                DeviceIdentityGuard.AddressOf(conn), info, expectedSerial, expectedBy, identities);
+            var status = identity.Verdict switch
+            {
+                IdentityVerdict.Mismatch => ProbeStatus.WrongDevice,
+                // An unpinnable device is reported as such rather than as a clean pass: the
+                // port works and the identity question went unanswered, which is a caution.
+                IdentityVerdict.Unverifiable => ProbeStatus.Partial,
+                _ => ProbeStatus.Ok,
+            };
+            string detail = identity.Verdict switch
+            {
+                IdentityVerdict.Match => reached,
+                IdentityVerdict.Mismatch => identity.Message,
+                _ => $"{reached} — {identity.Message}",
+            };
+            return Done(ProbeTarget.Web, conn.HttpPort, status, detail, started) with
+            {
+                Identity = identity,
+            };
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -195,7 +242,7 @@ public static class ConnectivityProbe
             await tcp.ConnectAsync(conn.Host, conn.RtspPort, timeout.Token);
             var stream = tcp.GetStream();
 
-            string serverRoot = $"rtsp://{HostForUrl(conn.Host)}:{conn.RtspPort}/";
+            string serverRoot = $"rtsp://{DeviceAddress.ForUrl(conn.Host)}:{conn.RtspPort}/";
             var options = await ExchangeAsync(stream, "OPTIONS", serverRoot, cseq: 1, null, timeout.Token);
 
             if (options.Code is null)
@@ -506,12 +553,6 @@ public static class ConnectivityProbe
                 found = typed;
         return found;
     }
-
-    /// <summary>Brackets a bare IPv6 literal so it is legal inside a URL.</summary>
-    private static string HostForUrl(string host) =>
-        IPAddress.TryParse(host, out var ip) && ip.AddressFamily == AddressFamily.InterNetworkV6
-            ? $"[{host}]"
-            : host;
 
     private static string Trim(string text, int max)
     {

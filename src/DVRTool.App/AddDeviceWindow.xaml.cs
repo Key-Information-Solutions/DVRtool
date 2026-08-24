@@ -17,19 +17,36 @@ public partial class AddDeviceWindow : Window
     // timeouts are not still ticking after the operator has moved on.
     private readonly CancellationTokenSource _probes = new();
 
+    // The rest of the saved fleet, minus the record being edited. Held so this dialog can
+    // answer the question a single record cannot: whether the address just typed already
+    // belongs to another system — the mistake that a site with several recorders behind one
+    // IP and one shared password makes invisible.
+    private readonly List<SavedDevice> _fleet;
+
+    // The serial this record is bound to, carried across a save. Kept when the address is
+    // edited: the record means a particular recorder, not a particular port, and a port typo
+    // must not silently re-bind it. "Unbind" is the deliberate way to release it.
+    private string _expectedSerial = "";
+
     public SavedDevice? Result { get; private set; }
 
-    public AddDeviceWindow()
+    public AddDeviceWindow(IEnumerable<SavedDevice>? fleet = null)
     {
         InitializeComponent();
+        _fleet = fleet?.ToList() ?? [];
         ApplyVendorToSdkPort();
     }
 
-    public AddDeviceWindow(SavedDevice device)
+    public AddDeviceWindow(SavedDevice device, IEnumerable<SavedDevice>? fleet = null)
     {
         InitializeComponent();
+        // Excluded by reference: two records may share a name, and the one being edited must
+        // not be reported as colliding with itself.
+        _fleet = fleet?.Where(d => !ReferenceEquals(d, device)).ToList() ?? [];
         Title = "Edit NVR";
         _existingProtectedPassword = device.ProtectedPassword;
+        _expectedSerial = device.ExpectedSerial;
+        ShowIdentity();
 
         NameBox.Text = device.Name;
         VendorCombo.SelectedIndex = device.Vendor.Equals("dahua", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -123,11 +140,50 @@ public partial class AddDeviceWindow : Window
             UseTls = TlsCheck.IsChecked == true,
             Username = UserBox.Text.Trim(),
         };
+        device.ExpectedSerial = _expectedSerial;
         if (PassBox.Password.Length == 0 && _existingProtectedPassword is not null)
             device.ProtectedPassword = _existingProtectedPassword;
         else
             device.SetPassword(PassBox.Password);
         return device;
+    }
+
+    /// <summary>Shows (or hides) which recorder this record is bound to.</summary>
+    private void ShowIdentity()
+    {
+        if (_expectedSerial.Length == 0)
+        {
+            IdentityRow.Visibility = Visibility.Collapsed;
+            return;
+        }
+        IdentityRow.Visibility = Visibility.Visible;
+        IdentityText.Text = $"Bound to serial {_expectedSerial} — a system answering with any " +
+            "other serial on this address is refused.";
+    }
+
+    /// <summary>
+    /// Releases the binding, for the one case where a serial mismatch is legitimate: the
+    /// recorder was physically replaced. The next connection binds whatever answers.
+    /// </summary>
+    private void OnUnbind(object sender, RoutedEventArgs e)
+    {
+        if (MessageBox.Show(this,
+                $"This record is bound to serial {_expectedSerial}.\n\nUnbind it only if the " +
+                "recorder itself was replaced. If instead a port or address is wrong, fix " +
+                "that — unbinding here would let DVRTool accept whichever system answers, " +
+                "including another site's.",
+                "DVRTool — release the identity binding",
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+
+        // The address pin goes with it: leaving that behind would refuse the replacement on
+        // the next connection for the same reason, from a file the operator cannot see.
+        if (BuildDevice(out _) is { } current)
+            DeviceIdentityStore.Default.Forget(current.Address);
+        _expectedSerial = "";
+        ShowIdentity();
+        ShowMessage("Identity binding released — the next connection will bind whatever answers.",
+            Brushes.DarkGoldenrod);
     }
 
     private static bool TryPort(string text, out int port) =>
@@ -176,12 +232,25 @@ public partial class AddDeviceWindow : Window
         try
         {
             var (web, rtsp, sdk) = ConnectivityProbe.StartAll(
-                conn, device.CreateClient, _probes.Token);
+                conn, device.CreateClient, _probes.Token,
+                device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null,
+                device.Name);
             var results = await Task.WhenAll(
                 RenderWhenDone(webRow, webLabel, web),
                 RenderWhenDone(rtspRow, rtspLabel, rtsp),
                 RenderWhenDone(sdkRow, sdkLabel, sdk));
             AddSummary(results, device.VendorKind);
+
+            // A test that reached the device is the natural moment to bind the record to it —
+            // the operator is looking at the serial it just reported.
+            var seen = results[0].Identity?.Seen;
+            if (_expectedSerial.Length == 0 && seen is { IsUsable: true } &&
+                results[0].Status != ProbeStatus.WrongDevice)
+            {
+                _expectedSerial = seen.Serial.Trim();
+                ShowIdentity();
+            }
+            ReportFleetIssues(device);
         }
         catch (OperationCanceledException)
         {
@@ -300,6 +369,30 @@ public partial class AddDeviceWindow : Window
         base.OnClosed(e);
     }
 
+    /// <summary>
+    /// Reports what this record looks like alongside the rest of the fleet: the same address
+    /// twice, one recorder saved twice, or simply that it shares a host with others and is
+    /// told apart by port.
+    /// </summary>
+    private void ReportFleetIssues(SavedDevice device)
+    {
+        foreach (var issue in FleetAudit.InspectFor(
+            device.ToFleetRecord(), _fleet.Select(d => d.ToFleetRecord())))
+        {
+            ShowLine(issue.Severity switch
+            {
+                FleetIssueSeverity.Error => "Conflict: " + issue.Message,
+                FleetIssueSeverity.Warning => "Warning: " + issue.Message,
+                _ => issue.Message,
+            }, issue.Severity switch
+            {
+                FleetIssueSeverity.Error => Brushes.Firebrick,
+                FleetIssueSeverity.Warning => Brushes.DarkGoldenrod,
+                _ => Brushes.Gray,
+            }, italic: true);
+        }
+    }
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var device = BuildDevice(out string? error);
@@ -308,6 +401,19 @@ public partial class AddDeviceWindow : Window
             ShowMessage(error!, Brushes.Firebrick);
             return;
         }
+
+        // Two records on one address cannot both be right, and with a shared account both
+        // would connect happily — so this one is refused rather than warned about. The
+        // legitimate version of it (several systems on one host) differs by port, and passes.
+        var conflict = FleetAudit
+            .InspectFor(device.ToFleetRecord(), _fleet.Select(d => d.ToFleetRecord()))
+            .FirstOrDefault(i => i.Kind == FleetIssueKind.DuplicateAddress);
+        if (conflict is not null)
+        {
+            ShowMessage(conflict.Message, Brushes.Firebrick);
+            return;
+        }
+
         Result = device;
         DialogResult = true;
     }

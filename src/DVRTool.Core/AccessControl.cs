@@ -13,6 +13,16 @@ public sealed record AccessPanelConnection
     public required string Username { get; init; }
     public required string Password { get; init; }
 
+    /// <summary>
+    /// How this panel is named in output — and, because it is what every card is stamped
+    /// with, the key a roster groups by.
+    /// </summary>
+    /// <remarks>
+    /// The port is therefore not decoration. Several panels behind one address, told apart
+    /// only by which port forwards where, are a normal site layout; naming them all by bare
+    /// host would merge their rosters into one and make a fob look present on doors it
+    /// cannot open. The factory port is left implicit only because it is unambiguous.
+    /// </remarks>
     public string Label => SdkPort == VendorPorts.HikvisionSdk ? Host : $"{Host}:{SdkPort}";
 }
 

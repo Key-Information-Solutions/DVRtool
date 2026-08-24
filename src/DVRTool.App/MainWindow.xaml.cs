@@ -160,7 +160,7 @@ public partial class MainWindow : Window
 
     private void OnAddDevice(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddDeviceWindow { Owner = this };
+        var dialog = new AddDeviceWindow(_devices) { Owner = this };
         if (dialog.ShowDialog() == true && dialog.Result is not null)
         {
             _devices.Add(dialog.Result);
@@ -177,7 +177,7 @@ public partial class MainWindow : Window
         if (index < 0)
             return;
 
-        var dialog = new AddDeviceWindow(device) { Owner = this };
+        var dialog = new AddDeviceWindow(device, _devices) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.Result is null)
             return;
 
@@ -244,6 +244,15 @@ public partial class MainWindow : Window
             _currentDevice = device;
             _clientCts = new CancellationTokenSource();
             SetStatus($"Connecting to {device.Name} …");
+
+            // Identity before content. Logging in proves the credentials, not the hardware:
+            // several systems behind one address are told apart by forwarded port alone, and
+            // one shared account across the fleet means a wrong port yields a healthy-looking
+            // channel list, a playable stream and an export filed under this device's name
+            // holding another site's footage.
+            if (!await VerifyDeviceAsync(device, _client, gen, _clientCts.Token))
+                return;
+
             var channels = await _client.GetChannelsAsync(_clientCts.Token);
             if (gen != _selectionGen)
                 return;
@@ -262,6 +271,83 @@ public partial class MainWindow : Window
                 return;
             SetStatus($"Failed to connect to {device.Name}: {Shorten(ex.Message)}");
         }
+    }
+
+    /// <summary>
+    /// Confirms the system that answered is the one this record is bound to, and binds the
+    /// record on its first successful connection.
+    /// </summary>
+    /// <remarks>
+    /// On a mismatch the client is dropped, not merely reported: every tab downstream — live,
+    /// playback, export, users — would otherwise be pointed at the wrong hardware while the
+    /// left-hand list still shows the name the operator picked.
+    /// </remarks>
+    private async Task<bool> VerifyDeviceAsync(
+        SavedDevice device, INvrClient client, int gen, CancellationToken ct)
+    {
+        IdentityCheck check;
+        try
+        {
+            check = await DeviceIdentityGuard.CheckAsync(client,
+                device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null, device.Name,
+                ct: ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Unreachable, refused, bad password: the ordinary connection failures, which the
+            // caller's own handler already words for the status bar.
+            if (gen == _selectionGen)
+                SetStatus($"Failed to connect to {device.Name}: {Shorten(ex.Message)}");
+            return false;
+        }
+
+        if (gen != _selectionGen)
+            return false;
+
+        if (check.Verdict == IdentityVerdict.Mismatch)
+        {
+            DropClient();
+            SetStatus($"{device.Name}: WRONG DEVICE — not connected.");
+            MessageBox.Show(this,
+                check.Message + "\n\nNothing was read from it. Fix the host or port on this " +
+                "record — or, if the recorder itself was replaced, open Edit… and press " +
+                "Unbind.",
+                "DVRTool — wrong device", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        // First sight of this hardware through this record: bind the two, so the record is
+        // pinned even if its address later moves.
+        if (device.ExpectedSerial.Length == 0 && check.Seen.IsUsable)
+        {
+            device.ExpectedSerial = check.Seen.Serial.Trim();
+            DeviceStore.Save(_devices);
+        }
+
+        if (check.Verdict == IdentityVerdict.Unverifiable)
+            SetStatus($"{device.Name}: connected, but it reports no serial — DVRTool cannot " +
+                "confirm which system this is.");
+        return true;
+    }
+
+    /// <summary>
+    /// Abandons the client just built for a selection. Safe only here: nothing has had the
+    /// chance to start a search or a download through it yet.
+    /// </summary>
+    private void DropClient()
+    {
+        _client?.Dispose();
+        _client = null;
+        _currentDevice = null;
+        _clientCts?.Cancel();
+        _clientCts?.Dispose();
+        _clientCts = null;
+        ChannelList.ItemsSource = null;
+        ResultsGrid.ItemsSource = null;
     }
 
     // ----- live -----
@@ -679,6 +765,25 @@ public partial class MainWindow : Window
             SetStatus(deviceB is null
                 ? $"Reading users from {deviceA.Name} …"
                 : $"Reading users from {deviceA.Name} and {deviceB.Name} …");
+
+            // Both sides identified before either is read. An account audit that names the
+            // wrong recorder is worse than no audit — and two records behind one address, one
+            // shared password between them, is exactly how that happens.
+            foreach (var (device, client) in new[] { (deviceA, clientA), (deviceB, clientB) })
+            {
+                if (device is null || client is null)
+                    continue;
+                var check = await DeviceIdentityGuard.CheckAsync(client,
+                    device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null,
+                    device.Name, ct: ct);
+                if (gen != _usersGen)
+                    return;
+                if (check.Verdict == IdentityVerdict.Mismatch)
+                {
+                    SetStatus($"{device.Name}: WRONG DEVICE — no accounts were read. {check.Message}");
+                    return;
+                }
+            }
 
             var taskA = usersA.GetUsersAsync(ct);
             var taskB = usersB is null

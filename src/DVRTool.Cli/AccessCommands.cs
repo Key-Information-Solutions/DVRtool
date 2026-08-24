@@ -51,11 +51,14 @@ internal static class AccessCommands
           --clear                 delete the cached name map
 
         Options:
-          --panels <ip[,ip...]>   panels to talk to, or OCB_PANELS
-          --panel <ip|all>        restrict to one panel (default: all)
+          --panels <ip[:port][,…]>  panels to talk to, or OCB_PANELS. Give a port per
+                                    entry when several panels sit behind one address:
+                                    --panels 10.0.0.5,10.0.0.5:8001
+          --panel <ip[:port]|all>   restrict to one panel (default: all)
           --user <name>           or OCB_USER
           --pass <password>       or OCB_PASS; omit both to be prompted
-          --port <n>              SDK port, or OCB_SDK_PORT (default 8000)
+          --port <n>              default SDK port for entries without one, or
+                                  OCB_SDK_PORT (default 8000)
           --sdk-dir <path>        folder holding HCNetSDK.dll, or OCB_SDK_DIR
           --card <no>             fob number
           --name <text>           cardholder name (substring, case-insensitive)
@@ -70,6 +73,12 @@ internal static class AccessCommands
 
         Writes touch physical doors. grant/revoke re-read the fob afterwards and print
         the verified state, and refuse to act at all without --force.
+
+        Every panel is identified before it is read or written: the first login to an
+        address records the controller's serial, and a later login that answers with a
+        different one is refused rather than acted on. This is the check a password
+        cannot do — one account across the fleet means the wrong port logs in cleanly,
+        and a grant sent there is a working fob on someone else's building.
 
         These panels speak only the Hikvision SDK on port 8000 (no HTTP), so this needs
         Windows, a 64-bit process, and the SDK (iVMS-4200 or HikCentral Lite bundle it).
@@ -118,29 +127,49 @@ internal static class AccessCommands
         Console.WriteLine($"{"PANEL",-16} {"MODEL",-24} {"FIRMWARE",-12} {"DOORS",-6} {"CARDS",-6} NAMES");
 
         int failures = 0;
-        foreach (string host in settings.Panels)
+        var seen = new List<FleetRecord>();
+        var notes = new List<string>();
+        foreach (var panel in settings.Panels)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                using var client = settings.Connect(host);
-                var info = await client.GetDeviceInfoAsync(ct);
-                var caps = await client.GetCapabilitiesAsync(ct);
-                var cards = await client.GetCardsAsync(ct);
-                Console.WriteLine(
-                    $"{host,-16} {info.Model,-24} {info.FirmwareVersion,-12} " +
-                    $"{caps.DoorCount?.ToString() ?? "?",-6} {cards.Count,-6} " +
-                    (caps.SupportsCardholderNames ? "yes" : "NOT STORED"));
+                var (client, info, identity) = await settings.ConnectVerifiedAsync(panel, ct);
+                using (client)
+                {
+                    var caps = await client.GetCapabilitiesAsync(ct);
+                    var cards = await client.GetCardsAsync(ct);
+                    Console.WriteLine(
+                        $"{panel.Label,-16} {info.Model,-24} {info.FirmwareVersion,-12} " +
+                        $"{caps.DoorCount?.ToString() ?? "?",-6} {cards.Count,-6} " +
+                        (caps.SupportsCardholderNames ? "yes" : "NOT STORED"));
+                }
+                seen.Add(new FleetRecord(panel.Label, panel.Host, panel.SdkPort, info.SerialNumber));
+                if (identity.Message.Length > 0)
+                    notes.Add(identity.Message);
+                if (identity.Verdict == IdentityVerdict.Mismatch)
+                    failures++;
             }
             catch (Exception ex) when (ex is NvrException or ArgumentException)
             {
                 failures++;
-                Console.WriteLine($"{host,-16} ERROR: {ex.Message}");
+                Console.WriteLine($"{panel.Label,-16} ERROR: {ex.Message}");
             }
         }
 
+        // `panels` is the survey verb, so it reports what the fleet looks like as a whole —
+        // including two addresses that turn out to be one controller, which no single panel's
+        // own row can show.
+        foreach (string note in notes)
+            Console.Error.WriteLine($"\n{note}");
+        foreach (var issue in FleetAudit.Inspect(seen)
+            .Where(i => i.Severity >= FleetIssueSeverity.Warning))
+            Console.Error.WriteLine($"\nwarning: {issue.Message}");
+
         if (failures > 0)
-            Console.Error.WriteLine($"\n{failures} of {settings.Panels.Count} panel(s) could not be read.");
+            Console.Error.WriteLine(
+                $"\n{failures} of {settings.Panels.Count} panel(s) could not be read or were not " +
+                "the expected controller.");
         return failures == settings.Panels.Count ? 1 : 0;
     }
 
@@ -259,12 +288,25 @@ internal static class AccessCommands
 
     private static async Task<int> CompareAsync(Dictionary<string, string> opts, CancellationToken ct)
     {
-        string primary = Value(opts, "panel")
+        string primaryText = Value(opts, "panel")
             ?? throw new ArgumentException("compare needs --panel <ip>");
-        string against = Value(opts, "against")
+        string againstText = Value(opts, "against")
             ?? throw new ArgumentException("compare needs --against <ip>");
 
-        var settings = AccessSettings.From(opts) with { Panels = [primary, against] };
+        // Both sides go through the same parse as the panel list, so the labels the roster is
+        // keyed by are the labels compared against here — the two panels of a same-address
+        // pair differ only by port, and a bare host would silently mean "the one on 8000".
+        var fleet = AccessSettings.From(opts);
+        var primaryTarget = PanelTarget.Parse(primaryText, fleet.SdkPort);
+        var againstTarget = PanelTarget.Parse(againstText, fleet.SdkPort);
+        if (string.Equals(primaryTarget.Address, againstTarget.Address, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                $"--panel and --against are the same panel ({primaryTarget.Address}) — a " +
+                "compare against itself always reports no drift.");
+
+        string primary = primaryTarget.Label;
+        string against = againstTarget.Label;
+        var settings = fleet with { Panels = [primaryTarget, againstTarget] };
         var roster = await BuildEnrichedRosterAsync(settings, ct);
         ReportFailures(roster);
         if (roster.IsPartial)
@@ -485,10 +527,18 @@ internal static class AccessCommands
                 "grant writes to exactly one panel — name it with --panel <ip>. Door numbers " +
                 "are per-panel, so a fleet-wide grant would mean different doors on each.");
 
-        string host = settings.Panels[0];
+        var panel = settings.Panels[0];
+        string host = panel.Label;
         bool force = opts.ContainsKey("force");
 
-        using var client = settings.Connect(host);
+        // Identity first, and fatal: this is about to put a working credential on a physical
+        // door, and a panel that is not the one named cannot be written to "carefully".
+        var verified = await settings.ConnectVerifiedAsync(panel, ct);
+        using var client = verified.Client;
+        DeviceIdentityGuard.Ensure(verified.Identity);
+        if (verified.Identity.Message.Length > 0)
+            Console.Error.WriteLine($"note: {verified.Identity.Message}");
+
         var caps = await client.GetCapabilitiesAsync(ct);
         var doors = ParseDoors(Value(opts, "doors"), caps.DoorCount);
         var existing = await client.GetCardAsync(card, ct);
@@ -548,19 +598,29 @@ internal static class AccessCommands
         bool force = opts.ContainsKey("force");
 
         // Find where it actually is first, so revoking touches only panels that hold it.
-        var present = new List<string>();
+        var present = new List<PanelTarget>();
         int unreadable = 0;
-        foreach (string host in settings.Panels)
+        foreach (var panel in settings.Panels)
         {
+            string host = panel.Label;
             try
             {
-                using var probe = settings.Connect(host);
+                // Verified before the fob is even looked up. An identity mismatch here aborts
+                // the whole verb rather than counting as one unreadable panel: the operator
+                // asked to remove someone's access, and doing that to the wrong building
+                // while reporting success is worse than doing nothing.
+                var verified = await settings.ConnectVerifiedAsync(panel, ct);
+                using var probe = verified.Client;
+                DeviceIdentityGuard.Ensure(verified.Identity);
+                if (verified.Identity.Message.Length > 0)
+                    Console.Error.WriteLine($"  note: {verified.Identity.Message}");
+
                 var found = await probe.GetCardAsync(card, ct);
                 Console.WriteLine(found is null
                     ? $"  {host}: fob {card} not present"
                     : $"  {host}: fob {card} doors={found.DoorSummary} valid={(found.Valid ? "yes" : "no")}");
                 if (found is not null && found.Valid)
-                    present.Add(host);
+                    present.Add(panel);
             }
             catch (Exception ex) when (ex is NvrException or ArgumentException)
             {
@@ -589,11 +649,15 @@ internal static class AccessCommands
         }
 
         int failed = 0;
-        foreach (string host in present)
+        foreach (var panel in present)
         {
-            using var client = settings.Connect(host);
+            // Re-verified on the write connection, not trusted from the read pass: this is a
+            // second login, and between the two the address could be answering elsewhere.
+            var verified = await settings.ConnectVerifiedAsync(panel, ct);
+            using var client = verified.Client;
+            DeviceIdentityGuard.Ensure(verified.Identity);
             await client.RevokeCardAsync(card, ct);
-            if (await VerifyAsync(client, card, host, expectValid: false, [], ct) != 0)
+            if (await VerifyAsync(client, card, panel.Label, expectValid: false, [], ct) != 0)
                 failed++;
         }
         return failed == 0 && unreadable == 0 ? 0 : 1;
@@ -657,26 +721,51 @@ internal static class AccessCommands
         CancellationToken ct)
     {
         var results = new List<AccessPanelResult>();
-        foreach (string host in settings.Panels)
+        var identified = new List<FleetRecord>();
+        foreach (var panel in settings.Panels)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                using var client = settings.Connect(host);
-                var info = await client.GetDeviceInfoAsync(ct);
-                var cards = await client.GetCardsAsync(ct);
-                results.Add(new AccessPanelResult
+                var (client, info, identity) = await settings.ConnectVerifiedAsync(panel, ct);
+                using (client)
                 {
-                    PanelHost = host,
-                    Serial = info.SerialNumber,
-                    Cards = cards,
-                });
+                    // A panel that turns out to be the wrong controller is recorded as a
+                    // failed read, not skipped: its cards would otherwise be filed under
+                    // this address and the roster would quietly describe another building.
+                    // Failing it also makes the roster partial, which is what stops
+                    // "no access found" from being read as a conclusion.
+                    if (identity.Verdict == IdentityVerdict.Mismatch)
+                    {
+                        results.Add(AccessPanelResult.Failed(panel.Label, identity.Message));
+                        continue;
+                    }
+                    if (identity.Message.Length > 0)
+                        Console.Error.WriteLine($"note: {identity.Message}");
+
+                    identified.Add(new FleetRecord(
+                        panel.Label, panel.Host, panel.SdkPort, info.SerialNumber));
+                    results.Add(new AccessPanelResult
+                    {
+                        PanelHost = panel.Label,
+                        Serial = info.SerialNumber,
+                        Cards = await client.GetCardsAsync(ct),
+                    });
+                }
             }
             catch (Exception ex) when (ex is NvrException or ArgumentException)
             {
-                results.Add(AccessPanelResult.Failed(host, ex.Message));
+                results.Add(AccessPanelResult.Failed(panel.Label, ex.Message));
             }
         }
+
+        // Two addresses answering with one serial means the same panel was read twice: every
+        // fob on it shows two presences, and a compare against it finds no drift because it
+        // is being compared with itself.
+        foreach (var issue in FleetAudit.Inspect(identified)
+            .Where(i => i.Kind == FleetIssueKind.SameDevice))
+            Console.Error.WriteLine($"warning: {issue.Message}");
+
         return AccessRoster.Build(results);
     }
 
@@ -771,10 +860,38 @@ internal static class AccessCommands
             : field;
 }
 
+/// <summary>
+/// One panel to talk to: a host and the port it answers the SDK on.
+/// </summary>
+/// <remarks>
+/// A panel list of bare hosts cannot express a site that puts two controllers behind one
+/// address on different forwarded ports — which is common, and which one shared account
+/// makes indistinguishable at the login. So each entry carries its own port, and
+/// <see cref="Label"/> (identical to <see cref="AccessPanelConnection.Label"/>, deliberately)
+/// is what every card read from it is stamped with.
+/// </remarks>
+internal sealed record PanelTarget(string Host, int SdkPort)
+{
+    internal string Label => SdkPort == VendorPorts.HikvisionSdk ? Host : $"{Host}:{SdkPort}";
+
+    /// <summary>The identity-pin key: always port-qualified, never abbreviated.</summary>
+    internal string Address => DeviceAddress.Format(Host, SdkPort);
+
+    public override string ToString() => Label;
+
+    /// <summary>Parses one operator-typed <c>ip[:port]</c> entry.</summary>
+    internal static PanelTarget Parse(string text, int defaultPort)
+    {
+        if (!DeviceAddress.TryParse(text, defaultPort, out string? host, out int port, out string? error))
+            throw new ArgumentException($"bad panel address: {error}");
+        return new PanelTarget(host, port);
+    }
+}
+
 /// <summary>Resolved connection settings shared by every <c>access</c> subcommand.</summary>
 internal sealed record AccessSettings
 {
-    internal required IReadOnlyList<string> Panels { get; init; }
+    internal required IReadOnlyList<PanelTarget> Panels { get; init; }
     internal required string Username { get; init; }
     internal required string Password { get; init; }
     internal required int SdkPort { get; init; }
@@ -786,36 +903,50 @@ internal sealed record AccessSettings
             ?? Environment.GetEnvironmentVariable("OCB_PANELS")
             ?? throw new ArgumentException("missing --panels (or OCB_PANELS in env/.env)");
 
-        var panels = list
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
-
-        // --panel narrows the set; "all" is the explicit spelling of the default.
-        if (Opt(opts, "panel") is string only &&
-            !only.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            panels = [only];
-        }
-
-        if (panels.Count == 0)
-            throw new ArgumentException("no panels to talk to");
-
         string user = Opt(opts, "user")
             ?? Environment.GetEnvironmentVariable("OCB_USER")
             ?? throw new ArgumentException("missing --user (or OCB_USER in env/.env)");
 
-        int port = 8000;
+        // The fleet-wide port is only a default now: each entry may carry its own, because a
+        // site can forward several panels through one address.
+        int port = VendorPorts.HikvisionSdk;
         string? portText = Opt(opts, "port") ?? Environment.GetEnvironmentVariable("OCB_SDK_PORT");
         if (portText is not null &&
             (!int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out port) ||
              port is < 1 or > 65535))
             throw new ArgumentException($"invalid SDK port '{portText}'");
 
+        var panels = list
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(entry => PanelTarget.Parse(entry, port))
+            .ToList();
+
+        // --panel narrows the set; "all" is the explicit spelling of the default.
+        if (Opt(opts, "panel") is string only &&
+            !only.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            panels = [PanelTarget.Parse(only, port)];
+        }
+
+        if (panels.Count == 0)
+            throw new ArgumentException("no panels to talk to");
+
+        // One address listed twice would be read twice and reported as two panels — a
+        // roster that double-counts every fob on it, from what looks like a wider fleet.
+        var duplicate = panels
+            .GroupBy(p => p.Address, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            throw new ArgumentException(
+                $"panel {duplicate.Key} is listed more than once. If those were meant to be " +
+                "different controllers behind one address, give each its own port " +
+                "(ip:port).");
+
         return new AccessSettings
         {
             Panels = panels,
             Username = user,
-            Password = ResolvePassword(opts, user, panels[0]),
+            Password = ResolvePassword(opts, user, panels[0].Label),
             SdkPort = port,
             SdkDirectory = Opt(opts, "sdk-dir") ?? Environment.GetEnvironmentVariable("OCB_SDK_DIR"),
         };
@@ -834,7 +965,7 @@ internal sealed record AccessSettings
             "missing --pass (or OCB_PASS in env/.env)");
     }
 
-    internal IAccessControlClient Connect(string host)
+    internal IAccessControlClient Connect(PanelTarget panel)
     {
         // The driver is a P/Invoke wrapper over Hikvision's Windows-only HCNetSDK; there is
         // no cross-platform path to these panels at all (they expose no HTTP interface).
@@ -845,12 +976,40 @@ internal sealed record AccessSettings
         return new HikvisionAccessClient(
             new AccessPanelConnection
             {
-                Host = host,
-                SdkPort = SdkPort,
+                Host = panel.Host,
+                SdkPort = panel.SdkPort,
                 Username = Username,
                 Password = Password,
             },
             SdkDirectory);
+    }
+
+    /// <summary>
+    /// Logs in, then confirms the controller is the one this address is pinned to — and
+    /// hands back both the client and what it turned out to be.
+    /// </summary>
+    /// <remarks>
+    /// Panels are the sharper end of this problem. A wrong port on a read produces a
+    /// misleading roster; a wrong port on a <c>grant</c> puts a working fob on someone
+    /// else's building, and the panel's own login cannot tell the difference because the
+    /// whole fleet shares one account.
+    /// </remarks>
+    internal async Task<(IAccessControlClient Client, DeviceInfo Info, IdentityCheck Identity)>
+        ConnectVerifiedAsync(PanelTarget panel, CancellationToken ct)
+    {
+        var client = Connect(panel);
+        try
+        {
+            var info = await client.GetDeviceInfoAsync(ct);
+            var identity = DeviceIdentityGuard.Check(
+                panel.Address, info, expectedSerial: null, expectedBy: null);
+            return (client, info, identity);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
     }
 
     private static string? Opt(Dictionary<string, string> opts, string key) =>

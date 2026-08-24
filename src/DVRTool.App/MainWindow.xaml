@@ -167,8 +167,15 @@
                                     <TextBlock>
                                         Door-panel addresses, comma separated (e.g. 192.0.2.221,192.0.2.222).<LineBreak/>
                                         <LineBreak/>
+                                        Add a port to an entry when several controllers sit behind one address<LineBreak/>
+                                        (10.0.0.5,10.0.0.5:8001) — the port is then the only thing telling them<LineBreak/>
+                                        apart, since one account opens all of them. The SDK port box is the<LineBreak/>
+                                        default for entries without one.<LineBreak/>
+                                        <LineBreak/>
                                         Every panel is read: door rights are per-panel, and a fob present on<LineBreak/>
-                                        one controller says nothing about the others.
+                                        one controller says nothing about the others. Each is identified by<LineBreak/>
+                                        serial on first read; one that later answers as a different controller<LineBreak/>
+                                        is reported instead of being folded into the roster.
                                     </TextBlock>
                                 </TextBox.ToolTip>
                             </TextBox>
@@ -176,7 +183,8 @@
                             <TextBox x:Name="AccessUserBox" Width="85"/>
                             <TextBlock Text=" Password " VerticalAlignment="Center"/>
                             <PasswordBox x:Name="AccessPassBox" Width="85"/>
-                            <TextBlock Text=" SDK port " VerticalAlignment="Center"/>
+                            <TextBlock Text=" SDK port " VerticalAlignment="Center"
+                                       ToolTip="Default SDK port for panel entries that do not carry one."/>
                             <TextBox x:Name="AccessPortBox" Width="45" Text="8000"/>
                             <TextBlock Text=" SDK dir " VerticalAlignment="Center"/>
                             <TextBox x:Name="AccessSdkDirBox" Width="110">
