@@ -274,7 +274,11 @@ Verified on the live fleet from a side-built CLI (installed app untouched, scrat
 line is the intentional non-24/7 note for the "Group C" group (the documented schedule
 simplification, not a defect). 316 unit tests green.
 
-**To ship it:** the polish is in committed source; the CLI **installed** on the relay host is still the
-pre-polish build, so rebuild/reinstall from source (or `build-installer.ps1`) before relying on the
-clean reconcile in production. Decide the iVMS sync direction (§10 safety note) before routine
-provisioning if the GUI is still used.
+**Shipped:** built `DVRTool-1.0.1.msi` (`build-installer.ps1 -Version 1.0.1`) and installed it on
+the relay host as a silent major upgrade over 1.0.0 (`msiexec /i … /qn DESKTOP_SHORTCUT=0`, exit 0,
+registry `Version` now `1.0.1`). The **installed** CLI (`C:\Program Files\DVRTool\cli\dvrtool.exe`) was
+then re-verified against the live fleet: `.221` 149/149, `.222` 15/15, `.223` 6/6 — **in sync**. Note
+the appended `…\DVRTool\cli` PATH entry reaches only shells started after the install (the long-running
+remote-agent process keeps its old env until relaunched); the discovery registry key and full path work
+regardless. Decide the iVMS sync direction (§10 safety note) before routine provisioning if the GUI is
+still used.
