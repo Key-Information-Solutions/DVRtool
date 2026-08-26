@@ -614,9 +614,9 @@ internal static class AccessCommands
 
         if (report.UnmappedMembers.Count > 0)
             Console.Error.WriteLine(
-                $"\nnote: {report.UnmappedMembers.Count} policy member(s) have no unique fob in the " +
-                "identity map and were NOT checked (their live fobs show as \"extra\" above). " +
-                "Import/repair the map with `access identity`.");
+                $"\nnote: {report.UnmappedMembers.Count} policy member(s) could not be resolved to a fob " +
+                "(no fob in the map, or a name shared by several people) and were NOT checked (their " +
+                "live fobs show as \"extra\" above). Import/repair the map with `access identity`.");
         foreach (var warning in report.ScheduleWarnings)
             Console.Error.WriteLine($"warning: {warning}");
 

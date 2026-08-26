@@ -25,6 +25,20 @@ public class IdentityMapNameTests
         Assert.Equal("9001", hits[0].Fob);
     }
 
+    [Theory]
+    [InlineData("Alpha O'Zero")]
+    [InlineData("Alpha O' Zero")]
+    [InlineData("Alpha OZero")]
+    [InlineData("alpha o'zero")]
+    public void FindByNameFoldsApostrophesAndSpacing(string query)
+    {
+        // iVMS spells the same apostrophe name several ways across its tables; all must resolve.
+        var map = IdentityMap.Build([Id("9002", "Alpha O' Zero")], "test");
+        var hits = map.FindByName(query);
+        Assert.Single(hits);
+        Assert.Equal("9002", hits[0].Fob);
+    }
+
     [Fact]
     public void FindByNameReturnsEveryFobForADuplicatedName()
     {

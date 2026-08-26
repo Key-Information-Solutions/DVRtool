@@ -249,11 +249,32 @@ straight off the panel, and the write path (`grant`/`onboard`) just passes the n
 *name* import (cosmetic), never the door right.
 
 A confirming reconcile (map at 149) dropped the 5-digit fob from the unmapped list. The remaining
-`.221`/`.222` "extras" are **not** map-completeness or decode issues — every one resolves to a name.
-They are reconcile *name-matching* residue: (a) one cardholder legitimately holds **two fobs**, so a
-name→fob lookup is non-unique and reconcile safely declines to match it; (b) two holders whose names
-carry an **apostrophe + inconsistent spacing** between the policy's group roster and the person DB, so
-`IdentityMap.NormalizeName` (which keeps `'` but collapses spaces) misses the join. All these fobs are
-live and working; the report just can't tie the name confidently. Future polish (separate task): make
-`NormalizeName` fold `'`/spacing, and give reconcile a way to accept a known multi-fob holder. Decide
-the iVMS sync direction (§10 safety note) before routine provisioning if the GUI is still used.
+`.221`/`.222` "extras" were **not** map-completeness or decode issues — every one resolved to a name.
+They were reconcile *name-matching* residue: apostrophe holders whose names were spelled two ways
+between the policy roster and the person DB, and two distinct people who genuinely **share a name**,
+each with their own fob. All those fobs are live and working; the report just could not tie the name.
+
+## 13. Reconcile name-matching polished → **fleet reads fully in sync** (2026-08-26)
+
+Fixed both causes so the first live reconcile is clean, not noisy:
+
+- **`IdentityMap.NormalizeName` now reduces a name to lower-case letters/digits only** (drops spaces,
+  `.`, `_`, and apostrophes). `O'Zero` / `O' Zero` / `OZero` and `First.Last` / `First Last` all match.
+  The only downside — two truly different people colliding — surfaces as *ambiguous*, which every
+  caller already handles conservatively (reconcile skips, offboard refuses), never a wrong-fob write.
+- **`AccessReconciler.BuildExpectation` groups members by name and set-matches interchangeable fobs.**
+  A unique name owns every fob it maps to (a person with a second card is expected, not "extra"). When
+  several distinct people share a name *and need the identical door set* (two "Employes", say), their
+  fobs are interchangeable, so each is expected with that shared union — the fob **set** is verified
+  even though the fob↔person link is not. Only a shared name whose holders need *different* doors stays
+  unmapped (`GrantKey` compares the per-panel door signatures).
+
+Verified on the live fleet from a side-built CLI (installed app untouched, scratch deleted):
+`.221` **149/149**, `.222` **15/15**, `.223` **6/6** — **RESULT: in sync**, exit 0. The only remaining
+line is the intentional non-24/7 note for the "Group C" group (the documented schedule
+simplification, not a defect). 316 unit tests green.
+
+**To ship it:** the polish is in committed source; the CLI **installed** on the relay host is still the
+pre-polish build, so rebuild/reinstall from source (or `build-installer.ps1`) before relying on the
+clean reconcile in production. Decide the iVMS sync direction (§10 safety note) before routine
+provisioning if the GUI is still used.

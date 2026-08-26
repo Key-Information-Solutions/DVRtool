@@ -142,16 +142,23 @@ public sealed record IdentityMap
         Merge(Build([identity], identity.Source, DateTime.UtcNow));
 
     /// <summary>
-    /// Canonical form of a cardholder name for matching: trimmed, lower-cased, with '.', '_'
-    /// and whitespace collapsed to single spaces.
+    /// Canonical form of a cardholder name for matching: lower-cased letters and digits only,
+    /// with every separator and punctuation mark dropped.
     /// </summary>
+    /// <remarks>
+    /// iVMS enters the same person inconsistently across its tables — the CLI's <c>First.Last</c>
+    /// vs. an iVMS <c>"First Last"</c>, and apostrophe names spelled both ways (<c>O'Zero</c> /
+    /// <c>O' Zero</c> / <c>OZero</c>). Reducing to letters/digits makes all of
+    /// those match. The only cost is that two genuinely different people could canonicalize to the
+    /// same string; that surfaces as an <em>ambiguous</em> match, which every caller already treats
+    /// conservatively (reconcile skips it, offboard refuses) — never as a wrong-fob action.
+    /// </remarks>
     internal static string NormalizeName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return "";
-        var flattened = new string(name.Trim().ToLowerInvariant()
-            .Select(c => c is '.' or '_' ? ' ' : c).ToArray());
-        return string.Join(' ', flattened.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return new string(name.Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant).ToArray());
     }
 }
 

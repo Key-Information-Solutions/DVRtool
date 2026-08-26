@@ -37,7 +37,7 @@ public sealed record ReconcileReport
 {
     public required IReadOnlyList<PanelDrift> Panels { get; init; }
 
-    /// <summary>Policy members with no (or an ambiguous) fob in the identity map — not checked.</summary>
+    /// <summary>Policy members with no fob in the map, or a name shared by several people — not checked.</summary>
     public required IReadOnlyList<string> UnmappedMembers { get; init; }
 
     /// <summary>Schedule approximations the report is making (non-24/7 groups treated always-on).</summary>
@@ -62,8 +62,10 @@ public static class AccessReconciler
     /// across all their groups, projected per panel.
     /// </summary>
     /// <returns>
-    /// Expected cards keyed by panel IP, plus the names of members that could not be resolved to
-    /// exactly one fob (so the caller can report them as "not checked" rather than as drift).
+    /// Expected cards keyed by panel IP, plus the names of members that could not be resolved to a
+    /// fob (so the caller can report them as "not checked" rather than as drift). A member is
+    /// resolvable when their name is unique among policy members; a person who legitimately holds
+    /// several fobs then contributes every one of them.
     /// </returns>
     public static (IReadOnlyDictionary<string, List<ExpectedCard>> ByPanel,
                    IReadOnlyList<string> Unmapped)
@@ -87,28 +89,50 @@ public static class AccessReconciler
             }
         }
 
+        // Fobs are attributed by name, so several people sharing a name cannot be told apart by
+        // name alone. But when everyone sharing a name needs the identical set of doors (e.g. two
+        // people both in one "Employees" group), their fobs are interchangeable: each simply needs
+        // that door union, and the fob *set* is fully verifiable even though the fob↔person link is
+        // not. Only a shared name whose holders need *different* doors is genuinely unresolvable.
         var byPanel = new Dictionary<string, List<ExpectedCard>>(StringComparer.OrdinalIgnoreCase);
         var unmapped = new List<string>();
-        foreach (var (member, groups) in persons.Values)
+        foreach (var sameName in persons.Values.GroupBy(p => IdentityMap.NormalizeName(p.Member.Name)))
         {
-            var hits = map?.FindByName(member.Name) ?? [];
-            if (hits.Count != 1)
+            var people = sameName.ToList();
+            string name = people[0].Member.Name;
+            var hits = map?.FindByName(name) ?? [];
+            if (hits.Count == 0)
             {
-                unmapped.Add(member.Name + (hits.Count > 1 ? " (ambiguous)" : ""));
+                foreach (var (member, _) in people)
+                    unmapped.Add(member.Name);
+                continue;
+            }
+            if (people.Count > 1 && people.Select(p => GrantKey(policy, p.Groups)).Distinct().Count() > 1)
+            {
+                foreach (var (member, _) in people)
+                    unmapped.Add(member.Name + " (shared name)");
                 continue;
             }
 
-            string fob = hits[0].Fob;
-            foreach (var grant in policy.ResolveGrants(groups))
+            // One person (possibly holding a second card), or several with identical door needs:
+            // expect every fob this name maps to, each with that shared door union.
+            foreach (var grant in policy.ResolveGrants(people[0].Groups))
             {
                 if (!byPanel.TryGetValue(grant.PanelIp, out var list))
                     byPanel[grant.PanelIp] = list = [];
-                list.Add(new ExpectedCard(fob, member.Name, grant.Doors));
+                foreach (var hit in hits)
+                    list.Add(new ExpectedCard(hit.Fob, name, grant.Doors));
             }
         }
 
         return (byPanel, unmapped);
     }
+
+    /// <summary>A canonical, comparable signature of a person's per-panel door grants.</summary>
+    private static string GrantKey(AccessPolicy policy, HashSet<string> groups) =>
+        string.Join("|", policy.ResolveGrants(groups)
+            .Select(g => $"{g.PanelIp}:{string.Join(",", g.Doors.OrderBy(d => d))}")
+            .OrderBy(s => s, StringComparer.Ordinal));
 
     /// <summary>
     /// Diffs the expected per-panel card sets against the live roster, for the given panels.

@@ -45,6 +45,107 @@ public class AccessReconcilerTests
     }
 
     [Fact]
+    public void BuildExpectationGivesAUniquePersonEveryFobTheyHold()
+    {
+        // Beta legitimately carries two cards; both must be expected, and Beta stays mapped.
+        var map = IdentityMap.Build(
+        [
+            new CardholderIdentity { Fob = "100", Name = "Alpha Uno", Source = "test" },
+            new CardholderIdentity { Fob = "200", Name = "Beta Dos", Source = "test" },
+            new CardholderIdentity { Fob = "201", Name = "Beta Dos", Source = "test" },
+        ], "test");
+
+        var (byPanel, unmapped) = AccessReconciler.BuildExpectation(Policy(), map);
+
+        var betaFobs = byPanel["10.0.0.1"].Where(c => c.Name == "Beta Dos").ToList();
+        Assert.Equal(["200", "201"], betaFobs.Select(c => c.Fob).OrderBy(f => f));
+        Assert.All(betaFobs, c => Assert.Equal([1], c.Doors));
+        Assert.DoesNotContain(unmapped, u => u.StartsWith("Beta"));
+    }
+
+    [Fact]
+    public void CompareAcceptsBothFobsOfATwoCardHolderAsInSync()
+    {
+        var map = IdentityMap.Build(
+        [
+            new CardholderIdentity { Fob = "100", Name = "Alpha Uno", Source = "test" },
+            new CardholderIdentity { Fob = "200", Name = "Beta Dos", Source = "test" },
+            new CardholderIdentity { Fob = "201", Name = "Beta Dos", Source = "test" },
+        ], "test");
+        var roster = AccessRoster.Build(
+        [
+            Panel("10.0.0.1", Card("100", true, 1, 2), Card("200", true, 1), Card("201", true, 1)),
+            Panel("10.0.0.2", Card("100", true, 1)),
+        ]);
+
+        var north = AccessReconciler.Compare(Policy(), map, roster, BothPanels)
+            .Panels.Single(p => p.PanelIp == "10.0.0.1");
+
+        Assert.Empty(north.ExtraFobs);   // the second card is expected now, not an unexplained extra
+        Assert.Empty(north.Missing);
+        Assert.True(north.InSync);
+    }
+
+    [Fact]
+    public void BuildExpectationSetMatchesHomonymsWithIdenticalDoors()
+    {
+        // Two DISTINCT people (different GUIDs) share a name and the SAME group: their two fobs are
+        // interchangeable, so both are expected (each with the shared door union), neither unmapped.
+        const string json = """
+            [
+              { "group": "Everyone", "groupGuid": "GG", "scheduleGuid": "SG",
+                "schedule": "(default) = 00:00:00;24:00:00;FFFF;FFFF", "memberCount": 2,
+                "doors": [ { "panelName": "north", "panelIp": "10.0.0.1", "doorNo": 1, "doorName": "d" } ],
+                "members": [
+                  { "name": "Sam Twin", "employeeNo": "1", "personnelGuid": "G-1" },
+                  { "name": "Sam Twin", "employeeNo": "2", "personnelGuid": "G-2" }
+                ] }
+            ]
+            """;
+        var map = IdentityMap.Build(
+        [
+            new CardholderIdentity { Fob = "10", Name = "Sam Twin", Source = "test" },
+            new CardholderIdentity { Fob = "11", Name = "Sam Twin", Source = "test" },
+        ], "test");
+
+        var (byPanel, unmapped) = AccessReconciler.BuildExpectation(AccessPolicy.Parse(json), map);
+
+        Assert.Equal(["10", "11"], byPanel["10.0.0.1"].Select(c => c.Fob).OrderBy(f => f));
+        Assert.All(byPanel["10.0.0.1"], c => Assert.Equal([1], c.Doors));
+        Assert.Empty(unmapped);
+    }
+
+    [Fact]
+    public void BuildExpectationLeavesAGenuinelyUnresolvableSharedNameUnmapped()
+    {
+        // Same name, DIFFERENT door needs (one north, one south): the fobs are not interchangeable,
+        // so neither can be attributed and both stay unmapped.
+        const string json = """
+            [
+              { "group": "North", "groupGuid": "GN", "scheduleGuid": "SG",
+                "schedule": "(default) = 00:00:00;24:00:00;FFFF;FFFF", "memberCount": 1,
+                "doors": [ { "panelName": "north", "panelIp": "10.0.0.1", "doorNo": 1, "doorName": "d" } ],
+                "members": [ { "name": "Sam Twin", "employeeNo": "1", "personnelGuid": "G-1" } ] },
+              { "group": "South", "groupGuid": "GS", "scheduleGuid": "SG",
+                "schedule": "(default) = 00:00:00;24:00:00;FFFF;FFFF", "memberCount": 1,
+                "doors": [ { "panelName": "south", "panelIp": "10.0.0.2", "doorNo": 1, "doorName": "d" } ],
+                "members": [ { "name": "Sam Twin", "employeeNo": "2", "personnelGuid": "G-2" } ] }
+            ]
+            """;
+        var map = IdentityMap.Build(
+        [
+            new CardholderIdentity { Fob = "10", Name = "Sam Twin", Source = "test" },
+            new CardholderIdentity { Fob = "11", Name = "Sam Twin", Source = "test" },
+        ], "test");
+
+        var (byPanel, unmapped) = AccessReconciler.BuildExpectation(AccessPolicy.Parse(json), map);
+
+        Assert.Empty(byPanel);   // nothing attributed to either person
+        Assert.Equal(2, unmapped.Count);
+        Assert.All(unmapped, u => Assert.Contains("shared name", u));
+    }
+
+    [Fact]
     public void BuildExpectationWithNoMapLeavesEveryoneUnmapped()
     {
         var (byPanel, unmapped) = AccessReconciler.BuildExpectation(Policy(), map: null);
