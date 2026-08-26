@@ -1,0 +1,29 @@
+<Project Sdk="WixToolset.Sdk/6.0.1">
+
+  <PropertyGroup>
+    <!-- MSI ProductVersion: numeric major.minor.build (max 255.255.65535). -->
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+    <OutputName>DVRTool-$(ProductVersion)</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputPath>$(MSBuildThisFileDirectory)..\artifacts\installer\</OutputPath>
+
+    <!-- Both apps are published self-contained here before the MSI is linked. -->
+    <GuiPublishDir Condition="'$(GuiPublishDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts\installer\publish\gui</GuiPublishDir>
+    <CliPublishDir Condition="'$(CliPublishDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts\installer\publish\cli</CliPublishDir>
+
+    <DefineConstants>ProductVersion=$(ProductVersion);GuiPublishDir=$(GuiPublishDir);CliPublishDir=$(CliPublishDir)</DefineConstants>
+
+    <!-- Shortcut components keyed on HKLM values trip per-user-profile ICE noise;
+         the package is perMachine, so these checks do not apply. -->
+    <SuppressIces>ICE38;ICE43;ICE57;ICE64</SuppressIces>
+  </PropertyGroup>
+
+  <!-- Publish the GUI and CLI before packaging, so `dotnet build` on this project
+       is the whole installer pipeline. Skip with -p:SkipAppPublish=true when the
+       publish folders are already current. -->
+  <Target Name="PublishApps" BeforeTargets="BeforeBuild" Condition="'$(SkipAppPublish)' != 'true'">
+    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\src\DVRTool.App\DVRTool.App.csproj&quot; -c Release -r win-x64 --self-contained true -p:Version=$(ProductVersion) -o &quot;$(GuiPublishDir)&quot;" />
+    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\src\DVRTool.Cli\DVRTool.Cli.csproj&quot; -c Release -r win-x64 --self-contained true -p:Version=$(ProductVersion) -o &quot;$(CliPublishDir)&quot;" />
+  </Target>
+
+</Project>

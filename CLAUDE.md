@@ -4,6 +4,13 @@
 CLI (`src/DVRTool.Cli`) as its automation/scripting surface; both front ends ride the shared
 `src/DVRTool.Core` engine, so export/remux/overwrite and name-enrichment behavior is identical between them.
 
+**Installer:** `build-installer.ps1` (or `dotnet build installer\DVRTool.Installer.wixproj`)
+produces a per-machine WiX MSI carrying both front ends self-contained; it installs to
+`Program Files\DVRTool` (`app\` GUI, `cli\` CLI), puts `cli\` on the system PATH, writes the
+`HKLM\SOFTWARE\DVRTool` discovery key, and supports `msiexec /qn` with `DESKTOP_SHORTCUT=0`.
+The wixproj is deliberately not in `DVRTool.slnx` — see `docs/installer.md` (UpgradeCode and
+component GUIDs are permanent; MSI versions are numeric x.y.z).
+
 **Device ports:** The three ports an NVR record carries are per-vendor, not universal — the
 vendor SDK port is 8000 on Hikvision and **37777** on Dahua (`VendorPorts.Sdk` in
 `DVRTool.Core`, honoured by the GUI Add-NVR dialog, `dvrtool --sdk-port` and `dvrtool test`).
