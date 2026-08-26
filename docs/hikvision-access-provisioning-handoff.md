@@ -286,7 +286,7 @@ still used.
 **Shipped 1.0.2 (2026-08-26):** built `DVRTool-1.0.2.msi` from main `e34e3a2` (panels as saved
 devices; two-mode Users-tab fleet matrix) and installed it on the relay host as a silent major upgrade
 over 1.0.1 — pushed via the remote-agent relay (sha256 end-to-end verified), `msiexec /i … /qn`,
-exit 0, registry `Version` now `1.0.2`, single uninstall entry, installed CLI answers. The upgrade
-ran without `DESKTOP_SHORTCUT=0`, which re-created the public desktop shortcut the 1.0.1 install
-skipped; it was removed post-install to keep that choice (pass the property on future upgrades).
-MSI and verbose install log left at `C:\Temp\DVRTool-1.0.2*` on the relay host.
+exit 0, registry `Version` now `1.0.2`, single uninstall entry, installed CLI answers. The public
+desktop shortcut is **wanted** on the relay host (operator call, 2026-08-26) — the 1.0.1 install's
+`DESKTOP_SHORTCUT=0` no longer reflects intent, so install upgrades there with plain `/qn` and
+leave the default shortcut in place. MSI and verbose install log left at `C:\Temp\DVRTool-1.0.2*`.
