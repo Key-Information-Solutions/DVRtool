@@ -282,3 +282,11 @@ the appended `…\DVRTool\cli` PATH entry reaches only shells started after the 
 remote-agent process keeps its old env until relaunched); the discovery registry key and full path work
 regardless. Decide the iVMS sync direction (§10 safety note) before routine provisioning if the GUI is
 still used.
+
+**Shipped 1.0.2 (2026-08-26):** built `DVRTool-1.0.2.msi` from main `e34e3a2` (panels as saved
+devices; two-mode Users-tab fleet matrix) and installed it on the relay host as a silent major upgrade
+over 1.0.1 — pushed via the remote-agent relay (sha256 end-to-end verified), `msiexec /i … /qn`,
+exit 0, registry `Version` now `1.0.2`, single uninstall entry, installed CLI answers. The upgrade
+ran without `DESKTOP_SHORTCUT=0`, which re-created the public desktop shortcut the 1.0.1 install
+skipped; it was removed post-install to keep that choice (pass the property on future upgrades).
+MSI and verbose install log left at `C:\Temp\DVRTool-1.0.2*` on the relay host.
