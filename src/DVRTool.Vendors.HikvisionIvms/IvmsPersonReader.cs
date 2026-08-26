@@ -6,10 +6,9 @@ namespace DVRTool.Vendors.HikvisionIvms;
 
 /// <summary>One person as stored in iVMS's <c>PersonnelBasic</c> (⋈ <c>Card</c>) tables.</summary>
 /// <remarks>
-/// <see cref="ExpireTime"/> is the anchor the expiry correlator joins on when no CSV export
-/// is available. The card number is deliberately absent: <c>Card.CardNo</c> is
-/// vendor-encrypted and DVRTool does not decode it — fob↔name is correlated only via the
-/// supported CSV export or a unique-expiry join, never by reversing the field cipher.
+/// <see cref="ExpireTime"/> is the anchor the expiry correlator joins on. This shape carries
+/// no card number; use <see cref="IvmsCardRow"/> (via <see cref="IvmsPersonReader.ReadCardholders"/>)
+/// when the encoded card is needed for the direct decode.
 /// </remarks>
 public sealed record IvmsPerson
 {
@@ -17,6 +16,28 @@ public sealed record IvmsPerson
     public required string Name { get; init; }
     public string? Organization { get; init; }
     public DateTime? ExpireTime { get; init; }
+}
+
+/// <summary>
+/// One (person, card) row from iVMS: <c>PersonnelBasic</c> LEFT JOIN <c>Card</c>. A person
+/// with two cards yields two rows; a person with none yields one row with a null
+/// <see cref="CardNoEncoded"/>.
+/// </summary>
+/// <remarks>
+/// <see cref="CardNoEncoded"/> is the vendor-encoded (base64) card field. It is decoded to a
+/// plaintext fob by <see cref="IvmsCardCipher"/> — a sanctioned, operator-approved read whose
+/// only join key back to the panels is the fob number (iVMS does not push its person id down
+/// to these controllers). See <c>docs/ivms-integration-findings.md</c>.
+/// </remarks>
+public sealed record IvmsCardRow
+{
+    public required string PersonnelGuid { get; init; }
+    public required string Name { get; init; }
+    public string? Organization { get; init; }
+    public DateTime? ExpireTime { get; init; }
+
+    /// <summary>The encoded card number as stored (base64), or null if the person holds no card.</summary>
+    public string? CardNoEncoded { get; init; }
 }
 
 /// <summary>
@@ -40,13 +61,38 @@ public static class IvmsPersonReader
     ];
 
     /// <summary>
-    /// Reads every person (LEFT JOIN Card, so name-only people survive) from the DB at
-    /// <paramref name="dbPath"/>, decrypting with <paramref name="rawKey"/>.
+    /// Reads every person (one row each, no card) from the DB at <paramref name="dbPath"/>,
+    /// decrypting with <paramref name="rawKey"/>.
     /// </summary>
     /// <exception cref="NvrException">
     /// When the key is wrong or not for this install (SQLCipher rejects it).
     /// </exception>
     public static IReadOnlyList<IvmsPerson> ReadPersons(string dbPath, byte[] rawKey)
+    {
+        using var connection = Open(dbPath, rawKey, out bool _, out bool hasOrg);
+        return Guarded(() => QueryPersons(connection, hasOrg));
+    }
+
+    /// <summary>
+    /// Reads every (person, card) row (LEFT JOIN Card, so name-only people survive) from the
+    /// DB at <paramref name="dbPath"/>, decrypting with <paramref name="rawKey"/>. The card
+    /// number comes back encoded; decode it with <see cref="IvmsCardCipher"/>.
+    /// </summary>
+    /// <exception cref="NvrException">
+    /// When the key is wrong or not for this install (SQLCipher rejects it).
+    /// </exception>
+    public static IReadOnlyList<IvmsCardRow> ReadCardholders(string dbPath, byte[] rawKey)
+    {
+        using var connection = Open(dbPath, rawKey, out bool hasCard, out bool hasOrg);
+        return Guarded(() => QueryCardholders(connection, hasCard, hasOrg));
+    }
+
+    /// <summary>
+    /// Opens the SQLCipher DB read-only, applies the key + iVMS's compat params, and confirms
+    /// the person table is present. Throws <see cref="NvrException"/> on a missing file or a
+    /// database that has no <c>PersonnelBasic</c> (wrong file).
+    /// </summary>
+    private static SqliteConnection Open(string dbPath, byte[] rawKey, out bool hasCard, out bool hasOrg)
     {
         EnsureBatteries();
 
@@ -60,39 +106,61 @@ public static class IvmsPersonReader
             Pooling = false,
         };
 
-        using var connection = new SqliteConnection(builder.ConnectionString);
+        var connection = new SqliteConnection(builder.ConnectionString);
         connection.Open();
 
-        // Raw-key form: SQLCipher takes x'<HEX>' as the literal 32-byte key (no KDF over a
-        // passphrase), then compat mode 3 selects iVMS's SQLCipher-3 KDF/page params.
-        string hexKey = Convert.ToHexString(rawKey);
-        Execute(connection, $"PRAGMA key = \"x'{hexKey}'\";");
+        // iVMS passes the DB key to sqlite3_key as the *base64 text itself* — a passphrase
+        // SQLCipher runs through its KDF — not as the 32 raw bytes (an x'<HEX>' literal key
+        // fails with "file is not a database"; verified against the live store). The key is
+        // standard base64 (alphabet A–Za–z0–9+/=, no quote char), so it embeds safely. Then
+        // compat mode 3 selects iVMS's SQLCipher-3 KDF/page params.
+        string passphrase = Convert.ToBase64String(rawKey);
+        Execute(connection, $"PRAGMA key = '{passphrase}';");
         Execute(connection, "PRAGMA cipher_compatibility = 3;");
 
         try
         {
-            bool hasCard = TableExists(connection, "Card");
-            bool hasOrg = TableExists(connection, "Organization");
+            hasCard = TableExists(connection, "Card");
+            hasOrg = TableExists(connection, "Organization");
             if (!TableExists(connection, "PersonnelBasic"))
                 throw new NvrException(
                     "opened the iVMS database but it has no PersonnelBasic table — this may " +
                     "be the wrong database file for the person roster.");
-
-            return QueryPersons(connection, hasCard, hasOrg);
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteNotADb)
         {
-            throw new NvrException(
-                "could not open the iVMS database — the key is wrong or not for this install " +
-                "(SQLCipher rejected it). Capture the key for this install and retry.", inner: ex);
+            connection.Dispose();
+            throw WrongKey(ex);
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+
+        return connection;
+    }
+
+    /// <summary>Runs a query, translating SQLCipher's "not a database" into a clear key error.</summary>
+    private static T Guarded<T>(Func<T> query)
+    {
+        try
+        {
+            return query();
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteNotADb)
+        {
+            throw WrongKey(ex);
         }
     }
 
-    private static IReadOnlyList<IvmsPerson> QueryPersons(SqliteConnection connection,
-        bool hasCard, bool hasOrg)
+    private static NvrException WrongKey(Exception inner) => new(
+        "could not open the iVMS database — the key is wrong or not for this install " +
+        "(SQLCipher rejected it). Capture the key for this install and retry.", inner: inner);
+
+    private static IReadOnlyList<IvmsPerson> QueryPersons(SqliteConnection connection, bool hasOrg)
     {
-        // Only names/org/expiry are selected — never Card.CardNo (encrypted, not decoded here).
-        string orgSelect = hasOrg ? "o.Name" : "NULL";
+        string orgSelect = hasOrg ? "o.OrgName" : "NULL";
         string orgJoin = hasOrg ? "LEFT JOIN Organization o ON o.OrgGUID = p.OrgGUID" : "";
         // A person can hold more than one card; group so each person yields one row.
         string sql = $"""
@@ -122,8 +190,46 @@ public static class IvmsPersonReader
             });
         }
 
-        _ = hasCard; // Card is intentionally not read; its number is encrypted.
         return persons;
+    }
+
+    private static IReadOnlyList<IvmsCardRow> QueryCardholders(SqliteConnection connection,
+        bool hasCard, bool hasOrg)
+    {
+        string orgSelect = hasOrg ? "o.OrgName" : "NULL";
+        string orgJoin = hasOrg ? "LEFT JOIN Organization o ON o.OrgGUID = p.OrgGUID" : "";
+        string cardSelect = hasCard ? "c.CardNo" : "NULL";
+        string cardJoin = hasCard ? "LEFT JOIN Card c ON c.PersonnelGUID = p.PersonnelGUID" : "";
+        // No GROUP BY: one row per card so a person with two fobs yields both.
+        string sql = $"""
+            SELECT p.PersonnelGUID, p.Name, {orgSelect} AS OrgName, p.ExpireTime, {cardSelect} AS CardNo
+            FROM PersonnelBasic p
+            {orgJoin}
+            {cardJoin}
+            """;
+
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        var rows = new List<IvmsCardRow>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string? name = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            rows.Add(new IvmsCardRow
+            {
+                PersonnelGuid = reader.GetString(0),
+                Name = name,
+                Organization = reader.IsDBNull(2) ? null : reader.GetString(2),
+                ExpireTime = ParseExpire(reader.IsDBNull(3) ? null : reader.GetString(3)),
+                CardNoEncoded = reader.IsDBNull(4) ? null : reader.GetString(4),
+            });
+        }
+
+        return rows;
     }
 
     /// <summary>Parses an iVMS expiry timestamp; null when blank or in an unknown format.</summary>
