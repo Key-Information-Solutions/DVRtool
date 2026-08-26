@@ -104,6 +104,55 @@ public sealed record IdentityMap
             CapturedAtUtc = captured,
         };
     }
+
+    /// <summary>
+    /// Every identity whose name matches <paramref name="name"/> under name normalization.
+    /// Usually one; more than one means the same name maps to several fobs, which the caller
+    /// must resolve rather than guess (offboarding the wrong fob is a physical-door mistake).
+    /// </summary>
+    /// <remarks>
+    /// Normalization treats '.', '_' and runs of whitespace as one separator and is
+    /// case-insensitive, so the CLI's <c>First.Last</c> convention matches an iVMS
+    /// <c>"First Last"</c> without the caller having to know which spelling the map holds.
+    /// </remarks>
+    public IReadOnlyList<CardholderIdentity> FindByName(string name)
+    {
+        string key = NormalizeName(name);
+        if (key.Length == 0)
+            return [];
+        return Identities.Where(i => NormalizeName(i.Name) == key).ToList();
+    }
+
+    /// <summary>Returns a copy with any identity for <paramref name="fob"/> removed.</summary>
+    /// <remarks>Offboarding drops the map entry once the panels are revoked.</remarks>
+    public IdentityMap Without(string fob)
+    {
+        string key = AccessRoster.NormalizeCardNo(fob);
+        return this with
+        {
+            Identities = Identities
+                .Where(i => AccessRoster.NormalizeCardNo(i.Fob) != key)
+                .ToList(),
+        };
+    }
+
+    /// <summary>Returns a copy with <paramref name="identity"/> added (superseding any same-fob entry).</summary>
+    /// <remarks>Onboarding records the new name↔fob binding here after the panels are written.</remarks>
+    public IdentityMap With(CardholderIdentity identity) =>
+        Merge(Build([identity], identity.Source, DateTime.UtcNow));
+
+    /// <summary>
+    /// Canonical form of a cardholder name for matching: trimmed, lower-cased, with '.', '_'
+    /// and whitespace collapsed to single spaces.
+    /// </summary>
+    internal static string NormalizeName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return "";
+        var flattened = new string(name.Trim().ToLowerInvariant()
+            .Select(c => c is '.' or '_' ? ' ' : c).ToArray());
+        return string.Join(' ', flattened.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
 }
 
 /// <summary>

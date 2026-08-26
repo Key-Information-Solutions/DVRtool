@@ -982,7 +982,11 @@ static Dictionary<string, string> ParseOptions(string[] args)
     // Flags without a value (or followed by another --flag) are stored as "".
     // --remux is deliberately absent: it takes an optional container name, and bare
     // "--remux" still lands here as "" via the lookahead below.
-    string[] boolFlags = ["with-creds", "tls", "force", "trust-new-device"];
+    string[] boolFlags = ["with-creds", "tls", "force", "trust-new-device", "dry-run"];
+    // Flags that may be given more than once (e.g. `access onboard --group A --group B`).
+    // Repeats accumulate, joined by an ASCII unit separator the caller splits back out; a
+    // plain dictionary would otherwise keep only the last one.
+    string[] multiFlags = ["group"];
     var opts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     for (int i = 0; i < args.Length; i++)
     {
@@ -996,7 +1000,12 @@ static Dictionary<string, string> ParseOptions(string[] args)
         }
         else
         {
-            opts[key] = args[++i];
+            string value = args[++i];
+            if (multiFlags.Contains(key, StringComparer.OrdinalIgnoreCase) &&
+                opts.TryGetValue(key, out var previous) && previous.Length > 0)
+                opts[key] = previous + '\u001f' + value;
+            else
+                opts[key] = value;
         }
     }
     return opts;
@@ -1016,8 +1025,9 @@ static void LoadDotEnv(string? explicitPath)
     string[] allowed =
     [
         "DVR_HOST", "DVR_USER", "DVR_PASS", "DVR_SDK_PORT", "DVR_SDK_DIR",
-        // Door-access panels (see AccessCommands).
-        "OCB_PANELS", "OCB_USER", "OCB_PASS", "OCB_SDK_PORT", "OCB_SDK_DIR",
+        // Door-access panels (see AccessCommands). OCB_POLICY = default --policy path for the
+        // reconcile/onboard provisioning verbs.
+        "OCB_PANELS", "OCB_USER", "OCB_PASS", "OCB_SDK_PORT", "OCB_SDK_DIR", "OCB_POLICY",
     ];
     var applied = new List<string>();
     foreach (string raw in File.ReadAllLines(path))

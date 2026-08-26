@@ -29,18 +29,29 @@ internal static class AccessCommands
           compare    Which fobs one panel has that another is missing
           export     Write the roster to CSV
           identity   Import cardholder names from iVMS to enrich the roster (see below)
+          reconcile  READ-ONLY drift: policy's expected per-panel cards vs the live panels
+          onboard    Provision a new hire's fob from group membership   (--dry-run default)
+          offboard   Revoke a departed person's fob on every panel       (--dry-run default)
           grant      Create or update a fob's door rights          (needs --force)
           revoke     Invalidate a fob — the device's own delete     (needs --force)
+
+        reconcile / onboard / offboard are policy-driven (handoff §4-§5). The policy is the
+        iVMS-extracted access-control-policy.json: each group -> which panels/doors + schedule.
+        A person in several groups gets, per panel, the UNION of every group's doors. Grants
+        are written 24/7 (right-plan 1); a group whose schedule is not 24/7 is provisioned
+        always-on WITH A WARNING (a faithful schedule writer is a later task).
 
         The panels store no cardholder names. Once names are imported from iVMS they are
         cached in a DVRTool-owned map and applied AUTOMATICALLY to roster, cards, find,
         compare and export — no flag needed. Import is one-way (iVMS → DVRTool only).
 
         identity options (one-way name enrichment):
-          --import-csv <file>     import the supported iVMS Person export (plaintext card
-                                  numbers) — the complete, recommended path
-          --import-ivms           read the live iVMS SQLCipher DB and correlate names to
-                                  fobs by unique expiry (PARTIAL) — also needs --panels
+          --import-ivms           read the iVMS SQLCipher DB and decode each card to its fob
+                                  directly — complete, and needs no panels. Add --panels to
+                                  also expiry-correlate any card that does not decode (the
+                                  rare high/5-digit variant)
+          --import-csv <file>     import an iVMS Person export (plaintext card numbers), if
+                                  your iVMS build offers one — also complete
           --ivms-db <path>        the iVMS person DB (or its UserData root); default:
                                   auto-discover the local install
           --db-key <b64>          the per-install SQLCipher key, base64 (or IVMS_DB_KEY,
@@ -60,15 +71,23 @@ internal static class AccessCommands
           --port <n>              default SDK port for entries without one, or
                                   OCB_SDK_PORT (default 8000)
           --sdk-dir <path>        folder holding HCNetSDK.dll, or OCB_SDK_DIR
-          --card <no>             fob number
-          --name <text>           cardholder name (substring, case-insensitive)
+          --card <no>             fob number (onboard: the PHYSICAL fob, an input)
+          --name <text>           cardholder name; grant/find substring, onboard/offboard
+                                  exact (First.Last, matched against the imported map)
           --doors <n[,n...]|all>  doors a granted fob opens (grant)
           --valid-from <time>     "yyyy-MM-dd HH:mm[:ss]" (panel-local); default now
-          --valid-until <time>    "yyyy-MM-dd HH:mm[:ss]" (panel-local)
+          --valid-until <time>    "yyyy-MM-dd[ HH:mm[:ss]]" (panel-local); onboard default
+                                  is a bounded ~10-year window
+          --group <name>          access group for onboard; repeat for several
+                                  (--group Employes --group IT) or comma-separate
+          --policy <path>         access-control-policy.json (reconcile/onboard), or OCB_POLICY
           --against <ip>          the panel to compare against (compare)
           --out <file>            CSV target (export)
-          --force                 actually perform a write; without it, grant/revoke
-                                  only report what they would change
+          --dry-run               reconcile/onboard/offboard: print the writes without making
+                                  them. THIS IS THE DEFAULT — provisioning never writes unless
+                                  --force is given and --dry-run is not
+          --force                 actually perform a write; without it, grant/revoke/onboard/
+                                  offboard only report what they would change
           --env <path>            .env file to load (default: .env in the working dir)
 
         Writes touch physical doors. grant/revoke re-read the fob afterwards and print
@@ -106,6 +125,9 @@ internal static class AccessCommands
             "compare" => await CompareAsync(opts, ct),
             "export" => await ExportAsync(opts, ct),
             "identity" => await IdentityAsync(opts, ct),
+            "reconcile" => await ReconcileAsync(opts, ct),
+            "onboard" => await OnboardAsync(opts, ct),
+            "offboard" => await OffboardAsync(opts, ct),
             "grant" => await GrantAsync(opts, ct),
             "revoke" => await RevokeAsync(opts, ct),
             _ => UnknownSubcommand(subcommand),
@@ -413,26 +435,48 @@ internal static class AccessCommands
     {
         var install = ResolveInstall(opts);
         byte[] key = IvmsKeyStore.Resolve(Value(opts, "db-key"), install.Id);
-        var persons = IvmsPersonReader.ReadPersons(install.PersonDbPath, key);
-        Console.WriteLine($"read {persons.Count} person(s) from {install.Product} ({install.PersonDbPath}).");
 
-        var settings = AccessSettings.From(opts);
-        var roster = await BuildRosterAsync(settings, ct);
-        ReportFailures(roster);
-
-        var result = IvmsExpiryCorrelator.Correlate(persons, roster);
-        var merged = MergeIntoStore(result.Map);
-
+        var rows = IvmsPersonReader.ReadCardholders(install.PersonDbPath, key);
+        var direct = IvmsDirectImporter.Build(rows);
         Console.WriteLine(
-            $"\ncorrelated by unique expiry: {result.Matched} matched, " +
-            $"{result.AmbiguousExpiries} ambiguous, {result.UnmatchedPersons} unmatched.");
-        foreach (string note in result.Notes)
-            Console.WriteLine($"  {note}");
+            $"read {direct.Persons} person(s) / {direct.CardsSeen} card(s) from " +
+            $"{install.Product} ({install.PersonDbPath}).");
+        Console.WriteLine($"decoded {direct.Decoded} fob(s) directly from the card field.");
+
+        var map = direct.Map;
+
+        // The direct decode is complete for the ordinary ≤4-digit fobs and needs no panels.
+        // Only the rare high/5-digit variant fails it. If panels are configured, expiry-
+        // correlate just those stragglers; otherwise list them so they can be resolved by hand.
+        bool panelsConfigured =
+            (Value(opts, "panels") ?? Environment.GetEnvironmentVariable("OCB_PANELS")) is not null;
+
+        if (direct.Undecodable.Count > 0 && panelsConfigured)
+        {
+            Console.WriteLine(
+                $"{direct.Undecodable.Count} person(s) did not decode; correlating those by " +
+                "unique expiry against the panels...");
+            var settings = AccessSettings.From(opts);
+            var roster = await BuildRosterAsync(settings, ct);
+            ReportFailures(roster);
+            var corr = IvmsExpiryCorrelator.Correlate(direct.Undecodable, roster);
+            map = map.Merge(corr.Map);
+            Console.WriteLine(
+                $"  expiry correlation bound {corr.Matched} more, {corr.AmbiguousExpiries} " +
+                $"ambiguous, {corr.UnmatchedPersons} still unmatched.");
+        }
+        else if (direct.Undecodable.Count > 0)
+        {
+            Console.WriteLine($"{direct.Undecodable.Count} person(s) could not be decoded " +
+                "(e.g. a high/5-digit fob variant):");
+            foreach (var person in direct.Undecodable)
+                Console.WriteLine($"  - {person.Name}");
+            Console.Error.WriteLine(
+                "note: re-run with --panels to correlate these by expiry, or map them by hand.");
+        }
+
+        var merged = MergeIntoStore(map);
         Console.WriteLine($"map now holds {merged.Count} name(s), saved to {IdentityMapStore.DefaultPath}.");
-        Console.Error.WriteLine(
-            "note: expiry correlation is PARTIAL — only fobs whose expiry is unique on both " +
-            "sides are bound. For complete coverage, use the supported export: " +
-            "`dvrtool access identity --import-csv <export.csv>`.");
         return 0;
     }
 
@@ -514,6 +558,222 @@ internal static class AccessCommands
                 $"multiple iVMS installs found ({string.Join(", ", installs.Select(i => i.Product))}) " +
                 "— name one with --ivms-db <path>.");
         return installs[0];
+    }
+
+    // ---------- provisioning (policy-driven onboard / offboard / reconcile) ----------
+
+    /// <summary>
+    /// READ-ONLY drift report: the policy's expected per-panel card sets vs a live enumeration.
+    /// Writes nothing — this is the safe way to prove the loader and resolver match production.
+    /// </summary>
+    private static async Task<int> ReconcileAsync(Dictionary<string, string> opts, CancellationToken ct)
+    {
+        var policy = AccessPolicy.Load(ResolvePolicyPath(opts));
+        var settings = AccessSettings.From(opts);
+
+        // The same read the roster verbs use — no side effects — then diff against the policy.
+        var roster = await BuildRosterAsync(settings, ct);
+        ReportFailures(roster);
+
+        var map = IdentityMapStore.Load();
+        var panelIps = settings.Panels.Select(p => p.Host).ToList();
+        var report = AccessReconciler.Compare(policy, map, roster, panelIps);
+
+        Console.WriteLine($"\nreconcile against {policy.Groups.Count} group(s)" +
+            (map is null
+                ? " — no identity map loaded, so every member is unmapped (import from iVMS first)."
+                : $" ({map.Count} name(s) mapped)."));
+
+        bool anyDrift = false;
+        foreach (var panel in report.Panels)
+        {
+            if (!panel.Read)
+            {
+                Console.WriteLine($"\n  {panel.PanelIp}: NOT READ — expected {panel.ExpectedCount}; " +
+                    "drift can't be judged (see the panel error above).");
+                anyDrift = true;
+                continue;
+            }
+
+            bool synced = panel.InSync;
+            anyDrift |= !synced;
+            Console.WriteLine($"\n  {panel.PanelIp}: expected {panel.ExpectedCount}, live {panel.LiveCount}" +
+                (synced ? " — in sync" : " — DRIFT"));
+
+            foreach (var m in panel.Missing)
+                Console.WriteLine($"      missing : fob {m.Fob} doors={string.Join(",", m.Doors)}" +
+                    (m.Name.Length > 0 ? $"  ({m.Name})" : ""));
+            foreach (var d in panel.DoorMismatches)
+                Console.WriteLine($"      doors   : fob {d.Fob} expected={string.Join(",", d.Expected)} " +
+                    $"live={string.Join(",", d.Actual)}" + (d.Name.Length > 0 ? $"  ({d.Name})" : ""));
+            if (panel.ExtraFobs.Count > 0)
+                Console.WriteLine($"      extra   : {panel.ExtraFobs.Count} live fob(s) not in policy " +
+                    $"(incl. any unmapped holder): {string.Join(", ", panel.ExtraFobs.Take(20))}" +
+                    (panel.ExtraFobs.Count > 20 ? ", …" : ""));
+        }
+
+        if (report.UnmappedMembers.Count > 0)
+            Console.Error.WriteLine(
+                $"\nnote: {report.UnmappedMembers.Count} policy member(s) have no unique fob in the " +
+                "identity map and were NOT checked (their live fobs show as \"extra\" above). " +
+                "Import/repair the map with `access identity`.");
+        foreach (var warning in report.ScheduleWarnings)
+            Console.Error.WriteLine($"warning: {warning}");
+
+        if (roster.IsPartial)
+        {
+            Console.Error.WriteLine("\nRESULT: PARTIAL — at least one panel could not be read.");
+            return 1;
+        }
+        Console.WriteLine(anyDrift ? "\nRESULT: DRIFT — see above." : "\nRESULT: in sync.");
+        return anyDrift ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Provision a new hire: resolve their group membership to a per-panel door union, then write
+    /// one bounded, active fob per panel. <c>--dry-run</c> (the default) prints the exact writes;
+    /// <c>--force</c> performs them and records name↔fob in the identity map.
+    /// </summary>
+    private static async Task<int> OnboardAsync(Dictionary<string, string> opts, CancellationToken ct)
+    {
+        string name = Value(opts, "name")
+            ?? throw new ArgumentException("onboard needs --name First.Last");
+        string card = Value(opts, "card")
+            ?? throw new ArgumentException("onboard needs --card <fob> (the physical fob number)");
+        var groups = ParseGroups(opts);
+        var policy = AccessPolicy.Load(ResolvePolicyPath(opts));
+
+        DateTime? until = Value(opts, "valid-until") is string u ? ParseValidUntil(u) : null;
+        DateTime? from = Value(opts, "valid-from") is string f ? ParseTime(f) : null;
+        var plan = AccessProvisioner.PlanOnboard(policy, name, card, groups, from, until);
+
+        Console.WriteLine($"onboard {plan.Name} — fob {plan.Fob} — group(s): {string.Join(", ", plan.Groups)}");
+        Console.WriteLine($"  valid:  {plan.ValidFrom:yyyy-MM-dd HH:mm:ss} → " +
+            $"{plan.ValidUntil:yyyy-MM-dd HH:mm:ss} (panel-local)");
+        foreach (var w in plan.Writes)
+            Console.WriteLine($"  {w.PanelIp,-16} upsert fob {w.Card.CardNo} " +
+                $"doors={w.Card.DoorSummary} valid=yes");
+        foreach (var warning in plan.ScheduleWarnings)
+            Console.Error.WriteLine($"warning: {warning}");
+
+        if (!ShouldWrite(opts))
+        {
+            Console.WriteLine("\nDRY RUN — no panels were written. Re-run with --force to apply.");
+            return 0;
+        }
+
+        // ---- write path (operator, --force) — verified per panel, identity map updated after ----
+        var settings = AccessSettings.From(opts);
+        int failed = 0;
+        foreach (var w in plan.Writes)
+        {
+            var panel = PanelTarget.Parse(w.PanelIp, settings.SdkPort);
+            var verified = await settings.ConnectVerifiedAsync(panel, ct);
+            using var client = verified.Client;
+            DeviceIdentityGuard.Ensure(verified.Identity);
+            if (verified.Identity.Message.Length > 0)
+                Console.Error.WriteLine($"note: {verified.Identity.Message}");
+
+            Console.WriteLine($"\npanel {panel.Label}: writing fob {w.Card.CardNo} …");
+            await client.UpsertCardAsync(w.Card, ct);
+            if (await VerifyAsync(client, w.Card.CardNo, panel.Label, expectValid: true, w.Card.Doors, ct) != 0)
+                failed++;
+        }
+
+        // Record the name↔fob binding only once the panels actually hold the card.
+        var identity = new CardholderIdentity { Fob = plan.Fob, Name = plan.Name, Source = "onboard" };
+        var updated = (IdentityMapStore.Load() ?? IdentityMap.Build([], "onboard")).With(identity);
+        IdentityMapStore.Save(updated);
+        Console.WriteLine($"\nrecorded {plan.Name} → fob {plan.Fob} in {IdentityMapStore.DefaultPath}.");
+        return failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Offboard a departed person: resolve their name to a fob via the identity map, then revoke
+    /// it on EVERY panel (a stale fob can linger anywhere), and drop the map entry.
+    /// </summary>
+    private static async Task<int> OffboardAsync(Dictionary<string, string> opts, CancellationToken ct)
+    {
+        string name = Value(opts, "name")
+            ?? throw new ArgumentException("offboard needs --name First.Last");
+        var settings = AccessSettings.From(opts);
+        var map = IdentityMapStore.Load();
+        var panelIps = settings.Panels.Select(p => p.Host).ToList();
+        var plan = AccessProvisioner.PlanOffboard(name, map, panelIps);
+
+        Console.WriteLine($"offboard {plan.Name} — fob {plan.Fob}");
+        Console.WriteLine($"  would revoke fob {plan.Fob} on all {plan.PanelRevokes.Count} panel(s): " +
+            string.Join(", ", plan.PanelRevokes));
+
+        if (!ShouldWrite(opts))
+        {
+            Console.WriteLine("\nDRY RUN — no panels were written. Re-run with --force to apply.");
+            return 0;
+        }
+
+        // ---- write path (operator, --force): revoke everywhere it can be, then drop the map entry ----
+        int failed = 0;
+        foreach (var panel in settings.Panels)
+        {
+            var verified = await settings.ConnectVerifiedAsync(panel, ct);
+            using var client = verified.Client;
+            DeviceIdentityGuard.Ensure(verified.Identity);
+            if (verified.Identity.Message.Length > 0)
+                Console.Error.WriteLine($"note: {verified.Identity.Message}");
+
+            Console.WriteLine($"\npanel {panel.Label}: revoking fob {plan.Fob} …");
+            await client.RevokeCardAsync(plan.Fob, ct);
+            if (await VerifyAsync(client, plan.Fob, panel.Label, expectValid: false, [], ct) != 0)
+                failed++;
+        }
+
+        // map is non-null here: PlanOffboard would have thrown otherwise.
+        IdentityMapStore.Save(map!.Without(plan.Fob));
+        Console.WriteLine($"\ndropped fob {plan.Fob} ({plan.Name}) from {IdentityMapStore.DefaultPath}.");
+        return failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// A write happens only with an explicit <c>--force</c> and no <c>--dry-run</c>. <c>--dry-run</c>
+    /// is the default and, if given alongside <c>--force</c>, wins — the safe reading of a
+    /// contradictory command is to not touch a physical door.
+    /// </summary>
+    private static bool ShouldWrite(Dictionary<string, string> opts)
+    {
+        if (opts.ContainsKey("dry-run") && opts.ContainsKey("force"))
+            Console.Error.WriteLine("note: both --dry-run and --force given; --dry-run wins (no writes).");
+        return opts.ContainsKey("force") && !opts.ContainsKey("dry-run");
+    }
+
+    private static string ResolvePolicyPath(Dictionary<string, string> opts) =>
+        Value(opts, "policy")
+        ?? Environment.GetEnvironmentVariable("OCB_POLICY")
+        ?? throw new ArgumentException(
+            "missing --policy <path> (or OCB_POLICY) — point it at access-control-policy.json.");
+
+    /// <summary>Reads one or more <c>--group</c> values (repeated flags and/or comma-separated).</summary>
+    private static IReadOnlyList<string> ParseGroups(Dictionary<string, string> opts)
+    {
+        string? raw = Value(opts, "group");
+        if (raw is null)
+            throw new ArgumentException("onboard needs at least one --group <name>");
+        var groups = raw
+            .Split(['\u001f', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (groups.Count == 0)
+            throw new ArgumentException("onboard needs at least one --group <name>");
+        return groups;
+    }
+
+    /// <summary>
+    /// Parses <c>--valid-until</c>. A bare date means "through the end of that day", so a fob
+    /// valid until 2026-08-30 still opens the door all of the 30th.
+    /// </summary>
+    private static DateTime ParseValidUntil(string value)
+    {
+        var t = ParseTime(value);
+        return t.TimeOfDay == TimeSpan.Zero ? t.Date.AddDays(1).AddSeconds(-1) : t;
     }
 
     // ---------- writes ----------
@@ -714,7 +974,7 @@ internal static class AccessCommands
         "these panels store no cardholder identity: every credential is a fob number plus " +
         "door rights, and the card→name channel is unsupported on this firmware. Names live " +
         "only in whatever provisioned the fobs (iVMS-4200). Import them from iVMS with " +
-        "`dvrtool access identity --import-csv <export.csv>`.";
+        "`dvrtool access identity --import-ivms`.";
 
     /// <summary>Reads every panel, keeping per-panel failures instead of dropping them.</summary>
     private static async Task<AccessRoster> BuildRosterAsync(AccessSettings settings,
