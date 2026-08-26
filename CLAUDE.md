@@ -61,9 +61,19 @@ silently produce a card that never opens a door.
 iVMS/NVMS. The primary surface is the GUI Access tab's "Cardholder names (from iVMS)" group (Import CSV /
 Import from iVMS database / Cache key / Clear map); the `access identity` verbs are the CLI/automation
 equivalent (`src/DVRTool.Vendors.HikvisionIvms`): `--import-csv` (the supported plaintext Person export —
-complete path), `--import-ivms` (reads the live SQLCipher DB and correlates names to fobs by unique expiry
-— partial), `--capture-key`/`--where`/`--clear`. The map is cached in a DVRTool-owned file and applied
-automatically to the roster/find/export views in both front ends. The per-install SQLCipher key is supplied
-by the operator at runtime (flag / `IVMS_DB_KEY` / cached key file) — **never hardcoded**; no key capture
-(debugger) or write-back into iVMS is implemented, and the `Card.CardNo` cipher is deliberately not used.
-Read `docs/ivms-integration-findings.md` before touching it.
+complete path), `--import-ivms` (reads the live SQLCipher DB and decodes each `Card.CardNo` directly to
+its fob via `IvmsCardCipher`, falling back to the unique-expiry join only for the rare card that does not
+decode — near-complete), `--capture-key`/`--where`/`--clear`. The map is cached in a DVRTool-owned file and
+applied automatically to the roster/find/export views in both front ends. The per-install SQLCipher key is
+supplied by the operator at runtime (flag / `IVMS_DB_KEY` / cached key file) — **never hardcoded**; no key
+capture (debugger) or write-back into iVMS is implemented. Read `docs/ivms-integration-findings.md` before
+touching it.
+
+**Access provisioning:** DVRTool is the authority for Site A add/remove-user; iVMS is out of the
+runtime flow (`docs/hikvision-access-provisioning-handoff.md`). `AccessPolicy` (`DVRTool.Core`) loads the
+iVMS-pulled `access-control-policy.json` (kept under gitignored `artifacts/`, never committed) and
+`ResolveGrants` unions a person's groups into per-panel door sets; `AccessProvisioner` plans onboards
+(physical fob in, bounded validity window, plan-1/24x7 with a warning for any non-24/7 group) and offboards
+(name→fob via the identity map, revoke on every panel); `AccessReconciler` is the read-only drift report.
+CLI: `access reconcile | onboard | offboard`, `--dry-run` default and `--force` required for any write. **No
+live write has been fired** — the `.223`/ocb2 canary is gated on operator go-ahead (handoff §10).
