@@ -204,3 +204,31 @@ panel — the calling IP shares iVMS's lockout, so never loop; always `Logout`+`
 does); and an SDK write lands on the panel while iVMS stays unaware until its next "Get from Device"
 — irrelevant for a throwaway fob revoked before it matters, but decide sync direction before routine
 provisioning.
+
+## 11. Run record — first live write DONE, byte-clean (2026-08-26)
+
+The `.223` / ocb2 canary in §10 was executed on **the relay host** (the panel-LAN machine, via the
+remote-agent relay) with the shipped `C:\Program Files\DVRTool\cli\dvrtool.exe`, operator go-ahead
+given. **This is the first live write to a physical panel, and it rolled back byte-clean.** Sequence
+and results:
+
+1. `access reconcile` — reached and serial-pinned all three panels; **`.223` in sync (6/6)**. `.221`
+   (144 vs 149) and `.222` (14 vs 15) showed **explained** drift only: 5 policy members have no
+   unique fob in the identity map (fobs incl. the known straggler), so their live fobs read as
+   "extra". Not a resolver error — an identity-map completeness gap. Resolver matches reality.
+2. Snapshot `.223` → `before.csv` (6 fobs). Confirmed fob **9001 absent fleet-wide** before touching it.
+3. Dry-run `grant --card 9001 --doors 1 --panel 192.0.2.223` → planned `.223`-only add; refused
+   without `--force`, as designed.
+4. Write `grant … --valid-until 2026-08-27 --force` → client re-read and **verified** `fob 9001
+   doors=1 valid=yes`. (Gave it a bounded window rather than the unbounded default, defensively.)
+5. Independent `find --card 9001` → present on **`.223` only**, active.
+6. `revoke --card 9001 --force` → verified **gone**; `find` confirms absent fleet-wide.
+7. Re-export `.223` → `after.csv`; **SHA-256 of before == after** (byte-identical). Rollback proof, as
+   findings §5a saw with the low-level path.
+
+The whole provisioning write path (`grant`/`revoke` → `UpsertCardAsync`/`RevokeCardAsync`, identity
+guard, `--force` gate, verify-after-write) is now **proven end-to-end on live hardware.** The scratch
+working dir (`.env` + policy + CSVs — a secret and customer data) was staged for the run and **deleted
+after**; nothing customer-side was committed. Routine provisioning is unblocked; before using
+`onboard` for real hires, complete the identity map (the 5 unmapped holders) so reconcile reads fully
+in sync, and decide the iVMS sync direction (§10 safety note) if the GUI is still used.
