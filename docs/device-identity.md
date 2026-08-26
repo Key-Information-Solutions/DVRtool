@@ -86,9 +86,14 @@ Where it runs:
 - **GUI, Test connection** — the web probe already fetched device info, so identity costs
   it nothing. A wrong device renders red and the summary refuses to say "all three ports
   reachable". A successful test binds the record to the serial it just saw.
-- **GUI, Users tab** — both sides of an account comparison are identified before either is
-  read.
-- **GUI, Access tab** — per panel, on every roster read.
+- **GUI, Users tab** — every device in the selected set is identified before its read
+  counts, in both modes. A mismatch is carried as that device's failure (its column reads
+  "?", with a PARTIAL warning naming it) rather than silently folded into the matrix.
+- **GUI, Access tab** — per panel, on every roster read. A *saved* panel
+  (`SavedDevice.Kind = "panel"`, added 2026-08-26) is additionally held to its record's
+  `ExpectedSerial`, exactly like a saved recorder; the record binds on its first successful
+  roster read, because the Add-device dialog's Test deliberately never logs into a panel
+  (DS-K lockout).
 - **CLI** — `VerifyIdentityAsync` before every command that has credentials to do it with.
   `--expect-serial <s>` asserts a specific serial (for scripts); `--trust-new-device`
   re-pins (for a genuinely replaced recorder).

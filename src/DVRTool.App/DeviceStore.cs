@@ -9,10 +9,19 @@ using DVRTool.Vendors.Hikvision;
 
 namespace DVRTool.App;
 
-/// <summary>A saved NVR. The password is DPAPI-protected per Windows user.</summary>
+/// <summary>A saved device. The password is DPAPI-protected per Windows user.</summary>
 public sealed class SavedDevice
 {
     public string Name { get; set; } = "";
+
+    /// <summary>
+    /// What kind of hardware this record means: <c>"recorder"</c> (NVR/DVR) or
+    /// <c>"panel"</c> (door-access controller). Stored as a string so records written by an
+    /// older build — which carry no kind at all — deserialize as recorders, which is what
+    /// every record was before panels could be saved.
+    /// </summary>
+    public string Kind { get; set; } = "recorder";
+
     public string Vendor { get; set; } = "hikvision";
     public string Host { get; set; } = "";
     public int HttpPort { get; set; } = 80;
@@ -58,6 +67,17 @@ public sealed class SavedDevice
             ? DVRTool.Core.Vendor.Dahua
             : DVRTool.Core.Vendor.Hikvision;
 
+    /// <summary>True when this record is a door-access controller rather than a recorder.</summary>
+    [JsonIgnore]
+    public bool IsPanel => Kind.Equals("panel", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>How the record reads in the device list, where both kinds sit together.</summary>
+    [JsonIgnore]
+    public string DisplayLabel => IsPanel ? $"{DisplayName}  (panel)" : DisplayName;
+
+    [JsonIgnore]
+    private string DisplayName => Name.Length > 0 ? Name : Host;
+
     public void SetPassword(string plain) =>
         ProtectedPassword = Convert.ToBase64String(ProtectedData.Protect(
             Encoding.UTF8.GetBytes(plain), null, DataProtectionScope.CurrentUser));
@@ -79,18 +99,44 @@ public sealed class SavedDevice
         UseTls = UseTls,
     };
 
-    public INvrClient CreateClient() => VendorKind == DVRTool.Core.Vendor.Dahua
-        ? new DahuaClient(ToConnection())
-        : new HikvisionClient(ToConnection());
+    /// <summary>
+    /// A recorder's vendor client. Meaningless for a panel — those are driven through
+    /// <see cref="ToPanelConnection"/> — so calling this on one is a caller bug, not a
+    /// condition to degrade around.
+    /// </summary>
+    public INvrClient CreateClient()
+    {
+        if (IsPanel)
+            throw new InvalidOperationException(
+                $"'{Name}' is a door panel — it has no NVR client.");
+        return VendorKind == DVRTool.Core.Vendor.Dahua
+            ? new DahuaClient(ToConnection())
+            : new HikvisionClient(ToConnection());
+    }
 
-    /// <summary>The identity-pin key for this record: the port it authenticates on.</summary>
+    /// <summary>This record as the Access engine's connection type. Panels only.</summary>
+    public AccessPanelConnection ToPanelConnection() => new()
+    {
+        Host = Host,
+        SdkPort = SdkPort,
+        Username = Username,
+        Password = Password,
+    };
+
+    /// <summary>
+    /// The identity-pin key for this record: the port it authenticates on. For a recorder
+    /// that is the web port; a panel's only port is the SDK one.
+    /// </summary>
     [JsonIgnore]
-    public string Address => DeviceAddress.Format(Host, HttpPort);
+    public string Address => DeviceAddress.Format(Host, AuthPort);
 
     /// <summary>This record as the fleet audit sees it.</summary>
     public FleetRecord ToFleetRecord() =>
-        new(Name.Length > 0 ? Name : Address, Host, HttpPort,
+        new(Name.Length > 0 ? Name : Address, Host, AuthPort,
             ExpectedSerial.Length > 0 ? ExpectedSerial : null);
+
+    [JsonIgnore]
+    private int AuthPort => IsPanel ? SdkPort : HttpPort;
 }
 
 public static class DeviceStore

@@ -49,7 +49,12 @@ the rest" handlers do not swallow it.
 **Access control:** Hikvision/OEM door panels are surfaced primarily in the GUI Access tab
 (`src/DVRTool.App`, `MainWindow.Access.cs`) for viewing rosters and importing cardholder names; the
 `access` CLI command group provides the same reads **plus** the gated writes (`grant`/`revoke`) for
-automation. Both go through `src/DVRTool.Vendors.HikvisionAccess`, which rides the shared
+automation. Panels are saveable devices since 2026-08-26 (`SavedDevice.Kind = "panel"` — SDK port
+only, own credentials, serial-bound on first roster read); the Access tab reads saved panels plus
+ad-hoc typed addresses, and the GUI **Users tab** has two modes — DVR/NVR login accounts and
+Access-control cardholders — each a read-only matrix (row per user/fob, column per selected
+device, `FleetMatrix.cs` in Core) where an unreadable device shows "?" and is excluded from row
+status, never read as "missing". Both go through `src/DVRTool.Vendors.HikvisionAccess`, which rides the shared
 HCNetSDK P/Invoke surface in `src/DVRTool.Vendors.HikvisionSdk` (SDK port, 8000 by default). Reads and writes are both live-verified against Site A's
 three OCB panels (writes via an approved canary round trip on a throwaway fob, rolled back
 clean; the GUI tab stays read-only toward the panels).

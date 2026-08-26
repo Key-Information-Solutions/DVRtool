@@ -81,9 +81,15 @@ answers it for free.
 **Neither is the Access tab's port.** This is the misreading the section originally existed
 to head off, and it still applies: the Access tab and the `access` CLI verbs use a vendor
 SDK port, but a *different* one, on different hardware. `AccessPanelConnection` is a
-deliberately separate record with its own `SdkPort`, fed by the Access tab's own port box
-(`OCB_SDK_PORT`), not by anything in the NVR list. A DS-K2604 is not in `devices.json` and
-never will be.
+deliberately separate record with its own `SdkPort`.
+
+This section used to end "a DS-K2604 is not in `devices.json` and never will be", and that
+changed on 2026-08-26: panels can now be saved (`SavedDevice.Kind = "panel"`), because
+retyping the fleet's addresses every session was the real cost. What the old rule was
+protecting survives the change — a panel record carries **only** an SDK port (the dialog's
+HTTP/RTSP/TLS rows disappear for it), connects with its own credentials, and never feeds a
+recorder's `SdkPort` or vice versa. The Access tab's own port box remains, as the default
+for *ad-hoc* addresses typed alongside the saved panels (`OCB_SDK_PORT` still prefills it).
 
 The consequence messaging in both front ends is vendor-split to match. A dead SDK port on
 Hikvision now reads *"that costs SDK live view — the route that works when RTSP is closed —

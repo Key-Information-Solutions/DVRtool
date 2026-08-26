@@ -42,7 +42,13 @@ public partial class MainWindow : Window
     private bool _cleanupStarted;
     private bool _closePending;
 
-    private sealed record UserRow(string User, string LevelA, string LevelB, string Status);
+    /// <summary>
+    /// One Users-tab grid row, either mode: an account (or fob) with one prepared display
+    /// cell per selected device. Cells are strings the grid shows verbatim — "—" for absent,
+    /// "?" under a device that could not be read — because the columns are built at runtime
+    /// and bind by index.
+    /// </summary>
+    private sealed record FleetRow(string Key, string Name, string[] Cells, string Status);
 
     private sealed record ChannelItem(Channel Channel)
     {
@@ -71,8 +77,7 @@ public partial class MainWindow : Window
         foreach (var device in DeviceStore.Load())
             _devices.Add(device);
         DeviceList.ItemsSource = _devices;
-        UsersDeviceA.ItemsSource = _devices;
-        UsersDeviceB.ItemsSource = _devices;
+        InitializeUsersTab();
 
         var now = DateTime.Now;
         StartBox.Text = now.Date.ToString("yyyy-MM-dd HH:mm:ss");
@@ -247,6 +252,16 @@ public partial class MainWindow : Window
 
         if (DeviceList.SelectedItem is not SavedDevice device)
             return;
+
+        // A panel has no channels, no streams and no NVR client — the video tabs have
+        // nothing to show for it. Its content lives in the Access tab and the Users tab's
+        // Access control mode, which read it on their own connections.
+        if (device.IsPanel)
+        {
+            SetStatus($"{device.Name} is a door panel — read it from the Access tab, or the " +
+                "Users tab in Access control mode.");
+            return;
+        }
 
         try
         {
@@ -690,6 +705,44 @@ public partial class MainWindow : Window
 
     // ----- users -----
 
+    /// <summary>Which fleet the Users tab is on: recorders' login accounts, or panels' fobs.</summary>
+    private bool UsersAccessMode => UsersModeCombo.SelectedIndex == 1;
+
+    private void InitializeUsersTab()
+    {
+        // The picker re-queries this every time it opens, so a device added, renamed or
+        // removed mid-session shows up without refresh plumbing. IsPanel doubles as the
+        // mode filter: the two modes read different hardware, never a mixture.
+        UsersDevices.ChoicesProvider = () =>
+            _devices.Where(d => d.IsPanel == UsersAccessMode).ToList();
+        ApplyUsersMode();
+    }
+
+    private void OnUsersModeChanged(object sender,
+        System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        // Fires while XAML is still applying SelectedIndex="0", before the picker exists.
+        if (UsersDevices is null)
+            return;
+        ApplyUsersMode();
+    }
+
+    private void ApplyUsersMode()
+    {
+        UsersDevices.Prompt = UsersAccessMode ? "Choose panels…" : "Choose recorders…";
+        UsersDevices.EmptyHint = UsersAccessMode
+            ? "No door panels saved yet — Add Device… and pick “Door access panel”."
+            : "No recorders saved yet — Add Device….";
+        UsersDevices.Refresh();
+
+        // A grid still wearing the other mode's columns describes hardware that is no
+        // longer what the picker offers.
+        UsersGrid.Columns.Clear();
+        UsersGrid.ItemsSource = null;
+        UsersWarning.Text = "";
+        UsersWarning.Visibility = Visibility.Collapsed;
+    }
+
     private async void OnLoadUsers(object sender, RoutedEventArgs e)
     {
         if (_cleanupStarted)
@@ -714,116 +767,21 @@ public partial class MainWindow : Window
     private async Task LoadUsersAsync(CancellationToken ct)
     {
         int gen = ++_usersGen;
-        if (UsersDeviceA.SelectedItem is not SavedDevice deviceA)
+        var picked = UsersDevices.Selected;
+        if (picked.Count == 0)
         {
-            SetStatus("Choose a device to read users from.");
+            SetStatus(UsersAccessMode
+                ? "Pick at least one panel to read."
+                : "Pick at least one recorder to read.");
             return;
         }
-        // Picking the same NVR in both boxes is how an operator drops the comparison —
-        // a ComboBox bound to the device list has no way back to no selection.
-        var deviceB = ReferenceEquals(UsersDeviceB.SelectedItem, deviceA)
-            ? null
-            : UsersDeviceB.SelectedItem as SavedDevice;
 
-        // Ephemeral clients: reading users must not disturb the session the Live and
-        // Playback tabs hold on the selected device, which may be neither of these.
-        INvrClient? clientA = null;
-        INvrClient? clientB = null;
         try
         {
-            clientA = deviceA.CreateClient();
-            if (clientA is not IUserManagementClient usersA)
-            {
-                SetStatus($"{deviceA.Name} does not expose a user list.");
-                return;
-            }
-
-            IUserManagementClient? usersB = null;
-            if (deviceB is not null)
-            {
-                clientB = deviceB.CreateClient();
-                if (clientB is not IUserManagementClient other)
-                {
-                    SetStatus($"{deviceB.Name} does not expose a user list.");
-                    return;
-                }
-                usersB = other;
-            }
-
-            SetStatus(deviceB is null
-                ? $"Reading users from {deviceA.Name} …"
-                : $"Reading users from {deviceA.Name} and {deviceB.Name} …");
-
-            // Both sides identified before either is read. An account audit that names the
-            // wrong recorder is worse than no audit — and two records behind one address, one
-            // shared password between them, is exactly how that happens.
-            foreach (var (device, client) in new[] { (deviceA, clientA), (deviceB, clientB) })
-            {
-                if (device is null || client is null)
-                    continue;
-                var check = await DeviceIdentityGuard.CheckAsync(client,
-                    device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null,
-                    device.Name, ct: ct);
-                if (gen != _usersGen)
-                    return;
-                if (check.Verdict == IdentityVerdict.Mismatch)
-                {
-                    SetStatus($"{device.Name}: WRONG DEVICE — no accounts were read. {check.Message}");
-                    return;
-                }
-            }
-
-            var taskA = usersA.GetUsersAsync(ct);
-            var taskB = usersB is null
-                ? Task.FromResult<IReadOnlyList<NvrUser>>([])
-                : usersB.GetUsersAsync(ct);
-            try
-            {
-                await Task.WhenAll(taskA, taskB);
-            }
-            catch (OperationCanceledException)
-            {
-                _ = taskB.Exception;
-                return;
-            }
-            catch (Exception ex)
-            {
-                // WhenAll rethrows the first fault only; observe the other so a second
-                // failure never surfaces as an unobserved task exception.
-                _ = taskB.Exception;
-                if (gen != _usersGen)
-                    return;
-                var failed = taskA.IsFaulted ? deviceA : deviceB!;
-                SetStatus($"Failed to read users from {failed.Name}: {Shorten(ex.Message)}");
-                return;
-            }
-
-            if (gen != _usersGen)
-                return;
-
-            if (deviceB is null)
-            {
-                var listed = taskA.Result
-                    .Select(u => new UserRow(u.Name, u.NativeLevel, "", ""))
-                    .ToList();
-                SetUserLevelHeaders(deviceA.Name, "Device B");
-                UsersGrid.ItemsSource = listed;
-                SetStatus($"{deviceA.Name}: {listed.Count} user(s).");
-                return;
-            }
-
-            var comparison = CompareUsers(taskA.Result, taskB.Result, deviceA.Name, deviceB.Name);
-            SetUserLevelHeaders(deviceA.Name, deviceB.Name);
-            UsersGrid.ItemsSource = comparison.Rows;
-
-            var parts = new List<string> { $"{comparison.Match} match" };
-            if (comparison.Differ > 0)
-                parts.Add($"{comparison.Differ} differ");
-            if (comparison.OnlyA > 0)
-                parts.Add($"{comparison.OnlyA} only on {deviceA.Name}");
-            if (comparison.OnlyB > 0)
-                parts.Add($"{comparison.OnlyB} only on {deviceB.Name}");
-            SetStatus($"{comparison.Rows.Count} user(s) — {string.Join(", ", parts)}.");
+            if (UsersAccessMode)
+                await LoadCardholderMatrixAsync(picked, gen, ct);
+            else
+                await LoadAccountMatrixAsync(picked, gen, ct);
         }
         catch (OperationCanceledException)
         {
@@ -834,59 +792,189 @@ public partial class MainWindow : Window
                 return;
             SetStatus($"Failed to read users: {Shorten(ex.Message)}");
         }
+    }
+
+    private async Task LoadAccountMatrixAsync(
+        IReadOnlyList<SavedDevice> devices, int gen, CancellationToken ct)
+    {
+        SetStatus($"Reading accounts from {devices.Count} recorder(s) …");
+
+        // Ephemeral clients, all devices at once: reading users must not disturb the
+        // session the Live and Playback tabs hold, and one slow site must not serialize
+        // the rest. Each read carries its own failure instead of faulting the batch —
+        // the matrix states which columns are unknown rather than dropping them.
+        var results = await Task.WhenAll(devices.Select(d => ReadDeviceUsersAsync(d, ct)));
+        if (gen != _usersGen)
+            return;
+
+        var matrix = UserMatrix.Build(results);
+        var readable = matrix.Devices.Select(d => d.Ok).ToList();
+        ShowFleetMatrix(
+            keyHeader: "User",
+            nameHeader: null,
+            deviceHeaders: matrix.Devices
+                .Select(d => d.Ok ? d.DeviceName : $"{d.DeviceName} ⚠").ToList(),
+            rows: matrix.Rows
+                .Select(r => new FleetRow(r.User, "", PrepareCells(r.Cells, readable), r.Status))
+                .ToList(),
+            failures: matrix.FailedDevices.Select(d => (d.DeviceName, d.Error!)).ToList(),
+            summary: $"{matrix.Rows.Count} account(s) across " +
+                     $"{matrix.Devices.Count(d => d.Ok)} recorder(s)",
+            partialCaveat: "An account on an unreadable recorder is unknown, not absent — " +
+                "its column shows “?” and it is left out of every row's status.");
+    }
+
+    private async Task<DeviceUsersResult> ReadDeviceUsersAsync(
+        SavedDevice device, CancellationToken ct)
+    {
+        INvrClient? client = null;
+        try
+        {
+            client = device.CreateClient();
+            if (client is not IUserManagementClient users)
+                return DeviceUsersResult.Failed(device.Name,
+                    "this device does not expose a user list");
+
+            // Identified before read. An account audit that names the wrong recorder is
+            // worse than no audit — and two records behind one address, one shared
+            // password between them, is exactly how that happens.
+            var check = await DeviceIdentityGuard.CheckAsync(client,
+                device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null, device.Name,
+                ct: ct);
+            if (check.Verdict == IdentityVerdict.Mismatch)
+                return DeviceUsersResult.Failed(device.Name, $"WRONG DEVICE — {check.Message}");
+
+            // First sight of this hardware through this record: bind the two, exactly as
+            // device selection does. Safe to save here — every continuation of this method
+            // resumes on the UI thread.
+            if (device.ExpectedSerial.Length == 0 && check.Seen.IsUsable)
+            {
+                device.ExpectedSerial = check.Seen.Serial.Trim();
+                DeviceStore.Save(_devices);
+            }
+
+            return new DeviceUsersResult
+            {
+                DeviceName = device.Name,
+                Users = await users.GetUsersAsync(ct),
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return DeviceUsersResult.Failed(device.Name, Shorten(ex.Message));
+        }
         finally
         {
-            clientA?.Dispose();
-            clientB?.Dispose();
+            client?.Dispose();
         }
     }
 
-    private sealed record UserComparison(List<UserRow> Rows, int Match, int Differ, int OnlyA, int OnlyB);
-
-    private static UserComparison CompareUsers(IReadOnlyList<NvrUser> a, IReadOnlyList<NvrUser> b,
-        string nameA, string nameB)
+    private async Task LoadCardholderMatrixAsync(
+        IReadOnlyList<SavedDevice> panels, int gen, CancellationToken ct)
     {
-        // Accounts are paired by name, not by Id: the vendor-native ids are numeric on
-        // Hikvision and the login name on Dahua, so only the name compares across vendors.
-        var byName = new Dictionary<string, NvrUser>(StringComparer.OrdinalIgnoreCase);
-        foreach (var user in b)
-            byName.TryAdd(user.Name, user);
+        var entries = panels.Select(p => new PanelEntry(p.ToPanelConnection(), p)).ToList();
+        var settings = new PanelConnectionSettings(entries, CurrentSdkDirectory);
 
-        var paired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var rows = new List<UserRow>();
-        int match = 0, differ = 0, onlyA = 0, onlyB = 0;
-        foreach (var user in a)
-        {
-            if (!byName.TryGetValue(user.Name, out var counterpart))
-            {
-                rows.Add(new UserRow(user.Name, user.NativeLevel, "", $"Only on {nameA}"));
-                onlyA++;
-                continue;
-            }
-            paired.Add(user.Name);
-            bool same = string.Equals(user.NativeLevel, counterpart.NativeLevel,
-                StringComparison.OrdinalIgnoreCase);
-            rows.Add(new UserRow(user.Name, user.NativeLevel, counterpart.NativeLevel,
-                same ? "Match" : "Level differs"));
-            if (same)
-                match++;
-            else
-                differ++;
-        }
-        foreach (var user in b)
-        {
-            if (paired.Contains(user.Name))
-                continue;
-            rows.Add(new UserRow(user.Name, "", user.NativeLevel, $"Only on {nameB}"));
-            onlyB++;
-        }
-        return new UserComparison(rows, match, differ, onlyA, onlyB);
+        SetStatus($"Reading {entries.Count} panel(s) …");
+        var roster = await ReadRosterAsync(settings, ct);
+        if (gen != _usersGen)
+            return;
+
+        BindPanelSerials(roster, entries);
+
+        var map = TryLoadIdentityMap();
+        var enriched = map is null ? roster : roster.EnrichWith(map);
+
+        // Column headers and status prose wear the record names; the join underneath stays
+        // on the port-qualified labels every card is stamped with. TryAdd, not ToDictionary:
+        // two records on one address is a fleet mistake for FleetAudit to report, not a
+        // crash for this view to add to it.
+        var displayByLabel = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+            displayByLabel.TryAdd(entry.Panel.Label, entry.DisplayName);
+        string DisplayName(string label) =>
+            displayByLabel.TryGetValue(label, out var name) ? name : label;
+
+        var matrix = AccessMatrix.Build(enriched, DisplayName);
+        var readable = matrix.Panels.Select(p => p.Ok).ToList();
+        ShowFleetMatrix(
+            keyHeader: "Card",
+            nameHeader: "Name",
+            deviceHeaders: matrix.Panels
+                .Select(p => p.Ok
+                    ? DisplayName(p.PanelHost)
+                    : $"{DisplayName(p.PanelHost)} ⚠").ToList(),
+            rows: matrix.Rows
+                .Select(r => new FleetRow(r.CardNo, r.Name ?? "",
+                    PrepareCells(r.Cells, readable), r.Status))
+                .ToList(),
+            failures: matrix.FailedPanels
+                .Select(p => (DisplayName(p.PanelHost), p.Error ?? "unreadable")).ToList(),
+            summary: $"{matrix.Rows.Count} fob(s) across " +
+                     $"{matrix.Panels.Count(p => p.Ok)} panel(s)",
+            partialCaveat: "A fob could still be active on a panel that could not be read, " +
+                "so “no access” is not a safe conclusion from this view.");
     }
 
-    private void SetUserLevelHeaders(string headerA, string headerB)
+    /// <summary>
+    /// Rebuilds the Users grid for one load: the key column(s), one column per selected
+    /// device, status last. Built in code because the column set is whatever the operator
+    /// picked, not something XAML can know.
+    /// </summary>
+    private void ShowFleetMatrix(string keyHeader, string? nameHeader,
+        IReadOnlyList<string> deviceHeaders, IReadOnlyList<FleetRow> rows,
+        IReadOnlyList<(string Device, string Error)> failures, string summary,
+        string partialCaveat)
     {
-        UsersGrid.Columns[1].Header = headerA;
-        UsersGrid.Columns[2].Header = headerB;
+        UsersGrid.Columns.Clear();
+        UsersGrid.Columns.Add(MatrixColumn(keyHeader, nameof(FleetRow.Key), 130));
+        if (nameHeader is not null)
+            UsersGrid.Columns.Add(MatrixColumn(nameHeader, nameof(FleetRow.Name), 170));
+        for (int i = 0; i < deviceHeaders.Count; i++)
+            UsersGrid.Columns.Add(MatrixColumn(deviceHeaders[i], $"Cells[{i}]", 130));
+        UsersGrid.Columns.Add(MatrixColumn("Status", nameof(FleetRow.Status), 240));
+        UsersGrid.ItemsSource = rows;
+
+        if (failures.Count == 0)
+        {
+            UsersWarning.Text = "";
+            UsersWarning.Visibility = Visibility.Collapsed;
+            SetStatus($"{summary}.");
+            return;
+        }
+
+        // Same rule as the Access tab: a partial view gets a visible warning of its own,
+        // not just a status-bar line the operator may have scrolled past.
+        UsersWarning.Text = "PARTIAL — " +
+            string.Join("; ", failures.Select(f => $"{f.Device}: {Shorten(f.Error)}")) +
+            ". " + partialCaveat;
+        UsersWarning.Visibility = Visibility.Visible;
+        SetStatus($"PARTIAL — {summary}; see the warning above.");
+    }
+
+    private static System.Windows.Controls.DataGridTextColumn MatrixColumn(
+        string header, string bindingPath, double width) => new()
+    {
+        Header = header,
+        Binding = new System.Windows.Data.Binding(bindingPath),
+        Width = width,
+    };
+
+    /// <summary>
+    /// Turns a matrix row's cells into what the grid shows: the value, "—" where the
+    /// device answered and holds no such entry, "?" where the device could not be read —
+    /// which is not the same thing, and must not look it.
+    /// </summary>
+    private static string[] PrepareCells(IReadOnlyList<string?> cells, IReadOnlyList<bool> readable)
+    {
+        var prepared = new string[cells.Count];
+        for (int i = 0; i < cells.Count; i++)
+            prepared[i] = cells[i] ?? (readable[i] ? "—" : "?");
+        return prepared;
     }
 
     // ----- helpers -----

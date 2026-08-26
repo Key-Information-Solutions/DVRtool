@@ -47,8 +47,23 @@ public partial class MainWindow
         string Card, string Name, string Panel, string Doors, string Valid, string ValidUntil);
 
     /// <summary>
-    /// Everything needed to open a panel connection, snapshotted off the controls before any
-    /// work starts.
+    /// One panel to read: its connection, and — when it came from the saved-device list —
+    /// the record behind it, whose pinned serial the read is verified against and whose
+    /// first successful read binds it.
+    /// </summary>
+    private sealed record PanelEntry(AccessPanelConnection Panel, SavedDevice? Record)
+    {
+        public string? ExpectedSerial =>
+            Record is { ExpectedSerial.Length: > 0 } record ? record.ExpectedSerial : null;
+
+        /// <summary>The record's name for headers and prose; the ad-hoc label otherwise.</summary>
+        public string DisplayName =>
+            Record?.Name is { Length: > 0 } name ? name : Panel.Label;
+    }
+
+    /// <summary>
+    /// Everything needed to open the panel connections, snapshotted off the controls before
+    /// any work starts.
     /// </summary>
     /// <remarks>
     /// The CLI's <c>AccessSettings</c> cannot be reused — it resolves an option dictionary and
@@ -56,14 +71,23 @@ public partial class MainWindow
     /// constructs <see cref="AccessPanelConnection"/> directly.
     /// </remarks>
     private sealed record PanelConnectionSettings(
-        IReadOnlyList<AccessPanelConnection> Panels, string? SdkDirectory)
+        IReadOnlyList<PanelEntry> Panels, string? SdkDirectory)
     {
-        internal IAccessControlClient Connect(AccessPanelConnection panel) =>
-            new HikvisionAccessClient(panel, SdkDirectory);
+        internal IAccessControlClient Connect(PanelEntry entry) =>
+            new HikvisionAccessClient(entry.Panel, SdkDirectory);
     }
+
+    /// <summary>The optional HCNetSDK folder box, as the connection settings want it.</summary>
+    private string? CurrentSdkDirectory =>
+        AccessSdkDirBox.Text.Trim() is { Length: > 0 } dir ? dir : null;
 
     private void InitializeAccessTab()
     {
+        AccessPanelsPicker.ChoicesProvider = () => _devices.Where(d => d.IsPanel).ToList();
+        AccessPanelsPicker.Prompt = "Saved panels…";
+        AccessPanelsPicker.EmptyHint =
+            "No door panels saved yet — Add Device… and pick “Door access panel”.";
+
         // Prefilled from the same OCB_* variables the CLI reads, so an operator who already
         // has the fleet configured for `dvrtool access` does not retype it here.
         if (Environment.GetEnvironmentVariable("OCB_PANELS") is { Length: > 0 } panels)
@@ -98,6 +122,7 @@ public partial class MainWindow
             if (gen != _accessGen)
                 return;
 
+            BindPanelSerials(roster, settings.Panels);
             var map = TryLoadIdentityMap();
             ShowRoster(map is null ? roster : roster.EnrichWith(map));
         }
@@ -126,20 +151,23 @@ public partial class MainWindow
         Task.Run(async () =>
         {
             var results = new List<AccessPanelResult>();
-            foreach (var panel in settings.Panels)
+            foreach (var entry in settings.Panels)
             {
+                var panel = entry.Panel;
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    using var client = settings.Connect(panel);
+                    using var client = settings.Connect(entry);
                     var info = await client.GetDeviceInfoAsync(ct);
 
                     // Which controller answered, not just that one did. Panels behind a shared
                     // address differ only by port, and the fleet's one account logs into any of
                     // them — so a roster built without this can describe another building
-                    // under this panel's name.
+                    // under this panel's name. A saved panel is additionally held to the
+                    // serial its record is bound to, exactly like a saved recorder.
                     var identity = DeviceIdentityGuard.Check(
-                        DeviceIdentityGuard.AddressOf(panel), info);
+                        DeviceIdentityGuard.AddressOf(panel), info,
+                        entry.ExpectedSerial, entry.Record?.Name);
                     if (identity.Verdict == IdentityVerdict.Mismatch)
                     {
                         results.Add(AccessPanelResult.Failed(panel.Label, identity.Message));
@@ -163,6 +191,32 @@ public partial class MainWindow
             }
             return AccessRoster.Build(results);
         }, ct);
+
+    /// <summary>
+    /// First sight of a saved panel through its record: bind the record to the serial the
+    /// read just verified, exactly as a recorder record binds on its first connection. The
+    /// dialog's Test button deliberately does not log in (DS-K lockout), so this is where
+    /// a new panel record acquires its pin.
+    /// </summary>
+    private void BindPanelSerials(AccessRoster roster, IReadOnlyList<PanelEntry> entries)
+    {
+        bool bound = false;
+        foreach (var entry in entries)
+        {
+            if (entry.Record is not { } record || record.ExpectedSerial.Length > 0)
+                continue;
+            var result = roster.Panels.FirstOrDefault(p => p.Ok &&
+                string.Equals(p.PanelHost, entry.Panel.Label, StringComparison.OrdinalIgnoreCase));
+            // A blank serial is unverifiable, never a pin.
+            if (result?.Serial is { } serial && serial.Trim().Length > 0)
+            {
+                record.ExpectedSerial = serial.Trim();
+                bound = true;
+            }
+        }
+        if (bound)
+            DeviceStore.Save(_devices);
+    }
 
     /// <summary>
     /// Fills the grid, and states plainly when the view is partial.
@@ -286,6 +340,7 @@ public partial class MainWindow
             if (gen != _accessGen)
                 return;
 
+            BindPanelSerials(roster, settings.Panels);
             var result = IvmsExpiryCorrelator.Correlate(persons, roster);
             var merged = MergeIntoIdentityStore(result.Map);
             RefreshIdentityStatus();
@@ -503,69 +558,78 @@ public partial class MainWindow
     {
         settings = null;
 
-        var entries = AccessPanelsBox.Text
+        // Saved panels first, each with its own stored credentials and port; the address
+        // box then adds one-off extras on the shared credential boxes.
+        var panels = AccessPanelsPicker.Selected
+            .Select(record => new PanelEntry(record.ToPanelConnection(), record))
+            .ToList();
+
+        var typed = AccessPanelsBox.Text
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
-        if (entries.Count == 0)
+        if (panels.Count == 0 && typed.Count == 0)
         {
-            SetStatus("Enter at least one panel address.");
+            SetStatus("Pick a saved panel, or enter at least one panel address.");
             return false;
         }
 
-        string user = AccessUserBox.Text.Trim();
-        if (user.Length == 0)
+        if (typed.Count > 0)
         {
-            SetStatus("Enter the panel username.");
-            return false;
-        }
-
-        // Never attempt a login without one: these panels lock out the calling source IP
-        // after a handful of failures, and iVMS-4200 usually shares that IP.
-        if (AccessPassBox.Password.Length == 0)
-        {
-            SetStatus("Enter the panel password.");
-            return false;
-        }
-
-        string portText = AccessPortBox.Text.Trim();
-        if (!int.TryParse(portText, out int port) || port is < 1 or > 65535)
-        {
-            SetStatus($"Invalid SDK port '{portText}'.");
-            return false;
-        }
-
-        // Each entry may carry its own port ("10.0.0.5:8001"), because a site can forward
-        // several controllers through one address — and then the port is the only thing
-        // telling them apart, since one account opens all of them.
-        var panels = new List<AccessPanelConnection>();
-        foreach (string entry in entries)
-        {
-            if (!DeviceAddress.TryParse(entry, port, out string? host, out int entryPort,
-                    out string? addressError))
+            string user = AccessUserBox.Text.Trim();
+            if (user.Length == 0)
             {
-                SetStatus($"Panel list: {addressError}.");
+                SetStatus("Enter the panel username (it applies to the typed addresses).");
                 return false;
             }
-            panels.Add(new AccessPanelConnection
+
+            // Never attempt a login without one: these panels lock out the calling source IP
+            // after a handful of failures, and iVMS-4200 usually shares that IP.
+            if (AccessPassBox.Password.Length == 0)
             {
-                Host = host,
-                SdkPort = entryPort,
-                Username = user,
-                Password = AccessPassBox.Password,
-            });
+                SetStatus("Enter the panel password (it applies to the typed addresses).");
+                return false;
+            }
+
+            string portText = AccessPortBox.Text.Trim();
+            if (!int.TryParse(portText, out int port) || port is < 1 or > 65535)
+            {
+                SetStatus($"Invalid SDK port '{portText}'.");
+                return false;
+            }
+
+            // Each entry may carry its own port ("10.0.0.5:8001"), because a site can forward
+            // several controllers through one address — and then the port is the only thing
+            // telling them apart, since one account opens all of them.
+            foreach (string entry in typed)
+            {
+                if (!DeviceAddress.TryParse(entry, port, out string? host, out int entryPort,
+                        out string? addressError))
+                {
+                    SetStatus($"Panel list: {addressError}.");
+                    return false;
+                }
+                panels.Add(new PanelEntry(new AccessPanelConnection
+                {
+                    Host = host,
+                    SdkPort = entryPort,
+                    Username = user,
+                    Password = AccessPassBox.Password,
+                }, Record: null));
+            }
         }
 
+        // Across both sources: a saved panel retyped in the box is the same double-read.
         if (panels
-                .GroupBy(p => DeviceIdentityGuard.AddressOf(p), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(p => DeviceIdentityGuard.AddressOf(p.Panel), StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault(g => g.Count() > 1) is { } duplicate)
         {
             SetStatus($"Panel {duplicate.Key} is listed twice — it would be read twice and " +
-                "every fob on it counted twice. Give each controller its own port (ip:port).");
+                "every fob on it counted twice. Give each controller its own port (ip:port), " +
+                "and don't retype a panel that is already picked from the saved list.");
             return false;
         }
 
-        string sdkDir = AccessSdkDirBox.Text.Trim();
-        settings = new PanelConnectionSettings(panels, sdkDir.Length > 0 ? sdkDir : null);
+        settings = new PanelConnectionSettings(panels, CurrentSdkDirectory);
         return true;
     }
 }

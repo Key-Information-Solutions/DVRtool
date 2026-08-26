@@ -43,10 +43,16 @@ public partial class AddDeviceWindow : Window
         // Excluded by reference: two records may share a name, and the one being edited must
         // not be reported as colliding with itself.
         _fleet = fleet?.Where(d => !ReferenceEquals(d, device)).ToList() ?? [];
-        Title = "Edit NVR";
+        Title = "Edit device";
         _existingProtectedPassword = device.ProtectedPassword;
         _expectedSerial = device.ExpectedSerial;
         ShowIdentity();
+
+        // Kind first — it decides which rows even exist — and then locked: a record means
+        // one particular piece of hardware, and a recorder does not become a door panel by
+        // editing. The wrong-kind record gets removed and re-added, deliberately.
+        KindCombo.SelectedIndex = device.IsPanel ? 1 : 0;
+        KindCombo.IsEnabled = false;
 
         NameBox.Text = device.Name;
         VendorCombo.SelectedIndex = device.Vendor.Equals("dahua", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -67,6 +73,9 @@ public partial class AddDeviceWindow : Window
     private Vendor SelectedVendor =>
         VendorCombo.SelectedIndex == 1 ? Vendor.Dahua : Vendor.Hikvision;
 
+    /// <summary>True when the dialog is describing a door panel rather than a recorder.</summary>
+    private bool IsPanelKind => KindCombo.SelectedIndex == 1;
+
     private void OnVendorChanged(object sender, SelectionChangedEventArgs e)
     {
         // Fires while XAML is still applying SelectedIndex="0", before the rest of the dialog
@@ -76,6 +85,51 @@ public partial class AddDeviceWindow : Window
         if (SdkPortHint is null)
             return;
         ApplyVendorToSdkPort();
+    }
+
+    private void OnKindChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Same construction-order guard as OnVendorChanged.
+        if (SdkPortHint is null)
+            return;
+        ApplyKind();
+    }
+
+    /// <summary>
+    /// Shows the rows the selected kind actually has. A DS-K controller exposes only the
+    /// SDK protocol — no web server, no RTSP — so the recorder-only rows are removed rather
+    /// than left as inputs that would configure nothing.
+    /// </summary>
+    private void ApplyKind()
+    {
+        bool panel = IsPanelKind;
+        var recorderRows = panel ? Visibility.Collapsed : Visibility.Visible;
+        HttpPortLabel.Visibility = recorderRows;
+        HttpPortBox.Visibility = recorderRows;
+        RtspPortLabel.Visibility = recorderRows;
+        RtspPortBox.Visibility = recorderRows;
+        TlsCheck.Visibility = recorderRows;
+
+        if (panel)
+        {
+            // The DS-K family is the only panel hardware DVRTool speaks, and it is driven
+            // over HCNetSDK — forcing the vendor keeps ApplyVendorToSdkPort from leaving a
+            // Dahua 37777 behind when the operator flips a half-filled recorder to a panel.
+            VendorCombo.SelectedIndex = 0;
+            VendorCombo.IsEnabled = false;
+            VendorCombo.ToolTip = "Door panels are Hikvision/OEM DS-K controllers — " +
+                "the only panel family DVRTool speaks.";
+            (SdkPortLabel.Text, SdkPortHint.Text) = ("SDK port",
+                "The panel's \"Server Port\" (HCNetSDK) — 8000 from the factory, and the " +
+                "only port these controllers have. Roster reads, identity and the CLI's " +
+                "gated writes all ride it.");
+        }
+        else
+        {
+            VendorCombo.IsEnabled = true;
+            VendorCombo.ToolTip = null;
+            ApplyVendorToSdkPort();
+        }
     }
 
     /// <summary>
@@ -115,15 +169,23 @@ public partial class AddDeviceWindow : Window
     private SavedDevice? BuildDevice(out string? error)
     {
         error = null;
+        bool panel = IsPanelKind;
         string host = HostBox.Text.Trim();
         if (host.Length == 0)
         {
             error = "Host is required.";
             return null;
         }
-        if (!TryPort(HttpPortBox.Text, out int httpPort) ||
-            !TryPort(RtspPortBox.Text, out int rtspPort) ||
-            !TryPort(SdkPortBox.Text, out int sdkPort))
+        if (!TryPort(SdkPortBox.Text, out int sdkPort))
+        {
+            error = "Ports must be numbers between 1 and 65535.";
+            return null;
+        }
+        // A panel's HTTP/RTSP boxes are hidden, not consulted: whatever a half-filled
+        // recorder left in them must not fail a record that has no such ports.
+        int httpPort = 80, rtspPort = 554;
+        if (!panel &&
+            (!TryPort(HttpPortBox.Text, out httpPort) || !TryPort(RtspPortBox.Text, out rtspPort)))
         {
             error = "Ports must be numbers between 1 and 65535.";
             return null;
@@ -132,12 +194,13 @@ public partial class AddDeviceWindow : Window
         var device = new SavedDevice
         {
             Name = NameBox.Text.Trim().Length > 0 ? NameBox.Text.Trim() : host,
-            Vendor = SelectedVendor == Vendor.Dahua ? "dahua" : "hikvision",
+            Kind = panel ? "panel" : "recorder",
+            Vendor = !panel && SelectedVendor == Vendor.Dahua ? "dahua" : "hikvision",
             Host = host,
             HttpPort = httpPort,
             RtspPort = rtspPort,
             SdkPort = sdkPort,
-            UseTls = TlsCheck.IsChecked == true,
+            UseTls = !panel && TlsCheck.IsChecked == true,
             Username = UserBox.Text.Trim(),
         };
         device.ExpectedSerial = _expectedSerial;
@@ -210,6 +273,12 @@ public partial class AddDeviceWindow : Window
             return;
         }
 
+        if (device.IsPanel)
+        {
+            await TestPanelAsync(device);
+            return;
+        }
+
         // All three ports at once: an installer chasing a missing port forward wants the
         // whole picture, and a firewalled port costs a full timeout to discover.
         var conn = device.ToConnection();
@@ -250,6 +319,43 @@ public partial class AddDeviceWindow : Window
                 _expectedSerial = seen.Serial.Trim();
                 ShowIdentity();
             }
+            ReportFleetIssues(device);
+        }
+        catch (OperationCanceledException)
+        {
+            // Dialog closed mid-probe; nothing left to report to.
+        }
+        finally
+        {
+            TestButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// The panel version of the test: one TCP probe of the one port these controllers
+    /// have. A login is deliberately not attempted — DS-K firmware locks out the calling
+    /// IP after a handful of failures, and iVMS-4200 usually shares that IP — so identity
+    /// binds on the first roster read instead of here.
+    /// </summary>
+    private async Task TestPanelAsync(SavedDevice device)
+    {
+        var conn = device.ToConnection();
+        string sdkLabel = $"SDK {conn.SdkPort}";
+        TestResults.Children.Clear();
+        var row = AddRow(sdkLabel);
+
+        TestButton.IsEnabled = false;
+        try
+        {
+            var result = await RenderWhenDone(row, sdkLabel,
+                ConnectivityProbe.ProbeSdkAsync(conn, _probes.Token));
+            ShowLine(result.IsGood
+                    ? "The panel's only port answered (a login is not attempted here). The " +
+                      "controller identifies itself by serial on the first roster read, " +
+                      "which binds this record to it."
+                    : "This is the only port a DS-K controller speaks — no Access roster " +
+                      "and no Users-tab read works without it.",
+                result.IsGood ? Brushes.DarkGreen : Brushes.Firebrick, italic: true);
             ReportFleetIssues(device);
         }
         catch (OperationCanceledException)
