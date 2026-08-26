@@ -229,6 +229,31 @@ and results:
 The whole provisioning write path (`grant`/`revoke` → `UpsertCardAsync`/`RevokeCardAsync`, identity
 guard, `--force` gate, verify-after-write) is now **proven end-to-end on live hardware.** The scratch
 working dir (`.env` + policy + CSVs — a secret and customer data) was staged for the run and **deleted
-after**; nothing customer-side was committed. Routine provisioning is unblocked; before using
-`onboard` for real hires, complete the identity map (the 5 unmapped holders) so reconcile reads fully
-in sync, and decide the iVMS sync direction (§10 safety note) if the GUI is still used.
+after**; nothing customer-side was committed.
+
+## 12. Identity map completed 149/149, and what reconcile's "extras" really are (2026-08-26)
+
+Ran `access identity --import-ivms` on the relay host (iVMS lives there now) against the live SQLCipher DB
+via the already-cached key: **149 persons, 148 decoded directly, 1 undecodable** — the single
+high/**5-digit** fob (a clash-resolved number: the holder's requested fob was taken, so a digit was
+appended). The 4-digit decoder deliberately refuses that layout rather than guess, so it was
+hand-mapped with a one-row CSV (`Name,Card No`) via `--import-csv` — a certain 1:1 (the only undecoded
+person ↔ the only unexplained 5-digit fob). **Map now 149/149.**
+
+**5-digit codes are fully supported for the automation itself.** The digit limit is *only* in
+`IvmsCardCipher` (decoding iVMS's encrypted DB field for name enrichment). The panels store the card
+number as a **32-byte ASCII string** (`CardRecord.CardNo`, `CardNoLen = 32`), read and written as
+text — no digit-count assumption in either direction. Proven live: reconcile **read** the 5-digit fob
+straight off the panel, and the write path (`grant`/`onboard`) just passes the number string, so a
+5-digit `--card` writes exactly like a 4-digit one. The 5-digit case only ever costs an automatic
+*name* import (cosmetic), never the door right.
+
+A confirming reconcile (map at 149) dropped the 5-digit fob from the unmapped list. The remaining
+`.221`/`.222` "extras" are **not** map-completeness or decode issues — every one resolves to a name.
+They are reconcile *name-matching* residue: (a) one cardholder legitimately holds **two fobs**, so a
+name→fob lookup is non-unique and reconcile safely declines to match it; (b) two holders whose names
+carry an **apostrophe + inconsistent spacing** between the policy's group roster and the person DB, so
+`IdentityMap.NormalizeName` (which keeps `'` but collapses spaces) misses the join. All these fobs are
+live and working; the report just can't tie the name confidently. Future polish (separate task): make
+`NormalizeName` fold `'`/spacing, and give reconcile a way to accept a known multi-fob holder. Decide
+the iVMS sync direction (§10 safety note) before routine provisioning if the GUI is still used.
