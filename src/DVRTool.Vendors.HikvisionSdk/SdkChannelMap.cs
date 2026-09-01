@@ -44,8 +44,10 @@ public sealed record SdkChannelMap(int AnalogStart, int AnalogCount, int Digital
 
     /// <summary>The serial <c>NET_DVR_Login_V30</c> wrote into its device-info buffer.</summary>
     /// <remarks>
-    /// Byte-identical to ISAPI's <c>serialNumber</c> on live hardware, which is what lets an
-    /// SDK login be checked against the same identity pin an HTTP login made.
+    /// The same serial ISAPI's <c>serialNumber</c> reports, which is what lets an SDK login
+    /// be checked against the same identity pin an HTTP login made — but not always the same
+    /// bytes: M-series firmware omits the hyphen ISAPI puts between the model prefix and the
+    /// serial digits, which is why <c>DeviceFingerprint</c> strips hyphens before comparing.
     /// </remarks>
     public static string ReadSerial(ReadOnlySpan<byte> deviceInfo) =>
         System.Text.Encoding.ASCII

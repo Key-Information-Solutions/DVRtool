@@ -30,8 +30,9 @@ answered 403 on every one, so do not design around `httpPreview`. Read
 device channel 33** and getting it wrong shows no error at all (`SdkChannelMap` reads the
 mapping off the login response); the data callback runs on an SDK thread that must never be
 blocked, so `SdkMediaStream` drops the oldest bytes rather than applying back-pressure; and
-the SDK login is verified against the **web port's** identity pin, which works only because
-the SDK's serial is byte-identical to ISAPI's.
+the SDK login is verified against the **web port's** identity pin, which works because the
+SDK reports the same serial as ISAPI — *not* always byte-identically (M-series firmware drops
+a hyphen), which is why serial comparison strips hyphens.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs

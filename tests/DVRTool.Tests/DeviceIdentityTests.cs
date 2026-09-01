@@ -87,6 +87,43 @@ public class DeviceIdentityTests
     }
 
     /// <summary>
+    /// One recorder, two spellings: M-series firmware puts a hyphen between the model prefix
+    /// and the serial digits over ISAPI but not over the SDK login, so a byte-compare refused
+    /// SDK live view on every M-series box as a "wrong device". Punctuation is not identity.
+    /// (Seen live on Site C's DS-9632NI-M8 and Site F's DS-7616NI-M2/16P, 2026-09-01.)
+    /// </summary>
+    [Fact]
+    public void Fingerprint_ComparesSerialsIgnoringHyphens()
+    {
+        Assert.True(Print("DS-9632NI-M8-0000000000BBBBBB0000000BBBB")
+            .SameDevice(Print("DS-9632NI-M80000000000BBBBBB0000000BBBB")));
+        Assert.True(Print("DS-7616NI-M2/16P-0000000000CCCCCC0000000CCCC")
+            .SameDevice(Print("DS-7616NI-M2/16P0000000000CCCCCC0000000CCCC")));
+        // Still a different box when the digits differ, hyphens or not.
+        Assert.False(Print("DS-9632NI-M8-0000000000BBBBBB0000000BBBB")
+            .SameDevice(Print("DS-9632NI-M80000000000BBBBBB0000000BBBC")));
+        // A serial that is nothing but punctuation is no serial at all.
+        Assert.False(new DeviceFingerprint { Serial = "--" }.IsUsable);
+    }
+
+    /// <summary>
+    /// The field failure end to end: the web port pins the ISAPI spelling, then the SDK login
+    /// presents the hyphen-less one against the same pin — that must be a match, and an
+    /// explicit <c>--expect-serial</c>/<c>ExpectedSerial</c> in either spelling must be too.
+    /// </summary>
+    [Fact]
+    public void Verify_MatchesSdkSpellingAgainstIsapiPin()
+    {
+        using var temp = new TempStore();
+
+        temp.Store.Verify("203.0.113.66:80", Print("DS-9632NI-M8-0000000000BBBBBB0000000BBBB"));
+        var sdk = temp.Store.Verify("203.0.113.66:80",
+            Print("DS-9632NI-M80000000000BBBBBB0000000BBBB"),
+            expected: "DS-9632NI-M8-0000000000BBBBBB0000000BBBB", expectedBy: "Site C");
+        Assert.Equal(IdentityVerdict.Match, sdk.Verdict);
+    }
+
+    /// <summary>
     /// Two devices that report no serial are not "the same device" — they are two unanswered
     /// questions. Treating blank as a value would re-create the exact hole this closes: every
     /// serial-less recorder matching every other.

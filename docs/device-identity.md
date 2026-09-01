@@ -71,7 +71,7 @@ those panels give — see `hikvision-access-control-findings.md`).
 | Piece | Job |
 |---|---|
 | `DeviceAddress` | The canonical `host:port` key, and the parser for operator-typed `ip[:port]`. A bare host is not an address — it names a NAT rule set, not a machine. |
-| `DeviceFingerprint` | A device's serial (normalized: whitespace-stripped, upper-cased) plus its model. The model is carried for the operator and never compared; firmware upgrades and renames must not read as a different box. |
+| `DeviceFingerprint` | A device's serial (normalized: whitespace- and hyphen-stripped, upper-cased — Hikvision M-series firmware spells one serial with a hyphen over ISAPI and without it over the SDK, so punctuation cannot be identity) plus its model. The model is carried for the operator and never compared; firmware upgrades and renames must not read as a different box. |
 | `DeviceIdentityStore` | TOFU pinning of serial per address, in `identities.json`. Read-only except on first contact, so the common path never writes. |
 | `IdentityCheck` / `IdentityVerdict` | `FirstContact` / `Match` / `Mismatch` / `Unverifiable`, with the operator-facing prose for each. |
 | `DeviceIdentityException` | Thrown on a mismatch. Deliberately **not** an `NvrException`: the paths that treat a device error as "this one is unreachable, carry on" must not carry on here. |

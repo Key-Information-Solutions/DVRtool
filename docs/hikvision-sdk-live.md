@@ -23,8 +23,10 @@ and the traps in the implementation. Read it before touching
 - **Display channel ≠ SDK channel.** An NVR's first IP camera is display channel 1 and
   **device channel 33**. Getting this wrong shows no error — just no video, or on a hybrid
   DVR, a different camera. `SdkChannelMap` reads the mapping off the login response.
-- **The serial the SDK returns is byte-identical to ISAPI's**, which is what lets an SDK
-  login be checked against the same identity pin an HTTP login created. Verified live.
+- **The serial the SDK returns names the same device as ISAPI's**, which is what lets an SDK
+  login be checked against the same identity pin an HTTP login created — but on M-series
+  firmware it drops a hyphen ISAPI includes, so the pin comparison strips hyphens (§3,
+  "Identity"). Verified live.
 - **Hikvision and OEM rebrands only**, Windows x64 only, and it needs `HCNetSDK.dll`.
 
 ## 1. Why not the other two routes
@@ -188,7 +190,7 @@ exactly that collision (`203.0.113.50:8000` served two Acura records;
 So the SDK session verifies against `DeviceIdentityGuard.AddressOf(conn)` — the **HTTP**
 port's key, not a second key of its own. That is deliberate: a per-transport pin would mean
 two ways to be half-pinned, whereas one key means a re-forwarded SDK port surfaces as a
-serial mismatch. It works only because the SDK's `sSerialNumber` is byte-identical to
+serial mismatch. It works only because the SDK's `sSerialNumber` names the same serial as
 ISAPI's `<serialNumber>`, which was verified against live hardware before the design was
 committed to:
 
@@ -196,6 +198,21 @@ committed to:
 SDK    DS-7716NI-I4/16P(B)0000000000AAAAAA0000000AAAA
 ISAPI  DS-7716NI-I4/16P(B)0000000000AAAAAA0000000AAAA
 ```
+
+**They are not always byte-identical, though.** On the M-series recorders (found on Site C's
+DS-9632NI-M8 and Site F's DS-7616NI-M2/16P, 2026-09-01) the SDK drops the hyphen ISAPI
+puts between the model prefix and the serial digits:
+
+```
+SDK    DS-9632NI-M80000000000BBBBBB0000000BBBB
+ISAPI  DS-9632NI-M8-0000000000BBBBBB0000000BBBB
+```
+
+A byte-compare therefore refused live view on every M-series box as a "wrong device", the
+exact false positive the pin must never produce. `DeviceFingerprint.Normalize` in
+`DVRTool.Core` strips hyphens (along with whitespace and case) before comparing, so both
+spellings pin and match as one identity; the stored pin keeps whichever spelling was seen
+first, verbatim.
 
 Verification happens **inside** `HikvisionSdkSession.Open`, not in the callers, so no code
 path can stream first and check afterwards. A login before the check is harmless — it costs

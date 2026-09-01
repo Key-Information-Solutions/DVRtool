@@ -119,8 +119,11 @@ public sealed record DeviceFingerprint
     public string Model { get; init; } = "";
 
     /// <summary>
-    /// The serial as it is compared: whitespace-collapsed and upper-cased. Hikvision pads
-    /// serials in some responses and Dahua's CGI is inconsistent about case.
+    /// The serial as it is compared: whitespace- and hyphen-stripped, upper-cased. Hikvision
+    /// pads serials in some responses, Dahua's CGI is inconsistent about case, and on the
+    /// M-series NVRs the SDK login spells the serial without the hyphen ISAPI puts between
+    /// the model prefix and the serial digits (<c>…M2/16P1620…</c> vs <c>…M2/16P-1620…</c>) —
+    /// same hardware, two spellings, so punctuation cannot be part of the identity.
     /// </summary>
     public string NormalizedSerial => Normalize(Serial);
 
@@ -144,7 +147,9 @@ public sealed record DeviceFingerprint
         : IsUsable ? Serial.Trim() : "(no serial)";
 
     internal static string Normalize(string? serial) =>
-        serial is null ? "" : string.Concat(serial.Where(c => !char.IsWhiteSpace(c))).ToUpperInvariant();
+        serial is null
+            ? ""
+            : string.Concat(serial.Where(c => !char.IsWhiteSpace(c) && c != '-')).ToUpperInvariant();
 }
 
 /// <summary>The outcome of comparing a device against what was expected of it.</summary>
