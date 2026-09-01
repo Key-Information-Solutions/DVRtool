@@ -38,7 +38,10 @@ clock lead and LibVLC's frame-threading latency then drops every frame after the
 "first frame only" symptom is LibVLC, never the SDK. The Live tab's **Grid** mode
 (`MainWindow.LiveGrid.cs`, `LiveGridLayout` in Core) runs one SDK login with a preview per tile,
 paged at 16 because independent LibVLC players hit a measured CPU cliff at 21; tiles come from
-the ISAPI channel list, not the SDK channel count.
+the ISAPI channel list, not the SDK channel count. Maximizing a tile keeps its sub stream up
+full-size until the main stream has a **displayed picture** (`Media.Statistics` polled; the
+hidden big view is `Visibility.Hidden`, never Collapsed, so its window handle exists) and only
+then swaps — never a black pane while the main stream warms up.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs

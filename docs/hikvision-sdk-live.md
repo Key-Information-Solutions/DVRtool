@@ -357,6 +357,22 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
   running session took 49 ms and played at 20 fps with no loss beside 16 tiles, so the tiles
   keep running underneath and the way back is instant. A tech flipping between cameras never
   waits for a page of keyframes.
+- **Maximize never shows black.** A main-stream preview needs a keyframe plus LibVLC's input
+  cache before it has anything to draw — a couple of seconds on some cameras — so the
+  double-clicked tile first grows to fill the panel on the sub stream it is already
+  decoding (the other tiles collapse and the `UniformGrid` goes 1×1), while the main-stream
+  player starts in the big view held at `Visibility.Hidden`. Hidden, **not Collapsed**: a
+  hidden `VideoView` is still laid out, so its template and the window handle the player
+  renders into exist at full size (on the very first maximize they are created by that layout
+  pass), the window is just not shown, and LibVLC draws into it regardless. The swap happens
+  when `Media.Statistics.DisplayedPictures` goes above zero — polled every 50 ms, because
+  libvlc 3 has no per-rendered-frame event short of taking over rendering, and `Vout` fires
+  at output *creation* (first decoded frame), before anything is drawn. Fallbacks:
+  decoding (`VoutCount > 0` or `DecodedVideo > 0`) with nothing counted for 2 s swaps anyway,
+  in case an output does not count into a hidden window (showing it paints the next frame);
+  `Error`/`Ended`, or no picture at all in 20 s, releases the preview and leaves the sub
+  stream up full-size with the reason on the tile's label. Double-click on the warming tile,
+  or Esc, returns to the grid at any point.
 - **Collapsed tiles must have their overlays cleared.** LibVLCSharp's WPF `VideoView` puts
   its content in a separate transparent top-level window and stops repositioning it once the
   host is zero-size, so a collapsed tile's overlay would sit over the maximized picture and

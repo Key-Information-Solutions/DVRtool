@@ -36,6 +36,18 @@ namespace DVRTool.App;
 /// over the big picture, swallowing the double-click meant to bring the grid back.
 /// </para>
 /// <para>
+/// Nor does maximizing go black while the main stream warms up. A main-stream preview takes
+/// a keyframe interval plus LibVLC's input cache to show anything — a couple of seconds on
+/// some cameras — so the double-clicked tile first grows to fill the panel on the sub stream
+/// it is already playing (the other tiles collapse, the panel goes 1×1), the main-stream
+/// player starts in a <see cref="Visibility.Hidden"/> view whose window exists at full size
+/// but is not shown, and only once LibVLC reports a displayed picture do the two swap. Hidden
+/// rather than Collapsed is the load-bearing detail: a collapsed <see cref="VideoView"/> is
+/// never measured, so on the first maximize its template — and the window handle the player
+/// renders into — would not exist yet. Should the main stream never produce a picture, the
+/// sub stream simply stays up full-size and the label says why.
+/// </para>
+/// <para>
 /// Tiles come from the ISAPI channel list, never from the SDK's channel count: Site C's login
 /// reports 32 IP channels, 21 of which exist, and the other eleven fail with "illegal
 /// channel". A channel ISAPI marks offline is shown but not started, saving a stream slot.
@@ -69,16 +81,41 @@ public partial class MainWindow
         public required VideoView View { get; init; }
         public required MediaPlayer Player { get; init; }
         public required Grid Overlay { get; init; }
+        public required TextBlock Label { get; init; }
         public required TextBlock Status { get; init; }
         public HikvisionLiveStream? Sdk { get; set; }
         public Media? Media { get; set; }
+
+        public string DefaultLabel => $"{Channel.Id}  {Channel.Name}";
 
         public void SetStatus(string text)
         {
             Status.Text = text;
             Status.Visibility = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
+
+        /// <summary>The corner label: channel and name, plus a note while maximizing.</summary>
+        public void SetLabelNote(string note) =>
+            Label.Text = note.Length > 0 ? $"{DefaultLabel}  —  {note}" : DefaultLabel;
     }
+
+    /// <summary>How often the warm-up watch asks LibVLC whether the main stream has a picture.</summary>
+    private static readonly TimeSpan MainPicturePoll = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Decoding has started but no displayed picture has been counted for this long: swap
+    /// anyway. Covers a video output that will not count pictures into a hidden window —
+    /// once shown, the next frame paints it.
+    /// </summary>
+    private static readonly TimeSpan MainDecodingGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>After this long the label admits the main stream is slow.</summary>
+    private static readonly TimeSpan MainSlowNote = TimeSpan.FromSeconds(5);
+
+    /// <summary>No picture at all by now: release the preview and stay on the sub stream.</summary>
+    private static readonly TimeSpan MainGiveUp = TimeSpan.FromSeconds(20);
+
+    private const string ReturnHint = "double-click or Esc to return to the grid";
 
     /// <summary>
     /// The decoder settings every live media gets, single view or tile, SDK or RTSP.
@@ -386,7 +423,7 @@ public partial class MainWindow
                 // layered window, and fully transparent pixels are not hit-tested at all.
                 Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)),
             };
-            overlay.Children.Add(new TextBlock
+            var label = new TextBlock
             {
                 Text = $"{channel.Id}  {channel.Name}",
                 Foreground = Brushes.White,
@@ -395,7 +432,8 @@ public partial class MainWindow
                 FontSize = 12,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Top,
-            });
+            };
+            overlay.Children.Add(label);
             overlay.Children.Add(status);
 
             var frame = new Border
@@ -409,14 +447,19 @@ public partial class MainWindow
             var tile = new LiveTile
             {
                 Channel = channel, Frame = frame, View = view, Player = player,
-                Overlay = overlay, Status = status,
+                Overlay = overlay, Label = label, Status = status,
             };
             overlay.MouseLeftButtonDown += (_, e) =>
             {
                 if (e.ClickCount == 2)
                 {
                     e.Handled = true;
-                    _ = MaximizeTileAsync(tile);
+                    // While its main stream warms up this tile is the full-size view, and
+                    // the double-click that would bring the grid back lands here.
+                    if (ReferenceEquals(_maxTile, tile))
+                        RestoreGrid();
+                    else
+                        _ = MaximizeTileAsync(tile);
                 }
             };
             // LibVLC reports a stream it could not open on its own thread and otherwise
@@ -525,6 +568,15 @@ public partial class MainWindow
     /// Brings one tile's camera up full-size on its main stream, leaving the grid running
     /// underneath so the way back is instant.
     /// </summary>
+    /// <remarks>
+    /// In two steps, so the operator never looks at black. First the tile itself fills the
+    /// panel on the sub stream it is already decoding, and the main-stream player starts in
+    /// the hidden full-size view. Then, once LibVLC has put a main-stream picture on that
+    /// hidden window (<see cref="WaitForMainPictureAsync"/>), <see cref="ShowMainPicture"/>
+    /// swaps the two in one layout pass. If the main stream fails or never delivers, the
+    /// sub stream stays up and the label says so — that is a better place to be than a black
+    /// pane with an error in the middle.
+    /// </remarks>
     private async Task MaximizeTileAsync(LiveTile tile)
     {
         if (_maxTile is not null || _libVlc is null || _cleanupStarted)
@@ -540,45 +592,32 @@ public partial class MainWindow
         _maxPlayer ??= new MediaPlayer(_libVlc);
         LiveMaxVideo.MediaPlayer = _maxPlayer;
 
-        // Collapsed tiles keep their overlay windows where they were; emptied, those are
-        // transparent and click-through, so the big view's own overlay gets the double-click.
+        // The chosen tile grows to the whole panel; the others collapse. Collapsed tiles keep
+        // their overlay windows where they were; emptied, those are transparent and
+        // click-through, so the one overlay left — this tile's — gets the double-click.
         foreach (var t in _tiles)
+        {
+            if (ReferenceEquals(t, tile))
+                continue;
             ClearOverlay(t.View);
-        LiveGridPanel.Visibility = Visibility.Collapsed;
+            t.Frame.Visibility = Visibility.Collapsed;
+        }
+        LiveGridPanel.Columns = 1;
+        LiveGridPanel.Rows = 1;
+        tile.SetLabelNote($"sub stream while the main stream starts …  ·  {ReturnHint}");
 
-        var status = new TextBlock
-        {
-            Text = "starting main stream …",
-            Foreground = Brushes.Gainsboro,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        var overlay = new Grid { Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)) };
-        overlay.Children.Add(new TextBlock
-        {
-            Text = $"{tile.Channel.Id}  {tile.Channel.Name}  —  main stream  ·  double-click or Esc to return to the grid",
-            Foreground = Brushes.White,
-            Background = new SolidColorBrush(Color.FromArgb(0x80, 0, 0, 0)),
-            Padding = new Thickness(6, 2, 6, 3),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top,
-        });
-        overlay.Children.Add(status);
-        overlay.MouseLeftButtonDown += (_, e) =>
-        {
-            if (e.ClickCount == 2)
-            {
-                e.Handled = true;
-                RestoreGrid();
-            }
-        };
-        LiveMaxVideo.Content = overlay;
-        LiveMaxVideo.Visibility = Visibility.Visible;
+        // Hidden, not Collapsed: the view is laid out at full size and its window handle
+        // exists (on the first maximize it is created by this very layout pass), it is just
+        // not shown. LibVLC renders into it all the same, which is what lets the swap below
+        // land on a picture that is already there.
+        LiveMaxVideo.Visibility = Visibility.Hidden;
+        SetStatus($"{tile.Channel.Name}: starting the main stream — the sub stream stays up " +
+            "until the first main-stream picture.");
 
         bool Stale() => gen != _gridGen || maxGen != _maxGen || _libVlc is null;
+        Media media;
         try
         {
-            Media media;
             if (_gridSession is { } session)
             {
                 var live = await Task.Run(() => session.StartLive(tile.Channel.Id, StreamType.Main));
@@ -597,44 +636,160 @@ public partial class MainWindow
             AddLiveDecodeOptions(media);
             _maxMedia = media;
             _maxPlayer.Play(media);
-            status.Visibility = Visibility.Collapsed;
-            SetStatus($"{tile.Channel.Name}: main stream — double-click or Esc to return to the grid.");
         }
         catch (Exception ex)
         {
             if (Stale())
                 return;
-            status.Text = Shorten(ex.Message);
-            SetStatus($"Main stream failed: {Shorten(ex.Message)}");
+            ReleaseMainStream();
+            tile.SetLabelNote($"main stream failed: {Shorten(ex.Message)}  ·  showing the sub stream  ·  {ReturnHint}");
+            SetStatus($"Main stream failed: {Shorten(ex.Message)} — showing the sub stream instead.");
+            return;
+        }
+
+        string? failure = await WaitForMainPictureAsync(_maxPlayer, media, tile, Stale);
+        if (Stale())
+            return;
+        if (failure is null)
+        {
+            ShowMainPicture(tile);
+            return;
+        }
+        ReleaseMainStream();
+        tile.SetLabelNote($"{failure}  ·  showing the sub stream  ·  {ReturnHint}");
+        SetStatus($"{tile.Channel.Name}: {failure} — showing the sub stream instead.");
+    }
+
+    /// <summary>
+    /// Watches the main-stream player until it has a picture on screen. Returns null then,
+    /// or the reason it never will.
+    /// </summary>
+    /// <remarks>
+    /// The signal is LibVLC's own count of displayed pictures for the media, polled rather
+    /// than evented because nothing in libvlc 3 fires per rendered frame short of taking
+    /// over rendering. <c>Vout</c> fires when the output is created — at the first decoded
+    /// frame, before anything is drawn — so it and the decoded-frame count serve only as the
+    /// fallback: decoding for <see cref="MainDecodingGrace"/> with nothing counted means the
+    /// output is not counting into the hidden window, and showing it is what will get the
+    /// next frame painted.
+    /// </remarks>
+    private async Task<string?> WaitForMainPictureAsync(MediaPlayer player, Media media,
+        LiveTile tile, Func<bool> stale)
+    {
+        long started = Environment.TickCount64;
+        long? decodingSince = null;
+        bool slowNoted = false;
+        while (true)
+        {
+            await Task.Delay(MainPicturePoll);
+            if (stale())
+                return "cancelled";
+
+            var state = player.State;
+            if (state == VLCState.Error)
+                return "the main stream failed to open";
+            if (state == VLCState.Ended)
+                return "the main stream ended before its first picture";
+
+            var stats = media.Statistics;
+            if (stats.DisplayedPictures > 0)
+                return null;
+
+            long now = Environment.TickCount64;
+            if (player.VoutCount > 0 || stats.DecodedVideo > 0)
+            {
+                decodingSince ??= now;
+                if (now - decodingSince >= MainDecodingGrace.TotalMilliseconds)
+                    return null;
+            }
+            if (now - started >= MainGiveUp.TotalMilliseconds)
+                return $"no picture from the main stream in {MainGiveUp.TotalSeconds:0} s";
+            if (!slowNoted && now - started >= MainSlowNote.TotalMilliseconds)
+            {
+                slowNoted = true;
+                tile.SetLabelNote($"still waiting for the main stream …  ·  {ReturnHint}");
+            }
         }
     }
 
-    /// <summary>Back to the grid: the main-stream preview released, tiles uncovered.</summary>
+    /// <summary>The swap: the tile's sub stream out, the main-stream view in, one layout pass.</summary>
+    private void ShowMainPicture(LiveTile tile)
+    {
+        var overlay = new Grid { Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)) };
+        overlay.Children.Add(new TextBlock
+        {
+            Text = $"{tile.DefaultLabel}  —  main stream  ·  {ReturnHint}",
+            Foreground = Brushes.White,
+            Background = new SolidColorBrush(Color.FromArgb(0x80, 0, 0, 0)),
+            Padding = new Thickness(6, 2, 6, 3),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+        });
+        overlay.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount == 2)
+            {
+                e.Handled = true;
+                RestoreGrid();
+            }
+        };
+
+        // The tile is about to be zero-size along with the rest of the panel, so its overlay
+        // goes the way the others' did.
+        ClearOverlay(tile.View);
+        tile.SetLabelNote("");
+        LiveGridPanel.Visibility = Visibility.Collapsed;
+        LiveMaxVideo.Content = overlay;
+        LiveMaxVideo.Visibility = Visibility.Visible;
+        SetStatus($"{tile.Channel.Name}: main stream — {ReturnHint}.");
+    }
+
+    /// <summary>
+    /// Releases the main-stream preview and its player, keeping whatever view is showing.
+    /// Off the UI thread: stopping a preview blocks until the SDK's receive thread joins.
+    /// </summary>
+    private void ReleaseMainStream()
+    {
+        var sdk = _maxSdk;
+        var media = _maxMedia;
+        _maxSdk = null;
+        _maxMedia = null;
+        QueuePlayerStop(_maxPlayer);
+        if (sdk is not null || media is not null)
+            _ = Task.Run(() =>
+            {
+                sdk?.Dispose();
+                media?.Dispose();
+            });
+        ClearOverlay(LiveMaxVideo);
+        LiveMaxVideo.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Back to the grid: the main-stream preview released, tiles uncovered and re-laid.</summary>
     private void RestoreGrid()
     {
         _maxGen++;
         var wasMax = _maxTile;
         _maxTile = null;
 
-        var sdk = _maxSdk;
-        var media = _maxMedia;
-        _maxSdk = null;
-        _maxMedia = null;
-        if (wasMax is not null || sdk is not null)
-        {
-            QueuePlayerStop(_maxPlayer);
-            if (sdk is not null || media is not null)
-                _ = Task.Run(() =>
-                {
-                    sdk?.Dispose();
-                    media?.Dispose();
-                });
-        }
+        if (wasMax is not null || _maxSdk is not null || _maxMedia is not null)
+            ReleaseMainStream();
+        else
+            LiveMaxVideo.Visibility = Visibility.Collapsed;
 
-        ClearOverlay(LiveMaxVideo);
-        LiveMaxVideo.Visibility = Visibility.Collapsed;
+        // Undo the 1×1 of a maximize, warm-up or finished: every tile visible, its own label,
+        // its overlay back in place, and the page's real shape.
         foreach (var t in _tiles)
+        {
+            t.Frame.Visibility = Visibility.Visible;
+            t.SetLabelNote("");
             t.View.Content = t.Overlay;
+        }
+        if (_tiles.Count > 0)
+        {
+            LiveGridPanel.Columns = LiveGridLayout.Columns(_tiles.Count);
+            LiveGridPanel.Rows = LiveGridLayout.Rows(_tiles.Count);
+        }
         if (_gridMode)
         {
             LiveGridPanel.Visibility = Visibility.Visible;
