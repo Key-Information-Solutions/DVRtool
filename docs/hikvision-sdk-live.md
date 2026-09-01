@@ -19,7 +19,17 @@ and the traps in the implementation. Read it before touching
   17 recorders — 10 models, 12 firmware builds, V3.1.18 through V5.04.081 — and answered
   **403 on every single one**. It is not a firmware gamble; stop designing around it.
 - **Two surfaces:** the desktop app's Live tab has a transport dropdown (`RTSP <port>` /
-  `SDK <port>`), and the CLI has `dvrtool live`, which records to a file.
+  `SDK <port>`), and the CLI has `dvrtool live`, which records to a file. The Live tab also
+  has a **Grid** mode — every camera of the system at once on sub streams, 16 per page,
+  double-click for the main stream (§7).
+- **Every live media needs `:avcodec-threads=1`** or a 20 fps stream shows its first frame
+  and then nothing (§3, "LibVLC drops every frame after the first"). The bytes are fine; it
+  is LibVLC's decoder latency against Hikvision's zero-lead timestamps. Applied by
+  `MainWindow.AddLiveDecodeOptions` to SDK and RTSP media alike.
+- **One TCP connection per preview**, plus one for the login. A 16-tile grid is 17
+  connections to the SDK port, which is exactly what iVMS-4200 does (21 were observed from
+  one iVMS grid). The SDK side of 16 streams costs nothing measurable; the viewer side does
+  (§7).
 - **Display channel ≠ SDK channel.** An NVR's first IP camera is display channel 1 and
   **device channel 33**. Getting this wrong shows no error — just no video, or on a hybrid
   DVR, a different camera. `SdkChannelMap` reads the mapping off the login response.
@@ -160,6 +170,47 @@ And the usual native-callback rules: the delegate is rooted for the life of the 
 collected delegate is a hard crash, not an error), and no exception may escape into native
 code.
 
+### LibVLC drops every frame after the first
+
+Found on Site C's DS-9632NI-M8 (2026-09-01): the SDK preview showed one frame and froze,
+while `dvrtool live` captured the same stream to a file that decoded perfectly — 207 HEVC
+frames at 4256×1888, 20 fps, no errors. So the bytes were never the problem. Two things
+about the stream and one about LibVLC combine:
+
+- **Hikvision stamps each pack's SCR equal to the frame's own PTS**, so a frame reaches the
+  decoder with no lead time beyond LibVLC's input cache (300 ms for a stream input).
+- **The 0xBD private stream** (Hikvision smart metadata, sub-id `0x00`) is taken by VLC's PS
+  demuxer for a VCD subtitle track, which trips a WinSubMux-era hack that discards the pack
+  SCR and forces the clock from the video PES PTS ("force SCR" once per frame in the logs).
+  Same outcome as the first point; it just makes it certain.
+- **avcodec frame-threading** holds decoder output back by roughly one frame per thread. Ten
+  threads at 20 fps is 500 ms, more than the cache, so the video output judges every frame
+  late and drops it ("More than N late frames, dropping frame"). The keyframe that started
+  the stream got through before the queue existed — hence exactly one picture.
+
+The .233 I-series recorder has the identical stream structure and only *looked* fine because
+at 30 fps ten frames is 333 ms: it was dropping 108 of 532 frames in the same probe, which
+reads as "slightly jerky" rather than "frozen".
+
+**The fix is `:avcodec-threads=1` on the media** (`MainWindow.AddLiveDecodeOptions`; two
+threads also works). Measured live against Site C, main stream, hardware decode:
+
+| Media option | Frames displayed | Late-frame drops |
+|---|---|---|
+| default (10 threads) | 206 / 15 s | 118 |
+| `clock-synchro=0` | 166 / 12 s | 89 |
+| 1500 ms caching | 165 / 12 s | 89 |
+| **`avcodec-threads=1`** | **297 / 15 s (full 20 fps)** | **0** |
+| `avcodec-threads=2` | 294 / 15 s | 0 |
+
+Single-threaded held for 30 s, on the sub stream, and even in software decode of the 8 MP
+stream on one thread. Hardware decoding is unaffected: LibVLC 3 decodes through D3D11VA,
+which the NVIDIA driver services with NVDEC (2–3 % decoder utilisation for the 8 MP stream,
+0 % idle). Note that `--avcodec-hw=none` as a LibVLC argument is *ignored* by this build —
+it still picks d3d11va — so a software-only control run needs a different lever.
+
+The option belongs on RTSP media too: live555 delivers the same zero-lead timestamps.
+
 ### Stop before Complete, streams before logout
 
 `NET_DVR_StopRealPlay` blocks until the SDK's receive thread joins — which is what
@@ -260,6 +311,67 @@ Against the local DS-7716NI-I4/16P(B) on V4.61.030 (`192.0.2.10`), 2026-08-24:
 
 Not verified: Dahua (not implemented), hybrid DVRs (no unit on hand), and remote sites over
 a WAN link — everything above is a LAN test.
+
+Against Site C's DS-9632NI-M8 over the WAN (`dvrtool live` + a LibVLC probe harness),
+2026-09-01:
+
+| | Result |
+|---|---|
+| `dvrtool live` main, 10 s | 2.3 MB MPEG-PS → HEVC 4256×1888 20 fps, 207 frames, no errors |
+| Sub stream | HEVC 1200×536 20 fps, ~400 kbps (two fisheye channels: 720×720 30 fps) |
+| LibVLC default vs `avcodec-threads=1` | 118 late drops → 0; see §3 |
+| 16 sub-stream tiles, one session | all at full rate, 6–9 Mbps aggregate, ~9 % CPU, NVDEC 2–3 % |
+| Main-stream preview added beside 16 tiles | 49 ms to start, 20 fps, 0 lost frames |
+| Channels 22–32 (login says 32 IP channels, 21 exist) | `illegal channel (4)` — use the ISAPI list |
+
+## 7. Grid view
+
+The Live tab's **Grid** toggle shows every camera of the selected system on sub streams,
+paged at 16, and a double-click on a tile brings that camera up full-size on its main stream
+(double-click again or Esc to return). `MainWindow.LiveGrid.cs`, with the arithmetic in
+`LiveGridLayout` (Core, unit-tested). What the measurements decided:
+
+- **One SDK login for the whole grid.** `HikvisionSdkSession.StartLive` is called once per
+  tile on the same session; each preview is its own TCP connection to the SDK port. The
+  identity check runs once, at login, before any tile streams.
+- **The viewer, not the recorder, is the limit.** HCNetSDK carrying 16 streams: 117 threads,
+  0 % CPU, no dropped bytes. Each LibVLC player: ~85 threads and 35–40 MB. Measured with
+  real rendering on an RTX 5090 workstation:
+
+  | Tiles | CPU (whole machine) | Threads | Working set |
+  |---|---|---|---|
+  | 8 | ~1 % | 770 | 537 MB |
+  | 16 | ~9 % | 1,453 | 803 MB |
+  | 20 | ~9 % | 1,795 | 930 MB |
+  | 21 | 35–53 % | ~1,880 | 985 MB |
+
+  The cliff at 21 reproduced twice and is not a particular camera (the same channels at 20
+  tiles were fine); with a dummy video output it halves, so about half of it is the per-tile
+  Direct3D window. It was not pinned further because the answer is the same either way:
+  **page at 16**, which is also iVMS-4200's default 4×4. A field laptop hits its own cliff
+  earlier; if one does, the page size is the one number to lower.
+- **Tiles start 100 ms apart.** Sixteen previews opening in the same instant is sixteen
+  keyframes: 25–34 Mbps for a second on a stream that averages 7 Mbps, enough to stall a
+  10 Mbps site uplink. Spreading them is invisible to the operator.
+- **Maximize adds a preview, it does not rebuild.** Starting a main-stream preview on the
+  running session took 49 ms and played at 20 fps with no loss beside 16 tiles, so the tiles
+  keep running underneath and the way back is instant. A tech flipping between cameras never
+  waits for a page of keyframes.
+- **Collapsed tiles must have their overlays cleared.** LibVLCSharp's WPF `VideoView` puts
+  its content in a separate transparent top-level window and stops repositioning it once the
+  host is zero-size, so a collapsed tile's overlay would sit over the maximized picture and
+  eat the double-click. Emptied, the overlay is transparent and click-through. The reverse
+  applies when restoring. **Empty it with a fresh element, never with `null`:** `VideoView`
+  moves assigned content into the overlay window and resets its own `Content` to null while
+  doing so, so a later `Content = null` is not a change and nothing happens — the first cut
+  did exactly that and the screenshot showed sixteen labels painted over the big picture.
+  `ClearOverlay` assigns an empty `Grid`.
+- **Tiles come from the ISAPI channel list**, never the SDK's channel count (see §4). A
+  channel ISAPI marks offline is shown but not started, saving a stream slot.
+- **Tiles carry `:no-audio`** as well as the decoder option. Sixteen sites' worth of audio
+  is noise.
+- **RTSP grids work too** but say so when they fail: LibVLC's `EncounteredError` is
+  surfaced on the tile, because at most sites the RTSP port is the one that is closed.
 
 ## 5. Known limitations
 

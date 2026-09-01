@@ -32,7 +32,13 @@ mapping off the login response); the data callback runs on an SDK thread that mu
 blocked, so `SdkMediaStream` drops the oldest bytes rather than applying back-pressure; and
 the SDK login is verified against the **web port's** identity pin, which works because the
 SDK reports the same serial as ISAPI — *not* always byte-identically (M-series firmware drops
-a hyphen), which is why serial comparison strips hyphens.
+a hyphen), which is why serial comparison strips hyphens. **Every live media gets
+`:avcodec-threads=1`** (`MainWindow.AddLiveDecodeOptions`): Hikvision stamps frames with zero
+clock lead and LibVLC's frame-threading latency then drops every frame after the first — the
+"first frame only" symptom is LibVLC, never the SDK. The Live tab's **Grid** mode
+(`MainWindow.LiveGrid.cs`, `LiveGridLayout` in Core) runs one SDK login with a preview per tile,
+paged at 16 because independent LibVLC players hit a measured CPU cliff at 21; tiles come from
+the ISAPI channel list, not the SDK channel count.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs

@@ -139,7 +139,9 @@ public partial class MainWindow : Window
         }
 
         // Before the players: an SDK preview is the source feeding one of them, and its
-        // teardown blocks on the SDK's own receive thread.
+        // teardown blocks on the SDK's own receive thread. The grid first — it owns up to
+        // sixteen of them on one session.
+        await DisposeLiveGridAsync();
         await DisposeSdkLiveAsync();
 
         // Detach the views first so VideoView never renders against a disposed
@@ -232,6 +234,8 @@ public partial class MainWindow : Window
         // Neither belongs to the device the operator just picked.
         QueuePlayerStop(_livePlayer);
         StopSdkLive();
+        StopLiveGrid();
+        UpdateGridPageControls();
         UpdateLiveTransportLabels(DeviceList.SelectedItem as SavedDevice);
 
         _clientCts?.Cancel();
@@ -295,6 +299,7 @@ public partial class MainWindow : Window
             if (channels.Count > 0)
                 ChannelList.SelectedIndex = 0;
             SetStatus($"{device.Name}: {channels.Count} channel(s).");
+            OnChannelsLoadedForLiveGrid();
         }
         catch (OperationCanceledException)
         {

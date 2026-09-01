@@ -5,7 +5,7 @@
         xmlns:local="clr-namespace:DVRTool.App"
         Title="DVRTool — Key Information Solutions"
         Height="760" Width="1220"
-        Loaded="OnLoaded" Closing="OnClosing">
+        Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnLivePreviewKeyDown">
     <DockPanel>
         <StatusBar DockPanel.Dock="Bottom">
             <StatusBarItem>
@@ -67,9 +67,36 @@
                             </ComboBox>
                             <Button Content="▶ Play" Click="OnLivePlay" Margin="8,0,0,0"/>
                             <Button Content="⏹ Stop" Click="OnLiveStop"/>
+                            <Separator/>
+                            <ToggleButton x:Name="LiveGridToggle" Content="▦ Grid" Padding="6,2"
+                                          Checked="OnLiveGridToggle" Unchecked="OnLiveGridToggle">
+                                <ToggleButton.ToolTip>
+                                    <TextBlock>
+                                        Every camera of the selected system at once, sub streams,<LineBreak/>
+                                        up to 16 per page. Double-click a camera to see it full-size<LineBreak/>
+                                        on its main stream; double-click again (or Esc) to come back.<LineBreak/>
+                                        <LineBreak/>
+                                        Each tile is a stream slot on the recorder and one TCP<LineBreak/>
+                                        connection on the chosen port, so a full page is 16 of each —<LineBreak/>
+                                        the same as an iVMS-4200 4×4 view.
+                                    </TextBlock>
+                                </ToggleButton.ToolTip>
+                            </ToggleButton>
+                            <Button x:Name="LiveGridPrev" Content="◀" Click="OnLiveGridPrev" IsEnabled="False"
+                                    ToolTip="Previous page of cameras"/>
+                            <TextBlock x:Name="LiveGridPageLabel" VerticalAlignment="Center" Margin="4,0"/>
+                            <Button x:Name="LiveGridNext" Content="▶" Click="OnLiveGridNext" IsEnabled="False"
+                                    ToolTip="Next page of cameras"/>
+                            <TextBlock x:Name="LiveGridHint" VerticalAlignment="Center" Margin="10,0,0,0"
+                                       Foreground="Gray" Visibility="Collapsed"
+                                       Text="double-click a camera for its main stream"/>
                         </ToolBar>
                         <Border Background="Black">
-                            <vlc:VideoView x:Name="LiveVideo"/>
+                            <Grid>
+                                <vlc:VideoView x:Name="LiveVideo"/>
+                                <UniformGrid x:Name="LiveGridPanel" Visibility="Collapsed"/>
+                                <vlc:VideoView x:Name="LiveMaxVideo" Visibility="Collapsed"/>
+                            </Grid>
                         </Border>
                     </DockPanel>
                 </TabItem>

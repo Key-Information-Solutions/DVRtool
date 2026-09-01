@@ -82,6 +82,13 @@ public partial class MainWindow
             return;
         }
 
+        // In grid mode Play means "fill the grid again" — see MainWindow.LiveGrid.cs.
+        if (_gridMode)
+        {
+            await StartLiveGridAsync();
+            return;
+        }
+
         var stream = LiveStreamCombo.SelectedIndex == 1 ? StreamType.Sub : StreamType.Main;
         if (SelectedLiveTransport == LiveTransport.Sdk)
         {
@@ -91,6 +98,7 @@ public partial class MainWindow
 
         var uri = _client.GetLiveUri(item.Channel.Id, stream);
         using var media = CreateRtspMedia(uri);
+        AddLiveDecodeOptions(media);
         _livePlayer.Play(media);
         SetStatus($"Live: channel {item.Channel.Id} ({stream}) over RTSP " +
             $"{_currentDevice.RtspPort}.");
@@ -102,6 +110,10 @@ public partial class MainWindow
         // The recorder holds a stream slot for as long as the preview runs, so Stop has to
         // release it rather than only blanking the window.
         StopSdkLive();
+        StopLiveGrid();
+        UpdateGridPageControls();
+        if (_gridMode)
+            SetStatus("Grid stopped — the recorder's stream slots are released. ▶ Play fills it again.");
     }
 
     /// <summary>
@@ -164,6 +176,7 @@ public partial class MainWindow
 
             // Non-seekable and of unknown length, which is what tells LibVLC this is live.
             using var media = new Media(_libVlc, new StreamMediaInput(live.Media));
+            AddLiveDecodeOptions(media);
             _livePlayer.Play(media);
 
             SetStatus($"Live: channel {channel} (device channel {live.SdkChannel}, {stream}) " +
