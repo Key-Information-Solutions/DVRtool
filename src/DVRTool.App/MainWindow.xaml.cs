@@ -84,6 +84,7 @@ public partial class MainWindow : Window
         EndBox.Text = now.ToString("yyyy-MM-dd HH:mm:ss");
 
         InitializeAccessTab();
+        InitializeStorageTab();
 
         if (_devices.Count > 0)
             DeviceList.SelectedIndex = 0;
@@ -102,6 +103,7 @@ public partial class MainWindow : Window
         _clientCts?.Cancel();
         _usersCts?.Cancel();
         _accessCts?.Cancel();
+        _storageCts?.Cancel();
         if (_downloadTask is { } task)
         {
             try { await task; }
@@ -127,6 +129,13 @@ public partial class MainWindow : Window
         {
             try { await access; }
             catch { /* canceled/failed; the Access tab already reported it */ }
+        }
+        // And the Storage tab's ephemeral client — a canceled apply must still finish
+        // its current read-back before the process goes away under it.
+        if (_storageTask is { } storageWork)
+        {
+            try { await storageWork; }
+            catch { /* canceled/failed; the Storage tab already reported it */ }
         }
 
         // Before the players: an SDK preview is the source feeding one of them, and its
@@ -161,6 +170,7 @@ public partial class MainWindow : Window
         _clientCts?.Dispose();
         _usersCts?.Dispose();
         _accessCts?.Dispose();
+        _storageCts?.Dispose();
         _closePending = true;
         Close();
     }

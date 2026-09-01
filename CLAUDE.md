@@ -82,3 +82,17 @@ iVMS-pulled `access-control-policy.json` (kept under gitignored `artifacts/`, ne
 (name→fob via the identity map, revoke on every panel); `AccessReconciler` is the read-only drift report.
 CLI: `access reconcile | onboard | offboard`, `--dry-run` default and `--force` required for any write. **No
 live write has been fired** — the `.223`/ocb2 canary is gated on operator go-ahead (handoff §10).
+
+**Storage / retention:** the GUI Storage tab (`MainWindow.Storage.cs`) and `dvrtool storage
+disks | retention | plan | set` cover disk inventory, per-camera oldest-footage/days-held, the
+worst-case retention estimate, and the "we need X days" bitrate planner — Hikvision only, via
+`IStorageClient` (`Storage.cs` in Core, `HikvisionClient.Storage.cs`; the estimator math is pure
+and in Core). Read `docs/hikvision-storage.md` before touching any of it — notably: capacity is
+decimal MB and **free space is permanently 0** on a healthy recorder (retention = capacity ÷
+max bitrates, never free space); `status=notexist` disk rows are ghosts of removed drives, and
+the capabilities hddList `size` is a firmware ceiling, not the chassis bay count; recording
+search returns oldest-first, which is what makes per-camera oldest one cheap POST. Writes
+(`plan --force`, `set --force`, the GUI Apply button — the deliberate exception to
+"GUI writes stay in the CLI", since a bitrate change is reversible from the same tab) do a
+full-document PUT, then read back and report what the device kept. Estimates are worst-case on
+purpose (validated on Site C: estimated 16.5 days, held 24.1).

@@ -17,7 +17,7 @@ namespace DVRTool.Vendors.Hikvision;
 ///  - times are written "yyyy-MM-ddTHH:mm:ssZ" but the device treats them as its own
 ///    local wall-clock time, not UTC. We preserve that behavior.
 /// </summary>
-public sealed class HikvisionClient : INvrClient, IUserManagementClient
+public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
 {
     private const string IsapiTimeFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
     private const string RtspTimeFormat = "yyyyMMdd'T'HHmmss'Z'";

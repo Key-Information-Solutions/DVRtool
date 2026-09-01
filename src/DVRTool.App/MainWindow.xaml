@@ -320,6 +320,124 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
+
+                <TabItem Header="Storage">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <TextBlock Text="System " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="StorageDeviceCombo" Width="220"
+                                      DisplayMemberPath="DisplayLabel"/>
+                            <Button Content="Load" Click="OnLoadStorage" Margin="8,0,0,0"/>
+                            <CheckBox x:Name="StorageOldestCheck" Content="Per-camera oldest footage"
+                                      IsChecked="True" VerticalAlignment="Center" Margin="10,0,0,0">
+                                <CheckBox.ToolTip>
+                                    <TextBlock>
+                                        Asks the recorder for the earliest recording still on disk,<LineBreak/>
+                                        camera by camera — one search per camera, so a big system<LineBreak/>
+                                        over a slow link takes a few extra seconds. Uncheck for a<LineBreak/>
+                                        quick disks-and-bitrates look.
+                                    </TextBlock>
+                                </CheckBox.ToolTip>
+                            </CheckBox>
+                        </ToolBar>
+
+                        <TextBlock x:Name="StorageWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
+                                   TextWrapping="Wrap" Foreground="DarkRed" FontWeight="Bold"
+                                   Visibility="Collapsed"/>
+
+                        <GroupBox DockPanel.Dock="Bottom" Margin="0,6,0,0"
+                                  Header="Retention planner — “we need X days”">
+                            <DockPanel Margin="4">
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                                    <TextBlock Text="Target days " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="StorageTargetDaysBox" Width="60"/>
+                                    <Button Content="Preview plan" Click="OnPreviewStoragePlan"
+                                            Margin="8,0,0,0" Padding="10,2"/>
+                                    <Button x:Name="StorageApplyButton" Content="Apply plan…"
+                                            Click="OnApplyStoragePlan" Margin="8,0,0,0" Padding="10,2"
+                                            IsEnabled="False">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Writes the planned max bitrate to every camera the plan<LineBreak/>
+                                                changes, one by one, and reads each value back. Asks for<LineBreak/>
+                                                confirmation first — this changes recording quality and<LineBreak/>
+                                                how many days the disks hold.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
+                                </StackPanel>
+                                <TextBlock x:Name="StoragePlanSummary" Margin="0,6,0,0"
+                                           TextWrapping="Wrap"/>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <GroupBox Grid.Row="0" Header="Disks">
+                                <DockPanel>
+                                    <TextBlock x:Name="StorageDiskSummary" DockPanel.Dock="Top"
+                                               Margin="2,2,2,4" TextWrapping="Wrap"/>
+                                    <DataGrid x:Name="StorageHddGrid" AutoGenerateColumns="False"
+                                              IsReadOnly="True" CanUserAddRows="False"
+                                              MaxHeight="150" Margin="0,2">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Bay" Width="45"
+                                                                Binding="{Binding Bay}"/>
+                                            <DataGridTextColumn Header="Status" Width="80"
+                                                                Binding="{Binding Status}"/>
+                                            <DataGridTextColumn Header="Capacity" Width="80"
+                                                                Binding="{Binding Capacity}"/>
+                                            <DataGridTextColumn Header="Free" Width="80"
+                                                                Binding="{Binding Free}"/>
+                                            <DataGridTextColumn Header="Type" Width="60"
+                                                                Binding="{Binding Type}"/>
+                                            <DataGridTextColumn Header="Model" Width="200"
+                                                                Binding="{Binding Model}"/>
+                                            <DataGridTextColumn Header="Serial" Width="*"
+                                                                Binding="{Binding Serial}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </GroupBox>
+
+                            <GroupBox Grid.Row="1" Header="Cameras (recording / main stream)">
+                                <DockPanel>
+                                    <TextBlock x:Name="StorageCameraSummary" DockPanel.Dock="Top"
+                                               Margin="2,2,2,4" TextWrapping="Wrap"/>
+                                    <DataGrid x:Name="StorageCameraGrid" AutoGenerateColumns="False"
+                                              IsReadOnly="True" CanUserAddRows="False" Margin="0,2">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Ch" Width="40"
+                                                                Binding="{Binding Ch}"/>
+                                            <DataGridTextColumn Header="Name" Width="150"
+                                                                Binding="{Binding Name}"/>
+                                            <DataGridTextColumn Header="Codec" Width="60"
+                                                                Binding="{Binding Codec}"/>
+                                            <DataGridTextColumn Header="Resolution" Width="80"
+                                                                Binding="{Binding Resolution}"/>
+                                            <DataGridTextColumn Header="FPS" Width="45"
+                                                                Binding="{Binding Fps}"/>
+                                            <DataGridTextColumn Header="Mode" Width="55"
+                                                                Binding="{Binding Mode}"/>
+                                            <DataGridTextColumn Header="Max kbps" Width="70"
+                                                                Binding="{Binding MaxKbps}"/>
+                                            <DataGridTextColumn Header="Planned" Width="70"
+                                                                Binding="{Binding Planned}"/>
+                                            <DataGridTextColumn Header="Oldest footage" Width="135"
+                                                                Binding="{Binding Oldest}"/>
+                                            <DataGridTextColumn Header="Days" Width="55"
+                                                                Binding="{Binding Days}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </GroupBox>
+                        </Grid>
+                    </DockPanel>
+                </TabItem>
             </TabControl>
         </Grid>
     </DockPanel>

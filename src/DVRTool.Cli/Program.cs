@@ -18,6 +18,7 @@ const string Usage = """
       channels        List channels
       users           List the accounts configured on the device
       access          Door-access panels (see: dvrtool access --help)
+      storage         Disks, retention and bitrate planning (see: dvrtool storage --help)
       search          List recordings for a channel in a window
       download        Export footage for a time span to a file
       live            Record live video over the SDK port (Hikvision) — the transport
@@ -89,18 +90,20 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 
 string command = args[0].ToLowerInvariant();
 
-// `access` is a command group: `dvrtool access <subcommand> [options]`, so its
-// subcommand must be pulled off before the rest is parsed as options.
+// `access` and `storage` are command groups: `dvrtool <group> <subcommand> [options]`,
+// so their subcommand must be pulled off before the rest is parsed as options.
 bool isAccess = command == "access";
-string accessSubcommand = isAccess && args.Length > 1 &&
+bool isStorage = command == "storage";
+string groupSubcommand = (isAccess || isStorage) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
+string accessSubcommand = isAccess ? groupSubcommand : "";
 
 Dictionary<string, string> opts;
 try
 {
-    opts = ParseOptions(args.Skip(isAccess && accessSubcommand.Length > 0 ? 2 : 1).ToArray());
+    opts = ParseOptions(args.Skip(groupSubcommand.Length > 0 ? 2 : 1).ToArray());
     LoadDotEnv(opts.GetValueOrDefault("env"));
 }
 catch (ArgumentException ex)
@@ -122,6 +125,11 @@ try
     // are dispatched before any INvrClient is built.
     if (isAccess)
         return await AccessCommands.RunAsync(accessSubcommand, opts, cts.Token);
+
+    // Storage help must print without a connection; the real subcommands fall through
+    // to the ordinary client + identity path below.
+    if (isStorage && StorageCommands.TryRunHelp(groupSubcommand, opts, out int storageHelpExit))
+        return storageHelpExit;
 
     // `test` probes ports instead of driving a client, and ConnectivityProbe disposes every
     // client its factory hands it — so it gets the connection plus a factory rather than the
@@ -340,6 +348,8 @@ try
                 Console.WriteLine("  (unrecognized container — try --remux, or open it in VLC)");
             return 0;
         }
+        case "storage":
+            return await StorageCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "live-url":
         {
             int channel = RequireChannel(opts);
