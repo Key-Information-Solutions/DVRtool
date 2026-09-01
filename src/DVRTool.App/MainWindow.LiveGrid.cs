@@ -97,6 +97,17 @@ public partial class MainWindow
         /// <summary>The corner label: channel and name, plus a note while maximizing.</summary>
         public void SetLabelNote(string note) =>
             Label.Text = note.Length > 0 ? $"{DefaultLabel}  —  {note}" : DefaultLabel;
+
+        /// <summary>
+        /// The selection highlight. Border and margin trade a pixel so the tile's footprint
+        /// does not change and the neighbours do not shift.
+        /// </summary>
+        public void SetSelected(bool selected)
+        {
+            Frame.BorderBrush = selected ? Brushes.DodgerBlue : Brushes.DimGray;
+            Frame.BorderThickness = new Thickness(selected ? 2 : 1);
+            Frame.Margin = new Thickness(selected ? 0 : 1);
+        }
     }
 
     /// <summary>How often the warm-up watch asks LibVLC whether the main stream has a picture.</summary>
@@ -451,6 +462,10 @@ public partial class MainWindow
             };
             overlay.MouseLeftButtonDown += (_, e) =>
             {
+                // A single click selects the tile for the footer stats; the first click of
+                // a double-click does too, so a maximized camera comes back selected.
+                if (e.ClickCount == 1 && _tiles.Contains(tile))
+                    SelectTile(tile);
                 if (e.ClickCount == 2)
                 {
                     e.Handled = true;
@@ -494,6 +509,7 @@ public partial class MainWindow
     {
         _gridGen++;
         RestoreGrid();
+        SelectTile(null);
 
         var tiles = _tiles.ToArray();
         _tiles.Clear();

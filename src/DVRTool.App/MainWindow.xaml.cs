@@ -85,6 +85,7 @@ public partial class MainWindow : Window
 
         InitializeAccessTab();
         InitializeStorageTab();
+        InitializeLiveStats();
 
         if (_devices.Count > 0)
             DeviceList.SelectedIndex = 0;

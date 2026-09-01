@@ -41,7 +41,9 @@ paged at 16 because independent LibVLC players hit a measured CPU cliff at 21; t
 the ISAPI channel list, not the SDK channel count. Maximizing a tile keeps its sub stream up
 full-size until the main stream has a **displayed picture** (`Media.Statistics` polled; the
 hidden big view is `Visibility.Hidden`, never Collapsed, so its window handle exists) and only
-then swaps — never a black pane while the main stream warms up.
+then swaps — never a black pane while the main stream warms up. The **footer stats** (codec,
+size, fps, bitrate for the selected/maximized camera; `MainWindow.LiveStats.cs`, pure math in
+`LiveStats` in Core) are deltas of LibVLC's per-media counters, never its `InputBitrate`.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs

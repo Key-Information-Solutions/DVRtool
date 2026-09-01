@@ -40,6 +40,9 @@ public partial class MainWindow
 
     private HikvisionSdkSession? _sdkSession;
 
+    /// <summary>The single view's SDK preview, kept for the footer's dropped-bytes count.</summary>
+    private HikvisionLiveStream? _sdkLive;
+
     /// <summary>Guards the SDK teardown against a Play that is still starting up.</summary>
     private int _sdkGen;
 
@@ -99,7 +102,10 @@ public partial class MainWindow
         var uri = _client.GetLiveUri(item.Channel.Id, stream);
         using var media = CreateRtspMedia(uri);
         AddLiveDecodeOptions(media);
+        StopSdkLive();
         _livePlayer.Play(media);
+        _liveLabel = LiveLabel(item.Channel, stream);
+        UpdateLiveStats();
         SetStatus($"Live: channel {item.Channel.Id} ({stream}) over RTSP " +
             $"{_currentDevice.RtspPort}.");
     }
@@ -173,11 +179,15 @@ public partial class MainWindow
             }
 
             _sdkSession = session;
+            _sdkLive = live;
 
             // Non-seekable and of unknown length, which is what tells LibVLC this is live.
             using var media = new Media(_libVlc, new StreamMediaInput(live.Media));
             AddLiveDecodeOptions(media);
             _livePlayer.Play(media);
+            _liveLabel = LiveLabel(ChannelList.Items.OfType<ChannelItem>()
+                .FirstOrDefault(c => c.Channel.Id == channel)?.Channel, stream, channel);
+            UpdateLiveStats();
 
             SetStatus($"Live: channel {channel} (device channel {live.SdkChannel}, {stream}) " +
                 $"over the SDK port {device.SdkPort} — no RTSP involved.");
@@ -233,15 +243,24 @@ public partial class MainWindow
         _sdkGen++;
         var session = _sdkSession;
         _sdkSession = null;
+        _sdkLive = null;
         if (session is null)
             return;
         _ = Task.Run(session.Dispose);
+    }
+
+    /// <summary>The footer's name for what the single view is playing: "3  Front Door  ·  main".</summary>
+    private static string LiveLabel(Channel? channel, StreamType stream, int channelId = 0)
+    {
+        string name = channel is not null ? $"{channel.Id}  {channel.Name}" : $"{channelId}";
+        return $"{name}  ·  {(stream == StreamType.Sub ? "sub" : "main")}";
     }
 
     /// <summary>Shutdown-time teardown: the same, but waited on.</summary>
     private async Task DisposeSdkLiveAsync()
     {
         _sdkGen++;
+        _sdkLive = null;
         if (_sdkStartTask is { } starting)
         {
             // A login still in flight would otherwise complete into a closing window and

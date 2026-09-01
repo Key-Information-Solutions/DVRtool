@@ -8,6 +8,23 @@
         Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnLivePreviewKeyDown">
     <DockPanel>
         <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem DockPanel.Dock="Right">
+                <TextBlock x:Name="LiveStatsText" Visibility="Collapsed" Margin="12,0,4,0"
+                           FontFamily="Consolas, Segoe UI">
+                    <TextBlock.ToolTip>
+                        <TextBlock>
+                            The selected camera's stream, as this viewer receives it, sampled once a second:<LineBreak/>
+                            codec, picture size, decoded frames per second and received bitrate.<LineBreak/>
+                            <LineBreak/>
+                            <Bold>dropped</Bold> counts pictures the viewer could not show in time — a viewer<LineBreak/>
+                            or link problem, not a camera problem. <Bold>dropped by viewer</Bold> is the SDK<LineBreak/>
+                            route's buffer discarding bytes because the decoder fell behind.<LineBreak/>
+                            <LineBreak/>
+                            In the grid, click a camera to select it; the maximized camera is always selected.
+                        </TextBlock>
+                    </TextBlock.ToolTip>
+                </TextBlock>
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="Ready"/>
             </StatusBarItem>

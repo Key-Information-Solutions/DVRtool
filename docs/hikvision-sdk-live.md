@@ -388,6 +388,20 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
   is noise.
 - **RTSP grids work too** but say so when they fail: LibVLC's `EncounteredError` is
   surfaced on the tile, because at most sites the RTSP port is the one that is closed.
+- **The footer describes the selected camera** (`MainWindow.LiveStats.cs`, arithmetic in
+  `LiveStats` in Core, unit-tested): codec, picture size, decoded fps and received bitrate,
+  sampled once a second from `Media.Statistics` on whichever player is "selected" — the
+  maximized camera (main stream once it has a picture, sub until then), else the tile the
+  operator single-clicked (blue border), else the single view while it plays. The rates are
+  deltas of `ReadBytes` / `DecodedVideo` between samples, not libvlc's `InputBitrate`, whose
+  units are version-dependent; `ReadBytes` is a 32-bit truncation and wraps at 4 GB, which
+  the delta undoes, and a counter that went *backwards by less than that* means the player
+  was given a new media, so the first reading after a restart is discarded. The codec comes
+  from the media's video track (`h264`/`hevc` fourcc → "H.264"/"H.265") and the size from
+  `MediaPlayer.Size`, which is what is actually on screen. `LostPictures` shows as
+  "N dropped" only when non-zero, and on the SDK route `SdkMediaStream.BytesDropped` shows
+  as "dropped by viewer" — both are viewer-side problems and are worded as such, because the
+  question a tech is answering is "camera, link, or this PC?".
 
 ## 5. Known limitations
 
