@@ -120,6 +120,11 @@ internal static class StorageCommands
             Console.WriteLine($"* {info.GhostBayCount} bay(s) remember a removed disk — wired and " +
                 "known-good, currently empty. Physical bay count comes from the model's spec " +
                 "sheet, not from the firmware ceiling.");
+        if (info.NonRecordingHdds.Count > 0)
+            Console.WriteLine($"{info.NonRecordingHdds.Count} volume(s) hold no footage and are not " +
+                "counted in the total: " +
+                string.Join(", ", info.NonRecordingHdds.Select(h => $"bay {h.Id} {h.Name} ({h.Property})")) +
+                ".");
         foreach (var bad in info.UnhealthyHdds)
             Console.Error.WriteLine($"warning: bay {bad.Id} ({bad.Model}) reports status " +
                 $"'{bad.Status}' — footage may not be landing on it.");
@@ -173,7 +178,9 @@ internal static class StorageCommands
                 if (oldest is DateTime t)
                 {
                     oldestText = t.ToString("yyyy-MM-dd HH:mm:ss");
-                    daysText = $"{(now - t).TotalDays:F1}";
+                    // A recorder-enforced age limit caps this number whatever the disks hold.
+                    daysText = $"{(now - t).TotalDays:F1}" +
+                               (s.ArchiveCapDays is int cap ? $" (cap {cap})" : "");
                     if (systemOldest is null || t < systemOldest)
                         systemOldest = t;
                 }

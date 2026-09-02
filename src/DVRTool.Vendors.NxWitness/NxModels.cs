@@ -65,12 +65,18 @@ internal static class NxJson
         _ => null,
     };
 
+    /// <summary>JSON booleans, and the "true"/"false"/"1"/"0" strings Nx's property bag uses.</summary>
     public static bool? Bool(JsonElement e, string name) => Prop(e, name) is { } p
         ? p.ValueKind switch
         {
             JsonValueKind.True => true,
             JsonValueKind.False => false,
-            JsonValueKind.String => bool.TryParse(p.GetString(), out bool b) ? b : null,
+            JsonValueKind.String => (p.GetString() ?? "").Trim().ToLowerInvariant() switch
+            {
+                "true" or "1" or "yes" => true,
+                "false" or "0" or "no" => false,
+                _ => null,
+            },
             JsonValueKind.Number => p.TryGetInt64(out long n) ? n != 0 : null,
             _ => null,
         }
@@ -165,8 +171,17 @@ internal sealed record NxScheduleTask(
 /// <summary>A camera as this client needs it: identity, the recording schedule, and the streams it offers.</summary>
 /// <param name="Id">The device GUID without braces — what the REST paths, RTSP and <c>/media/</c> take.</param>
 /// <param name="KeepCameraProfile">
-/// The Expert setting "Keep camera stream and profile settings" (<c>controlEnabled</c> false):
-/// Nx then stores schedule quality and bitrate but never sends them to the camera.
+/// The Expert setting "Keep camera stream and profile settings" (<c>options.isControlEnabled</c>
+/// false — verified live; the older spelling <c>controlEnabled</c> is accepted too): Nx then
+/// stores schedule quality and bitrate but never sends them to the camera.
+/// </param>
+/// <param name="PrimaryMinKbps">
+/// The primary stream's bitrate floor and ceiling from <c>mediaCapabilities.streamCapabilities</c>
+/// (192–10666 kbps on a 2560×1440 DW unit, live) — Nx's own bounds for the schedule slider.
+/// </param>
+/// <param name="MaxArchiveDays">
+/// <c>schedule.maxArchiveDays</c> when positive: the recorder deletes this camera's footage
+/// past that age whatever the disks hold. Nx stores a disabled cap as a negative number.
 /// </param>
 internal sealed record NxCamera(
     string Id,
@@ -184,7 +199,10 @@ internal sealed record NxCamera(
     bool DualStreamingDisabled,
     bool KeepCameraProfile,
     NxMediaStream? Primary,
-    NxMediaStream? Secondary)
+    NxMediaStream? Secondary,
+    int? PrimaryMinKbps = null,
+    int? PrimaryMaxKbps = null,
+    int? MaxArchiveDays = null)
 {
     /// <summary>An I/O module has a schedule and no video; it is not a camera.</summary>
     public bool IsIoModule =>
@@ -220,11 +238,36 @@ internal sealed record NxCamera(
                     tasks.Add(task);
         }
 
+        // Two bags of settings: `options` (typed, always present) and `parameters`, the
+        // resource property bag that lists only what has been set, as strings. The "don't
+        // record the primary/secondary stream" switches are properties, so a camera that
+        // records both streams (the default) simply has no such key — absent means false.
         var options = NxJson.Prop(e, "options");
+        var parameters = NxJson.Prop(e, "parameters");
         bool Opt(string name, bool fallback) =>
-            options is { } o ? NxJson.Bool(o, name) ?? fallback : fallback;
+            (options is { } o ? NxJson.Bool(o, name) : null)
+            ?? (parameters is { } p ? NxJson.Bool(p, name) : null)
+            ?? fallback;
 
         var (primary, secondary) = ParseMediaStreams(NxJson.Prop(e, "mediaStreams"));
+
+        // mediaCapabilities.streamCapabilities.primary: Nx's own min/max for the schedule's
+        // bitrate slider on this camera — the planner's writable range.
+        var primaryCaps = NxJson.Prop(e, "mediaCapabilities") is { } caps &&
+                          NxJson.Prop(caps, "streamCapabilities") is { } streams
+            ? NxJson.Prop(streams, "primary")
+            : null;
+        int? primaryMin = primaryCaps is { } pc ? Positive(NxJson.Int32(pc, "minBitrateKbps")) : null;
+        int? primaryMax = primaryCaps is { } pc2 ? Positive(NxJson.Int32(pc2, "maxBitrateKbps")) : null;
+
+        // A disabled cap is stored negative (-30 = "off, 30 remembered"); only a positive one binds.
+        int? maxArchiveDays = null;
+        if (schedule is { } sch)
+        {
+            maxArchiveDays = Positive(NxJson.Int32(sch, "maxArchiveDays"));
+            if (maxArchiveDays is null && Positive(NxJson.Int32(sch, "maxArchivePeriodS")) is int seconds)
+                maxArchiveDays = Math.Max(1, (int)Math.Round(seconds / 86_400.0));
+        }
 
         return new NxCamera(
             id,
@@ -242,13 +285,20 @@ internal sealed record NxCamera(
             DualStreamingDisabled: Opt("isDualStreamingDisabled", false),
             KeepCameraProfile: !(Opt("controlEnabled", true) && Opt("isControlEnabled", true)),
             primary,
-            secondary);
+            secondary,
+            PrimaryMinKbps: primaryMin,
+            PrimaryMaxKbps: primaryMax,
+            MaxArchiveDays: maxArchiveDays);
     }
 
+    private static int? Positive(int? value) => value is > 0 ? value : null;
+
     /// <summary>
-    /// <c>mediaStreams</c> is <c>{"streams": [{"encoderIndex", "codec", "resolution", …}]}</c>
-    /// in REST v3 — and the same object JSON-encoded <em>as a string</em> in the legacy API
-    /// and some resource-parameter dumps, so both are accepted.
+    /// <c>mediaStreams</c> is a bare array of <c>{"encoderIndex", "codec", "resolution", …}</c>
+    /// in REST v3 (verified live; it carries a third entry with <c>encoderIndex</c> −1 and
+    /// codec 0 — the server's transcoding pseudo-stream, ignored here), wrapped as
+    /// <c>{"streams": […]}</c> in older shapes, and the same JSON-encoded <em>as a string</em>
+    /// in the legacy API — all three are accepted.
     /// </summary>
     internal static (NxMediaStream? Primary, NxMediaStream? Secondary) ParseMediaStreams(
         JsonElement? mediaStreams)

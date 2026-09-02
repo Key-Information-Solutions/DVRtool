@@ -16,7 +16,7 @@ door-access writes.
 | Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Device info, channels, recording search and the Storage tab live-verified on a DH-NVR608H; download and bitrate writes not yet |
 | Hikvision live video without RTSP | HCNetSDK `RealPlay_V40` over the SDK port (P/Invoke) | Live-verified on a DS-7716NI |
 | Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over the SDK port (P/Invoke) | Reads and writes live-verified |
-| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001 | Storage tab and `dvrtool storage` (`--vendor nx`) implemented against the documented REST shapes; the anonymous endpoints, port layout and certificate verified on the Site D E-Rack — authenticated reads and the schedule-bitrate write await credentials |
+| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001; or the DW Cloud relay with no port forward | Storage tab and `dvrtool storage` (`--vendor nx`) live-verified on the Site D E-Rack through the DW Cloud relay (info, channels, disks, retention, dry-run plan); the schedule-bitrate write is not yet fired; no live view through the relay (HTTPS only) |
 | UniFi Protect | Private `/api/video/export` | Planned |
 
 ## Layout
@@ -276,8 +276,15 @@ probes two ports, not three). Channel numbers there are positions in the camera 
 by name — `dvrtool channels` shows the numbering — because Nx addresses cameras by id. The
 Storage tab and `dvrtool storage` work the same as on the recorders, with one difference the
 report spells out: Nx archives each camera's secondary (low-quality) stream alongside the
-main one, and the retention totals include it. See
-[docs/nx-witness-storage.md](docs/nx-witness-storage.md).
+main one, and the retention totals include it.
+
+A site that never forwarded 7001 is still reachable if it is enrolled in DW Cloud: give the
+**cloud relay** as the host — `--host <cloud system id>.relay.vmsproxy.com` (the id is the
+last part of the site's URL in the DW Cloud portal, or `cloudSystemId` in
+`https://<server>:7001/api/moduleInformation` on the LAN). Port 443 and HTTPS are implied,
+the same local account logs in, and the desktop dialog does the same when it sees such a
+host. The relay carries HTTPS only, so storage, search and export work through it and live
+view / playback do not. See [docs/nx-witness-storage.md](docs/nx-witness-storage.md).
 
 `--sdk-port <n>` (or `DVR_SDK_PORT`) sets the vendor SDK port, the same field the desktop
 app's Add-NVR dialog records. Its default follows `--vendor` — 8000 for Hikvision's

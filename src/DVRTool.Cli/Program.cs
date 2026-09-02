@@ -685,8 +685,12 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? e
     var (web, rtsp, sdk) = ConnectivityProbe.StartAll(conn, () => ClientFor(conn, vendor), ct,
         expectSerial, expectSerial is { Length: > 0 } ? "--expect-serial" : null);
 
-    // A vendor with no SDK port (Nx) gets two rows, not a third one probing nothing.
-    var rows = new List<(string Label, Task<ProbeResult> Probe)> { (webLabel, web), (rtspLabel, rtsp) };
+    // Only the ports the record actually has: no SDK row for a vendor without one (Nx), and
+    // no RTSP row through the Nx Cloud relay, which carries HTTPS only.
+    bool viaRelay = vendor == Vendor.NxWitness && NxCloudRelay.IsRelayHost(conn.Host);
+    var rows = new List<(string Label, Task<ProbeResult> Probe)> { (webLabel, web) };
+    if (!viaRelay)
+        rows.Add((rtspLabel, rtsp));
     if (VendorPorts.HasSdkPort(vendor))
         rows.Add((sdkLabel, sdk));
 
@@ -723,7 +727,12 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? e
     var dead = results.Where(r => r.Severity == ProbeSeverity.Fail).Select(r => r.Target).ToList();
     if (dead.Count == 0 && results.All(r => r.Severity == ProbeSeverity.Pass))
     {
-        Console.WriteLine(results.Count == 3 ? "All three ports reachable." : "Both ports reachable.");
+        Console.WriteLine(results.Count switch
+        {
+            3 => "All three ports reachable.",
+            2 => "Both ports reachable.",
+            _ => "Reachable through the DW Cloud relay. " + NxWitnessClient.NoRtspViaRelay,
+        });
         return 0;
     }
 
@@ -888,14 +897,21 @@ static (NvrConnection Conn, Vendor Vendor) BuildConnection(
     Vendor vendor = ParseVendor(opts);
 
     string host = Require(opts, "host", "DVR_HOST");
-    bool useTls = opts.ContainsKey("tls") || VendorPorts.DefaultsToTls(vendor);
-    int httpPort = VendorPorts.Web(vendor, useTls);
+    int explicitPort = 0;
     if (host.Contains(':'))
     {
         var parts = host.Split(':', 2);
         host = parts[0];
-        httpPort = ParsePort(parts[1], $"--host '{parts[1]}'");
+        explicitPort = ParsePort(parts[1], $"--host '{parts[1]}'");
     }
+
+    // The Nx Cloud relay (<cloudSystemId>.relay.vmsproxy.com) is HTTPS on 443, whatever the
+    // server's own port is, and reaches a site with no port forward at all.
+    bool viaRelay = vendor == Vendor.NxWitness && NxCloudRelay.IsRelayHost(host);
+    bool useTls = opts.ContainsKey("tls") || VendorPorts.DefaultsToTls(vendor) || viaRelay;
+    int httpPort = explicitPort > 0 ? explicitPort
+        : viaRelay ? NxCloudRelay.Port
+        : VendorPorts.Web(vendor, useTls);
 
     string user = Require(opts, "user", "DVR_USER");
 

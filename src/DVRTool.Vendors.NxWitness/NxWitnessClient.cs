@@ -61,6 +61,13 @@ public sealed partial class NxWitnessClient : INvrClient
     public NvrConnection Connection { get; }
 
     /// <summary>
+    /// True when the host is the Nx Cloud relay (<see cref="NxCloudRelay"/>): the API is
+    /// reached through Nx's proxy rather than the server's own port, which changes nothing
+    /// about reads and writes and rules out RTSP.
+    /// </summary>
+    public bool ViaCloudRelay { get; }
+
+    /// <summary>
     /// The zone Nx's UTC timestamps are rendered in and local windows are read from. The
     /// operator's own by default; tests pin it.
     /// </summary>
@@ -69,6 +76,7 @@ public sealed partial class NxWitnessClient : INvrClient
     public NxWitnessClient(NvrConnection connection)
     {
         Connection = connection;
+        ViaCloudRelay = NxCloudRelay.IsRelayHost(connection.Host);
         _http = NvrHttp.Create(connection, handler: CreateHandler(connection));
         // Exports can run for many minutes; rely on the CancellationToken instead of Timeout.
         _downloadHttp = NvrHttp.Create(connection, Timeout.InfiniteTimeSpan, CreateHandler(connection));
@@ -79,6 +87,7 @@ public sealed partial class NxWitnessClient : INvrClient
     public NxWitnessClient(NvrConnection connection, HttpMessageHandler handler)
     {
         Connection = connection;
+        ViaCloudRelay = NxCloudRelay.IsRelayHost(connection.Host);
         _http = NvrHttp.Create(connection, handler: handler);
         _downloadHttp = _http;
         _ownsDownloadHttp = false;
@@ -87,10 +96,18 @@ public sealed partial class NxWitnessClient : INvrClient
     /// <summary>
     /// No digest credentials on the handler: Nx authenticates with a bearer token (digest is
     /// off by default for Nx users, and a digest challenge would only add a wasted round trip).
-    /// The certificate pin is the same trust-on-first-use pin every vendor's HTTPS gets.
+    /// A server reached directly gets the same trust-on-first-use certificate pin every
+    /// vendor's HTTPS gets. The cloud relay gets chain validation instead — its certificate
+    /// is a public-CA wildcard that rotates every 90 days, so a pin would break on schedule —
+    /// and no automatic redirects, so its 307 to a regional node is ours to follow with the
+    /// Authorization header intact (<see cref="NxRelayHandler"/>).
     /// </summary>
     private static HttpMessageHandler CreateHandler(NvrConnection conn)
     {
+        if (NxCloudRelay.IsRelayHost(conn.Host))
+            return new NxRelayHandler(new Uri(conn.HttpBase),
+                new HttpClientHandler { AllowAutoRedirect = false });
+
         var handler = new HttpClientHandler();
         if (conn.UseTls)
             handler.ServerCertificateCustomValidationCallback =
@@ -410,6 +427,7 @@ public sealed partial class NxWitnessClient : INvrClient
     public Uri GetLiveUri(int channel, StreamType stream = StreamType.Main,
         bool includeCredentials = false)
     {
+        RequireRtsp();
         var camera = ResolveKnown(channel);
         return new Uri($"{RtspBase(includeCredentials)}/{camera.Id}?stream={(int)stream}");
     }
@@ -417,9 +435,26 @@ public sealed partial class NxWitnessClient : INvrClient
     public Uri GetPlaybackUri(int channel, DateTime start, DateTime end,
         StreamType stream = StreamType.Main, bool includeCredentials = false)
     {
+        RequireRtsp();
         var camera = ResolveKnown(channel);
         return new Uri($"{RtspBase(includeCredentials)}/{camera.Id}" +
                        $"?pos={ToUnixMs(start)}&endPos={ToUnixMs(end)}&stream={(int)stream}");
+    }
+
+    /// <summary>The message every front end shows when video is asked for through the relay.</summary>
+    public const string NoRtspViaRelay =
+        "Live view and playback are not available through the DW Cloud relay: it carries " +
+        "HTTPS only, not RTSP. Storage, retention, search and export all work this way; for " +
+        "video, connect on the site's LAN or forward the server port (7001).";
+
+    /// <summary>
+    /// The relay carries no RTSP, so a stream URL through it would only ever fail to connect —
+    /// refused up front, as <see cref="NotSupportedException"/>, so the front ends can say why.
+    /// </summary>
+    private void RequireRtsp()
+    {
+        if (ViaCloudRelay)
+            throw new NotSupportedException(NoRtspViaRelay);
     }
 
     private string RtspBase(bool includeCredentials) =>

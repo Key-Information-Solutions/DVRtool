@@ -237,6 +237,10 @@ public partial class MainWindow
             (info.GhostBayCount > 0
                 ? $" *{info.GhostBayCount} bay(s) remember a removed disk — wired, currently empty."
                 : "") +
+            (info.NonRecordingHdds.Count > 0
+                ? $" {info.NonRecordingHdds.Count} volume(s) hold no footage and are not counted: " +
+                  string.Join(", ", info.NonRecordingHdds.Select(h => $"{h.Name} ({h.Property})")) + "."
+                : "") +
             (info.TotalFreeSpaceMB == 0 && info.InstalledCount > 0
                 ? " Free 0 is normal: the recorder overwrites oldest footage continuously."
                 : "");
@@ -292,7 +296,10 @@ public partial class MainWindow
                 : c.Oldest is DateTime t
                     ? t.ToString("yyyy-MM-dd HH:mm:ss")
                     : StorageOldestCheck.IsChecked == true ? "(no recordings)" : "";
-            string days = c.Oldest is DateTime o ? $"{(now - o).TotalDays:F1}" : "";
+            // "30.9 (cap 31)": a recorder-enforced age limit caps days held whatever the disks hold.
+            string days = c.Oldest is DateTime o
+                ? $"{(now - o).TotalDays:F1}" + (s.ArchiveCapDays is int cap ? $" (cap {cap})" : "")
+                : "";
             string planned = plannedByChannel is not null &&
                              plannedByChannel.TryGetValue(s.Channel, out int p)
                 ? p.ToString()

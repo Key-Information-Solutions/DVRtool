@@ -85,7 +85,10 @@ public sealed partial class NxWitnessClient : IStorageClient
             bool backup = NxJson.Bool(s, "isBackup") ?? false;
             long reserved = NxJson.Int64(s, "spaceLimitB") ?? NxJson.Int64(s, "spaceLimit") ?? 0;
             string type = NxJson.Str(s, "type") ?? NxJson.Str(s, "storageType") ?? "";
-            long? total = NxJson.Int64(s, "totalSpaceB") ?? NxJson.Int64(s, "totalSpace");
+            // v3 carries the volume's size as parameters.space (verified live); the legacy
+            // call below adds free space and overrides nothing that is already known.
+            long? total = NxJson.Int64(s, "totalSpaceB") ?? NxJson.Int64(s, "totalSpace")
+                ?? (NxJson.Prop(s, "parameters") is { } prm ? Positive(NxJson.Int64(prm, "space")) : null);
             long? free = NxJson.Int64(s, "freeSpaceB") ?? NxJson.Int64(s, "freeSpace");
             bool? online = NxJson.Bool(s, "isOnline");
             string flags = NxJson.Str(s, "status") ?? "";
@@ -165,6 +168,8 @@ public sealed partial class NxWitnessClient : IStorageClient
         return result;
     }
 
+    private static long? Positive(long? value) => value is > 0 ? value : null;
+
     /// <summary>"ok" for an online volume; Nx's own runtime flags otherwise, in words the disk table can show.</summary>
     internal static string MapStorageStatus(string flags, bool? online, long? totalBytes)
     {
@@ -236,7 +241,8 @@ public sealed partial class NxWitnessClient : IStorageClient
             ConstantBitrateKbps: null,
             FixedQuality: worst is null || worst.IsPreset ? null : NxBitrate.QualityLevel(worst.StreamQuality),
             FrameRateIsFull: false,
-            SecondaryRecordedKbps: secondaryKbps);
+            SecondaryRecordedKbps: secondaryKbps,
+            ArchiveCapDays: c.MaxArchiveDays);
     }
 
     /// <summary>What one schedule cell costs: its preset, or Nx's rate for its quality at the primary stream's resolution.</summary>
@@ -275,27 +281,43 @@ public sealed partial class NxWitnessClient : IStorageClient
         var other => other.ToUpperInvariant(),
     };
 
+    /// <summary>Chunks closer than this merge into one period in the coarse pass.</summary>
+    private const long CoarseDetailMs = 3_600_000;
+
     public async Task<DateTime?> FindOldestRecordingAsync(int channel,
         CancellationToken ct = default)
     {
         var camera = await ResolveAsync(channel, ct);
-        // The footage list is oldest-first, but the earliest start is taken explicitly rather
-        // than trusted to ordering. detailLevelMs=1 keeps every period (a larger detail level
-        // drops chunks shorter than itself, and a lone old motion clip is exactly what must
-        // not be dropped); the reply is one object per continuous run, which on a long
-        // continuous archive is a handful of entries.
-        var periods = await GetFootageAsync(camera, 0, EverythingEndMs, detailLevelMs: 1, ct);
-        if (periods.Count == 0)
-            return null;
-        return FromUnixMs(periods.Min(p => p.StartMs));
+
+        // Two passes. The exact list (detailLevelMs=1) is one object per continuous run,
+        // which on a motion-recorded camera is ~150 KB per camera — 10 MB for a 64-camera site
+        // through the cloud relay. So first a coarse pass merging anything closer than an
+        // hour (a few hundred bytes; verified live to keep the same first start), then an
+        // exact pass only over what lies before it, because a coarse detail level also drops
+        // chunks shorter than itself and a lone old clip is exactly what must not be lost.
+        // Note `limit=1` is not the answer: on 6.1 it returns an empty list.
+        var coarse = await GetFootageAsync(camera, 0, EverythingEndMs, CoarseDetailMs, ct);
+        if (coarse.Count == 0)
+        {
+            var everything = await GetFootageAsync(camera, 0, EverythingEndMs, detailLevelMs: 1, ct);
+            return everything.Count == 0 ? null : FromUnixMs(everything.Min(p => p.StartMs));
+        }
+        long oldest = coarse.Min(p => p.StartMs);
+        var before = await GetFootageAsync(camera, 0, oldest, detailLevelMs: 1, ct);
+        if (before.Count > 0)
+            oldest = Math.Min(oldest, before.Min(p => p.StartMs));
+        return FromUnixMs(oldest);
     }
 
-    public Task<BitrateRange?> GetBitrateRangeAsync(int channel, CancellationToken ct = default)
+    public async Task<BitrateRange?> GetBitrateRangeAsync(int channel, CancellationToken ct = default)
     {
-        // Nx exposes no per-camera bitrate bounds; the schedule takes any integer and the
-        // camera clamps for itself. A wide range lets the planner ask, and the read-back
-        // reports what the schedule holds.
-        return Task.FromResult<BitrateRange?>(new BitrateRange(NxBitrate.MinKbps, NxBitrate.MaxKbps));
+        // Nx's own bounds for this camera's schedule bitrate (mediaCapabilities, verified live:
+        // 192–10666 kbps on a 2560×1440 unit). A camera Nx has not probed yet gets the widest
+        // range the schedule accepts; the read-back reports what the schedule then holds.
+        var camera = await ResolveAsync(channel, ct);
+        if (camera.PrimaryMinKbps is int min && camera.PrimaryMaxKbps is int max && max >= min)
+            return new BitrateRange(min, max);
+        return new BitrateRange(NxBitrate.MinKbps, NxBitrate.MaxKbps);
     }
 
     public async Task<int> SetMaxBitrateAsync(int channel, int kbps, CancellationToken ct = default)

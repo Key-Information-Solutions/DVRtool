@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using DVRTool.Core;
+using DVRTool.Vendors.NxWitness;
 
 namespace DVRTool.App;
 
@@ -106,6 +107,15 @@ public partial class AddDeviceWindow : Window
         ApplyKind();
     }
 
+    private void OnHostChanged(object sender, TextChangedEventArgs e)
+    {
+        // Only Nx cares what the host looks like: a DW Cloud relay host changes the ports and
+        // the rows. Same construction-order guard as above.
+        if (SdkPortHint is null || TlsCheck is null || IsPanelKind || SelectedVendor != Vendor.NxWitness)
+            return;
+        ApplyVendorToPorts();
+    }
+
     /// <summary>
     /// Shows the rows the selected kind actually has. A DS-K controller exposes only the
     /// SDK protocol — no web server, no RTSP — so the recorder-only rows are removed rather
@@ -154,35 +164,51 @@ public partial class AddDeviceWindow : Window
     private void ApplyVendorToPorts()
     {
         var vendor = SelectedVendor;
+        // The DW Cloud relay (<cloud system id>.relay.vmsproxy.com) is HTTPS on 443 whatever
+        // the server's own port is, and carries no RTSP — so the RTSP row goes too.
+        bool relay = vendor == Vendor.NxWitness && NxCloudRelay.IsRelayHost(HostBox.Text);
 
-        // Only overwrite a box still holding *another* vendor's factory number (or nothing at
-        // all). A port the operator read off the device is theirs to keep: flipping the vendor
-        // combo must not silently discard it.
+        // Only overwrite a box still holding *another* factory number (or nothing at all). A
+        // port the operator read off the device is theirs to keep: flipping the vendor combo
+        // or typing a host must not silently discard it.
         var others = Enum.GetValues<Vendor>().Where(v => v != vendor).ToList();
         void Redefault(TextBox box, int mine, IEnumerable<int> theirs)
         {
             string current = box.Text.Trim();
             if (current.Length == 0 ||
-                theirs.Any(t => current == t.ToString(CultureInfo.InvariantCulture)))
+                theirs.Any(t => t != mine && current == t.ToString(CultureInfo.InvariantCulture)))
                 box.Text = mine.ToString(CultureInfo.InvariantCulture);
         }
 
-        // Nx serves HTTPS from the factory; the appliance vendors serve HTTP. Set the box
-        // before the ports so OnTlsChecked's 80↔443 swap has already run.
-        if (VendorPorts.DefaultsToTls(vendor) && TlsCheck.IsChecked != true)
+        // Nx serves HTTPS from the factory (and the relay is HTTPS only); the appliance
+        // vendors serve HTTP. Set the box before the ports so OnTlsChecked's 80↔443 swap has
+        // already run.
+        if ((VendorPorts.DefaultsToTls(vendor) || relay) && TlsCheck.IsChecked != true)
             TlsCheck.IsChecked = true;
         else if (!VendorPorts.DefaultsToTls(vendor) && TlsCheck.IsChecked == true &&
                  HttpPortBox.Text.Trim() == VendorPorts.NxWitnessServer.ToString(CultureInfo.InvariantCulture))
             TlsCheck.IsChecked = false;
 
         bool tls = TlsCheck.IsChecked == true;
-        Redefault(HttpPortBox, VendorPorts.Web(vendor, tls),
-            others.SelectMany(v => new[] { VendorPorts.Web(v, true), VendorPorts.Web(v, false) }));
+        int webDefault = relay ? NxCloudRelay.Port : VendorPorts.Web(vendor, tls);
+        Redefault(HttpPortBox, webDefault,
+            others.SelectMany(v => new[] { VendorPorts.Web(v, true), VendorPorts.Web(v, false) })
+                .Concat(new[] { VendorPorts.NxWitnessServer, NxCloudRelay.Port }));
         Redefault(RtspPortBox, VendorPorts.Rtsp(vendor), others.Select(VendorPorts.Rtsp));
+        ShowRtspRow(!relay);
 
         if (!VendorPorts.HasSdkPort(vendor))
         {
             ShowSdkPortRow(false);
+            // Nx has no SDK port to explain, so its hint slot carries the cloud-relay note.
+            SdkPortHint.Visibility = Visibility.Visible;
+            SdkPortHint.Text = relay
+                ? "DW Cloud relay: HTTPS on 443 through Nx's proxy, no port forward needed. " +
+                  NxWitnessClient.NoRtspViaRelay
+                : "No port forward to the server? Enter <cloud system id>.relay.vmsproxy.com as " +
+                  "the host — the DW Cloud relay. The id is the last part of the site's URL in " +
+                  "the DW Cloud portal, or cloudSystemId in https://<server>:7001/api/moduleInformation " +
+                  "on the LAN. Live view is not available that way; storage, search and export are.";
             return;
         }
         ShowSdkPortRow(true);
@@ -214,6 +240,14 @@ public partial class AddDeviceWindow : Window
         SdkPortLabel.Visibility = visibility;
         SdkPortBox.Visibility = visibility;
         SdkPortHint.Visibility = visibility;
+    }
+
+    /// <summary>The RTSP row disappears for a record that reaches its server through the cloud relay.</summary>
+    private void ShowRtspRow(bool visible)
+    {
+        var visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        RtspPortLabel.Visibility = visibility;
+        RtspPortBox.Visibility = visibility;
     }
 
     private SavedDevice? BuildDevice(out string? error)
@@ -347,10 +381,12 @@ public partial class AddDeviceWindow : Window
             ? $"TCP {conn.SdkPort}"
             : $"SDK {conn.SdkPort}";
         bool hasSdkPort = VendorPorts.HasSdkPort(device.VendorKind);
+        // The DW Cloud relay carries HTTPS only, so there is no RTSP port to probe through it.
+        bool viaRelay = device.VendorKind == Vendor.NxWitness && NxCloudRelay.IsRelayHost(device.Host);
 
         TestResults.Children.Clear();
         var webRow = AddRow(webLabel);
-        var rtspRow = AddRow(rtspLabel);
+        var rtspRow = viaRelay ? null : AddRow(rtspLabel);
         var sdkRow = hasSdkPort ? AddRow(sdkLabel) : null;
 
         TestButton.IsEnabled = false;
@@ -360,11 +396,9 @@ public partial class AddDeviceWindow : Window
                 conn, device.CreateClient, _probes.Token,
                 device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null,
                 device.Name);
-            var renders = new List<Task<ProbeResult>>
-            {
-                RenderWhenDone(webRow, webLabel, web),
-                RenderWhenDone(rtspRow, rtspLabel, rtsp),
-            };
+            var renders = new List<Task<ProbeResult>> { RenderWhenDone(webRow, webLabel, web) };
+            if (rtspRow is not null)
+                renders.Add(RenderWhenDone(rtspRow, rtspLabel, rtsp));
             if (sdkRow is not null)
                 renders.Add(RenderWhenDone(sdkRow, sdkLabel, sdk));
             var results = await Task.WhenAll(renders);
@@ -454,8 +488,12 @@ public partial class AddDeviceWindow : Window
         var worst = results.Max(r => r.Severity);
         if (worst == ProbeSeverity.Pass)
         {
-            ShowLine(results.Length == 3 ? "All three ports reachable." : "Both ports reachable.",
-                Brushes.DarkGreen, italic: true);
+            ShowLine(results.Length switch
+            {
+                3 => "All three ports reachable.",
+                2 => "Both ports reachable.",
+                _ => "Reachable through the DW Cloud relay. " + NxWitnessClient.NoRtspViaRelay,
+            }, Brushes.DarkGreen, italic: true);
             return;
         }
 

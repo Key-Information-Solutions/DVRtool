@@ -99,7 +99,18 @@ public partial class MainWindow
             return;
         }
 
-        var uri = _client.GetLiveUri(item.Channel.Id, stream);
+        Uri uri;
+        try
+        {
+            uri = _client.GetLiveUri(item.Channel.Id, stream);
+        }
+        catch (NotSupportedException ex)
+        {
+            // Nx through the DW Cloud relay: HTTPS only, no RTSP — say so instead of handing
+            // LibVLC a URL that can only fail to connect.
+            SetStatus(ex.Message);
+            return;
+        }
         using var media = CreateRtspMedia(uri);
         AddLiveDecodeOptions(media);
         StopSdkLive();

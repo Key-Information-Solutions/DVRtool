@@ -195,5 +195,14 @@ public class StorageEstimatorTests
         Assert.Equal(2, info.InstalledCount);
         Assert.Equal(1, info.GhostBayCount);
         Assert.Equal(60_000_000, info.TotalCapacityMB);
+        Assert.Equal(@"E:\", Assert.Single(info.NonRecordingHdds).Name);
+    }
+
+    [Fact]
+    public void CameraStream_ArchiveCap_IsCarriedAndNullByDefault()
+    {
+        var plain = new CameraStream(1, 1, true, "H.264", 1920, 1080, 15, "HIGH", 2763, null, 3);
+        Assert.Null(plain.ArchiveCapDays);
+        Assert.Equal(31, (plain with { ArchiveCapDays = 31 }).ArchiveCapDays);
     }
 }

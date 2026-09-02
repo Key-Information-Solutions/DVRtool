@@ -445,7 +445,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        var uri = _client.GetPlaybackUri(segment.Channel, segment.Start, segment.End);
+        Uri uri;
+        try
+        {
+            uri = _client.GetPlaybackUri(segment.Channel, segment.Start, segment.End);
+        }
+        catch (NotSupportedException ex)
+        {
+            // Nx through the DW Cloud relay carries no RTSP; export still works from here.
+            SetStatus(ex.Message);
+            return;
+        }
         using var media = CreateRtspMedia(uri);
         _playbackPlayer.Play(media);
         SetStatus($"Playing {segment.Start:HH:mm:ss} → {segment.End:HH:mm:ss} (ch {segment.Channel}).");

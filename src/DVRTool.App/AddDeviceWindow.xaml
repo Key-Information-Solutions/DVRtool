@@ -61,7 +61,7 @@
         </ComboBox>
 
         <TextBlock Grid.Row="3" Grid.Column="0" Text="Host / IP" VerticalAlignment="Center"/>
-        <TextBox x:Name="HostBox" Grid.Row="3" Grid.Column="1" Margin="0,3"/>
+        <TextBox x:Name="HostBox" Grid.Row="3" Grid.Column="1" Margin="0,3" TextChanged="OnHostChanged"/>
 
         <TextBlock x:Name="HttpPortLabel" Grid.Row="4" Grid.Column="0" Text="HTTP port"
                    VerticalAlignment="Center"/>

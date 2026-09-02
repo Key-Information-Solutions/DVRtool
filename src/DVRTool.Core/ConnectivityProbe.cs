@@ -141,6 +141,8 @@ public static class ConnectivityProbe
         // A client that cannot name a stream without first reading the device (Nx addresses
         // cameras by id, and a fresh client has no list yet) says so by throwing; the RTSP
         // probe then stops at "an RTSP server answered", which is all it can honestly claim.
+        // One that has no RTSP at all (Nx through its cloud relay) throws NotSupported; its
+        // callers skip the RTSP row, and the target simply stays null here.
         Uri? streamTarget = null;
         if (clientFactory is not null)
         {
@@ -149,7 +151,7 @@ public static class ConnectivityProbe
             {
                 streamTarget = urlSource.GetLiveUri(1, StreamType.Main, includeCredentials: false);
             }
-            catch (InvalidOperationException)
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
             {
                 streamTarget = null;
             }

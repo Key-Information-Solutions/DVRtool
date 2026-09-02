@@ -65,17 +65,22 @@ public class NxWitnessStorageTests
             "status": "Recording",
             "schedule": {
               "isEnabled": true,
+              "maxArchiveDays": -30,
+              "minArchiveDays": -1,
               "tasks": [
                 {"dayOfWeek": 1, "startTime": 0, "endTime": 86400, "recordingType": "always", "metadataTypes": "none", "streamQuality": "high", "fps": 15, "bitrateKbps": 0},
                 {"dayOfWeek": 2, "startTime": 0, "endTime": 86400, "recordingType": "metadataOnly", "metadataTypes": "motion", "streamQuality": "highest", "fps": 30, "bitrateKbps": 0},
                 {"dayOfWeek": 3, "startTime": 0, "endTime": 86400, "recordingType": "never", "metadataTypes": "none", "streamQuality": "highest", "fps": 30, "bitrateKbps": 0}
               ]
             },
-            "options": {"dontRecordPrimaryStream": false, "dontRecordSecondaryStream": false, "isDualStreamingDisabled": false, "controlEnabled": true, "isAudioEnabled": false},
-            "mediaStreams": {"streams": [
-              {"codec": 27, "encoderIndex": 0, "resolution": "1920x1080", "transcodingRequired": false, "transports": ["rtsp"]},
-              {"codec": 27, "encoderIndex": 1, "resolution": "704x480", "transcodingRequired": false, "transports": ["rtsp"]}
-            ]}
+            "options": {"isDualStreamingDisabled": false, "isControlEnabled": true, "isAudioEnabled": false, "failoverPriority": "Medium"},
+            "parameters": {"bitratePerGOP": "0", "hasDualStreaming": "1"},
+            "mediaCapabilities": {"hasAudio": false, "hasDualStreaming": true, "maxResolution": "1920x1080", "streamCapabilities": {"primary": {"defaultBitrateKbps": 0, "defaultFps": 30, "maxBitrateKbps": 7130, "maxFps": 30, "minBitrateKbps": 192}, "secondary": {"defaultBitrateKbps": 0, "defaultFps": 30, "maxBitrateKbps": 1873, "maxFps": 30, "minBitrateKbps": 192}}},
+            "mediaStreams": [
+              {"codec": 27, "encoderIndex": 1, "resolution": "704x480", "transcodingRequired": false, "transports": "rtsp|hls"},
+              {"codec": 27, "encoderIndex": 0, "resolution": "1920x1080", "transcodingRequired": false, "transports": "rtsp|hls"},
+              {"codec": 0, "encoderIndex": -1, "resolution": "*", "transcodingRequired": true, "transports": "rtsp|webm|mjpeg"}
+            ]
           },
           {
             "id": "{0292cb36-1f91-1313-a096-82ee83c6cec0}",
@@ -92,7 +97,8 @@ public class NxWitnessStorageTests
                 {"dayOfWeek": 1, "startTime": 0, "endTime": 86400, "recordingType": "always", "metadataTypes": "none", "streamQuality": "preset", "fps": 12, "bitrateKbps": 3072}
               ]
             },
-            "options": {"dontRecordSecondaryStream": true, "controlEnabled": true},
+            "options": {"isControlEnabled": true},
+            "parameters": {"dontRecordSecondaryStream": "true"},
             "mediaStreams": "{\"streams\":[{\"codec\":173,\"encoderIndex\":0,\"resolution\":\"2688x1520\"},{\"codec\":173,\"encoderIndex\":1,\"resolution\":\"704x480\"}]}"
           },
           {
@@ -109,11 +115,12 @@ public class NxWitnessStorageTests
             "status": "Online",
             "schedule": {
               "isEnabled": false,
+              "maxArchiveDays": 31,
               "tasks": [
                 {"dayOfWeek": 1, "startTime": 0, "endTime": 86400, "recordingType": "always", "streamQuality": "high", "fps": 15, "bitrateKbps": 0}
               ]
             },
-            "options": {"controlEnabled": false},
+            "options": {"isControlEnabled": false},
             "mediaStreams": {"streams": [{"codec": "H265", "encoderIndex": 0, "resolution": "3840x2160"}]}
           }
         ]
@@ -121,9 +128,9 @@ public class NxWitnessStorageTests
 
     private const string Storages = """
         [
-          {"id": "{11111111-1111-1111-1111-111111111111}", "name": "D:\\DW Spectrum Media", "path": "D:\\DW Spectrum Media", "serverId": "{11111111-2222-3333-4444-555555555555}", "spaceLimitB": 107374182400, "isUsedForWriting": true, "isBackup": false, "type": "local", "status": "online|dbReady"},
-          {"id": "{22222222-2222-2222-2222-222222222222}", "path": "E:\\Backup", "serverId": "{11111111-2222-3333-4444-555555555555}", "spaceLimitB": 53687091200, "isUsedForWriting": true, "isBackup": true, "type": "local"},
-          {"id": "{33333333-3333-3333-3333-333333333333}", "path": "C:\\", "serverId": "{11111111-2222-3333-4444-555555555555}", "spaceLimitB": 10737418240, "isUsedForWriting": false, "isBackup": false, "type": "local"}
+          {"id": "{11111111-1111-1111-1111-111111111111}", "name": "Initial", "path": "D:\\DW Spectrum Media", "serverId": "{11111111-2222-3333-4444-555555555555}", "spaceLimitB": 107374182400, "isUsedForWriting": true, "isBackup": false, "type": "local", "status": "Online", "storageArchiveMode": "exclusive", "parameters": {"persistentStorageStatusFlags": "dbReady", "space": 70004008468480}},
+          {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Initial", "path": "E:\\Backup", "serverId": "{11111111-2222-3333-4444-555555555555}", "spaceLimitB": 53687091200, "isUsedForWriting": true, "isBackup": true, "type": "local", "status": "Online", "parameters": {"persistentStorageStatusFlags": "dbReady", "space": 8001563222016}},
+          {"id": "{33333333-3333-3333-3333-333333333333}", "name": "Initial", "path": "C:\\", "serverId": "{11111111-2222-3333-4444-555555555555}", "spaceLimitB": 10737418240, "isUsedForWriting": false, "isBackup": false, "type": "local", "status": "Online", "parameters": {"persistentStorageStatusFlags": "system|dbReady", "space": 512110190592}}
         ]
         """;
 
@@ -415,8 +422,10 @@ public class NxWitnessStorageTests
     }
 
     [Fact]
-    public async Task StorageInfo_WithoutTheLegacySizeCall_ListsVolumesWithUnknownSize()
+    public async Task StorageInfo_WithoutTheLegacySizeCall_SizesComeFromTheRestList_FreeStaysUnknown()
     {
+        // v3 carries the volume size as parameters.space (verified live), so a server that
+        // refuses the legacy call still yields capacity; only free space is unknown.
         var handler = Server((req, _) => req.RequestUri!.PathAndQuery switch
         {
             var pq when pq == $"/rest/v3/servers/{ServerId}/storages" => MockHttpHandler.Text(Storages),
@@ -428,10 +437,33 @@ public class NxWitnessStorageTests
         var info = await client.GetStorageInfoAsync();
 
         Assert.Equal(3, info.Hdds.Count);
+        Assert.Equal(69_896_634L, info.TotalCapacityMB);
+        Assert.Equal(0, info.Hdds[0].FreeSpaceMB);
+        Assert.DoesNotContain("size unknown", info.Hdds[0].Property);
+        Assert.All(info.Hdds, h => Assert.Equal("ok", h.Status)); // status "Online" on every volume
+        Assert.Equal(2, info.NonRecordingHdds.Count);
+    }
+
+    [Fact]
+    public async Task StorageInfo_NothingSaysTheSize_ListsTheVolumeAsUnknown()
+    {
+        var handler = Server((req, _) => req.RequestUri!.PathAndQuery switch
+        {
+            var pq when pq == $"/rest/v3/servers/{ServerId}/storages" => MockHttpHandler.Text("""
+                [{"id":"{44444444-4444-4444-4444-444444444444}","path":"F:\\Media","spaceLimitB":1000000000,"isUsedForWriting":true,"isBackup":false,"type":"local"}]
+                """),
+            "/api/storageSpace" => MockHttpHandler.Text("Forbidden", HttpStatusCode.Forbidden),
+            _ => null,
+        });
+        using var client = new NxWitnessClient(Conn(), handler);
+
+        var info = await client.GetStorageInfoAsync();
+
+        var volume = Assert.Single(info.Hdds);
         Assert.Equal(0, info.TotalCapacityMB);
-        Assert.Contains("size unknown", info.Hdds[0].Property);
-        Assert.Equal("ok", info.Hdds[0].Status);      // the REST flags say online
-        Assert.Equal("unknown", info.Hdds[1].Status); // nothing says anything about this one
+        Assert.Contains("size unknown", volume.Property);
+        Assert.Equal("unknown", volume.Status);
+        Assert.Single(info.UnhealthyHdds); // unknown is not ok, and the report says so
     }
 
     [Fact]
@@ -448,19 +480,23 @@ public class NxWitnessStorageTests
     // ----- footage -----
 
     [Fact]
-    public async Task FindOldestRecording_TakesTheEarliestStart_RenderedInTheZone()
+    public async Task FindOldestRecording_CoarsePassThenExactPassBeforeIt_RenderedInTheZone()
     {
-        string? footagePath = null;
+        var footagePaths = new List<string>();
         var handler = Server((req, _) =>
         {
             string pq = req.RequestUri!.PathAndQuery;
             if (!pq.Contains("/footage", StringComparison.Ordinal))
                 return null;
-            footagePath = pq;
-            // Deliberately not oldest-first, with string-typed numbers and an open-ended period.
-            return MockHttpHandler.Text("""
-                [{"startTimeMs":"1755648000000","durationMs":"-1"},{"startTimeMs":1755561600000,"durationMs":3600000}]
-                """);
+            footagePaths.Add(pq);
+            // The coarse pass: not oldest-first, string-typed numbers, an open-ended period
+            // without durationMs (verbatim live shape), and a serverId on each entry.
+            if (pq.Contains("detailLevelMs=3600000"))
+                return MockHttpHandler.Text("""
+                    [{"startTimeMs":"1755648000000","serverId":"{11111111-2222-3333-4444-555555555555}"},{"startTimeMs":1755561600000,"durationMs":3600000,"serverId":"{11111111-2222-3333-4444-555555555555}"}]
+                    """);
+            // The exact pass over what lies before it finds nothing older.
+            return MockHttpHandler.Text("[]");
         });
         using var client = new NxWitnessClient(Conn(), handler) { Zone = Utc };
 
@@ -468,20 +504,45 @@ public class NxWitnessStorageTests
 
         Assert.Equal(new DateTime(2025, 8, 19, 0, 0, 0), oldest);
         Assert.Equal(DateTimeKind.Unspecified, oldest!.Value.Kind);
-        Assert.StartsWith($"/rest/v3/devices/{LobbyId}/footage?startTimeMs=0&", footagePath);
-        Assert.Contains("detailLevelMs=1", footagePath);
+        Assert.Equal(2, footagePaths.Count);
+        Assert.StartsWith($"/rest/v3/devices/{LobbyId}/footage?startTimeMs=0&", footagePaths[0]);
+        Assert.Contains("detailLevelMs=3600000", footagePaths[0]);
+        Assert.Contains("endTimeMs=1755561600000&detailLevelMs=1", footagePaths[1]);
+        Assert.DoesNotContain(footagePaths, p => p.Contains("limit=")); // limit=1 answers [] on 6.1
     }
 
     [Fact]
-    public async Task FindOldestRecording_NoFootage_ReturnsNull()
+    public async Task FindOldestRecording_ExactPassFindsALoneOlderClip_TheCoarsePassDropped()
     {
         var handler = Server((req, _) =>
-            req.RequestUri!.PathAndQuery.Contains("/footage", StringComparison.Ordinal)
-                ? MockHttpHandler.Text("[]")
-                : null);
+        {
+            string pq = req.RequestUri!.PathAndQuery;
+            if (!pq.Contains("/footage", StringComparison.Ordinal))
+                return null;
+            return pq.Contains("detailLevelMs=3600000")
+                ? MockHttpHandler.Text("""[{"startTimeMs":1755561600000,"durationMs":3600000}]""")
+                : MockHttpHandler.Text("""[{"startTimeMs":1755475200000,"durationMs":30000}]""");
+        });
+        using var client = new NxWitnessClient(Conn(), handler) { Zone = Utc };
+
+        Assert.Equal(new DateTime(2025, 8, 18, 0, 0, 0), await client.FindOldestRecordingAsync(2));
+    }
+
+    [Fact]
+    public async Task FindOldestRecording_NoFootage_ReturnsNull_AfterBothPasses()
+    {
+        int footageCalls = 0;
+        var handler = Server((req, _) =>
+        {
+            if (!req.RequestUri!.PathAndQuery.Contains("/footage", StringComparison.Ordinal))
+                return null;
+            footageCalls++;
+            return MockHttpHandler.Text("[]");
+        });
         using var client = new NxWitnessClient(Conn(), handler);
 
         Assert.Null(await client.FindOldestRecordingAsync(1));
+        Assert.Equal(2, footageCalls); // coarse, then the exact everything-window as the tie-breaker
     }
 
     [Fact]
@@ -542,13 +603,24 @@ public class NxWitnessStorageTests
     // ----- bitrate range and write -----
 
     [Fact]
-    public async Task BitrateRange_IsWide_NxHasNoPerCameraBounds()
+    public async Task BitrateRange_FromTheCamerasMediaCapabilities_WideWhenNxHasNotProbedIt()
     {
         using var client = new NxWitnessClient(Conn(), Server());
 
-        var range = await client.GetBitrateRangeAsync(1);
+        Assert.Equal(new BitrateRange(192, 7130), await client.GetBitrateRangeAsync(2)); // Lobby
+        Assert.Equal(new BitrateRange(192, 65_536), await client.GetBitrateRangeAsync(1)); // Alley
+    }
 
-        Assert.Equal(new BitrateRange(192, 65_536), range);
+    [Fact]
+    public async Task MainStreams_ArchiveCap_OnlyWhenTheRecorderEnforcesOne()
+    {
+        using var client = new NxWitnessClient(Conn(), Server());
+
+        var streams = await client.GetMainStreamsAsync();
+
+        Assert.Null(streams[1].ArchiveCapDays);       // Lobby: -30 is Nx's "off, 30 remembered"
+        Assert.Equal(31, streams[2].ArchiveCapDays);  // Parking: capped at 31 days
+        Assert.Null(streams[0].ArchiveCapDays);       // Alley: nothing set
     }
 
     [Fact]
@@ -689,6 +761,25 @@ public class NxWitnessStorageTests
         Assert.Equal(("H.264", 640, 360), (cam.Secondary!.Codec, cam.Secondary.Width, cam.Secondary.Height));
         Assert.False(cam.ScheduleEnabled); // no schedule object at all
         Assert.False(cam.KeepCameraProfile);
+        Assert.Null(cam.PrimaryMaxKbps);
+    }
+
+    [Fact]
+    public void Camera_ReadsTheSwitchesFromEitherBag_AndIgnoresTheTranscodingPseudoStream()
+    {
+        using var doc = JsonDocument.Parse("""
+            {"id":"{aaaaaaaa-0000-0000-0000-000000000002}","name":"Y",
+             "options":{"isControlEnabled":false,"isDualStreamingDisabled":false},
+             "parameters":{"dontRecordPrimaryStream":"1","dontRecordSecondaryStream":"0"},
+             "mediaStreams":[{"codec":0,"encoderIndex":-1,"resolution":"*"},{"codec":173,"encoderIndex":0,"resolution":"7552x3776"}]}
+            """);
+        var cam = NxCamera.Parse(doc.RootElement)!;
+
+        Assert.True(cam.KeepCameraProfile);     // isControlEnabled false (the live spelling)
+        Assert.True(cam.DontRecordPrimary);     // "1" in the property bag
+        Assert.False(cam.DontRecordSecondary);  // "0"
+        Assert.Equal(("H.265", 7552, 3776), (cam.Primary!.Codec, cam.Primary.Width, cam.Primary.Height));
+        Assert.Null(cam.Secondary);             // encoderIndex −1 is not a stream
     }
 
     [Fact]

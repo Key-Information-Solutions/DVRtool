@@ -11,29 +11,67 @@ busiest schedule cell asks for, and it archives **two** streams per camera.
 
 ## What is and is not verified
 
-The live target is Site D's DW Blackjack E-Rack `a DW Blackjack E-Rack` (DW Spectrum **6.1.1.42624**,
-198.51.100.10:7001, 64 devices, one server; see the 2026-09-02 field notes). Verified on the
-wire, anonymously:
+The live target is Site D's DW Blackjack E-Rack `a DW Blackjack E-Rack` — "Site D" in the fleet — (DW
+Spectrum **6.1.1.42624**, 198.51.100.10:7001 on the LAN, 64 cameras, one server; see the
+2026-09-02 field notes). Its router forwards nothing, so everything below was verified
+**through the DW Cloud relay** (next section) on 2026-09-02, with the local `admin` account:
 
-- `GET /api/moduleInformation` — the verbatim reply is a fixture in `NxWitnessStorageTests`:
-  `reply.id` `{11111111-…}` (the server GUID), `brand` `dwspectrum`, `customization`
-  `digitalwatchdog`, `name` `TESTRACK1`, `systemName` `Site D`, `version` `6.1.1.42624`,
-  `type` `Media Server`, `sslAllowed` true.
-- `GET /rest/v3/system/info` — 64 device ids, one server id, `restApiVersions` v1–v4.
-- `GET /rest/v3/devices` without a session → 401 (nothing else is anonymous).
-- RTSP on the same port: `OPTIONS rtsp://198.51.100.10:7001/` → `RTSP/1.0 307 Temporary
-  Redirect`, `Server: DW Spectrum/6.1.1.42624` — a well-formed RTSP status line, which is
-  all the connectivity probe needs.
-- TLS: self-signed, `O=Digital Watchdog, CN=DW Spectrum, C=US`, valid to 2027-10-01,
-  TLS 1.2. The trust-on-first-use pin applies exactly as for Hikvision HTTPS.
+- Anonymous: `GET /api/moduleInformation` (the verbatim reply is a fixture in
+  `NxWitnessStorageTests`: `reply.id` `{11111111-…}` the server GUID, `brand` `dwspectrum`,
+  `systemName` `Site D`, `version` `6.1.1.42624`, `cloudSystemId`), `GET /rest/v3/system/info`
+  (64 device ids, one server, `restApiVersions` v1–v4); `/rest/v3/devices` without a
+  session → 401. On the LAN, RTSP shares the port: `OPTIONS rtsp://198.51.100.10:7001/` →
+  `RTSP/1.0 307`, `Server: DW Spectrum/6.1.1.42624`. The server's own certificate is
+  self-signed (`O=Digital Watchdog, CN=DW Spectrum`, to 2027-10-01) and gets the usual pin.
+- `POST /rest/v3/login/sessions` with the local account → `token` `vms-…`, `expiresInS`
+  8 640 000 (100 days — which is why the client deletes its session on dispose).
+- `GET /rest/v3/devices` (742 KB for 64 cameras), `/rest/v3/servers/{id}/storages`,
+  `/rest/v4/servers/{id}/storages`, `/api/storageSpace`, `/rest/v3/system/settings`
+  (`cameraSettingsOptimization: true`), and `/rest/v3/devices/{id}/footage` at detail
+  levels 1 and 3 600 000 and with `limit=1`. What they answered is folded into the traps
+  below and into the test fixtures.
+- `dvrtool info | channels | storage disks | storage retention | storage plan (dry run) |
+  storage set (dry run)` end to end: 64 cameras numbered by name (`KoV-…` then `Site D-…`),
+  69.68 TB of recording pool, per-camera oldest footage back to 2026-06-26 (68 days held),
+  the 90-day plan at 800 kbps per camera.
 
-**Not yet exercised live**: every authenticated call — login, the device list, storages,
-`/api/storageSpace`, footage, the site settings — and the schedule PATCH. Their shapes follow
-the Nx REST v3 documentation and the field notes; the parsers are deliberately tolerant
-(numbers as strings, `reply` wrappers, braced ids, `mediaStreams` as an object or a string,
-codec as an id or a name) so that the first live read is a confirmation rather than a
-rewrite. Credentials for the Site D server must come from the operator; DVRTool has made **no
-write** to it. See the checklist at the end.
+**Not exercised live**: the schedule PATCH. No write has been made to this server. The
+canary below stays gated on the operator's go-ahead.
+
+## The DW Cloud relay
+
+DW Cloud is Nx Cloud under another name, and a cloud-connected system is reachable through
+Nx's proxy with **no port forward**: `https://<cloudSystemId>.relay.vmsproxy.com` (the id is
+`cloudSystemId` in `moduleInformation`, and the last path segment of the site's URL in the
+DW Cloud portal). Verified on Site D:
+
+- The relay answers every path with `307 Temporary Redirect` to a regional node —
+  `Location: https://<id>.relay-us-mia-1-prod-dp.vmsproxy.com:443/<path>` — and the node
+  proxies straight to the server: `/api/moduleInformation` through it is byte-identical to
+  the LAN reply. Round trip ≈ 0.35 s.
+- The node is a different host, and .NET (like every HTTP stack) drops `Authorization` on a
+  cross-host redirect — so `NxRelayHandler` resolves the node once with an anonymous probe,
+  sends every request there directly with its headers intact, remembers the node
+  process-wide per relay host, and re-learns it if a GET is redirected again (a POST or
+  PATCH in that window surfaces the 307 and the caller's retry lands on the new node).
+- The certificate is a Let's Encrypt wildcard for `*.relay.vmsproxy.com` that rotates every
+  90 days, so relay hosts get normal chain validation, **not** the trust-on-first-use pin.
+  The identity pin is unaffected — same server GUID — and is keyed by the relay host, which
+  is stable, never by the node.
+- A **local** account logs in through it exactly as on the LAN. No DW Cloud account, no OAuth
+  and no 2FA handling are needed. (Nx also offers cloud-account tokens from
+  `POST https://dwspectrum.digital-watchdog.com/cdb/oauth2/token` with `grant_type=password`,
+  `client_id=3rdParty`, `scope=cloudSystemId=<id>`; not implemented — the local account
+  covers every DVRTool use.)
+- HTTPS only: there is **no RTSP** through the relay. `GetLiveUri` / `GetPlaybackUri` throw
+  `NotSupportedException` with a message both front ends show; `/media/` exports, search,
+  storage and the planner all work. `dvrtool test` and the dialog's Test probe the web
+  row alone.
+
+Front ends: `--vendor nx --host <id>.relay.vmsproxy.com` (port 443 and TLS are implied);
+in the Add-NVR dialog, typing a relay host as an Nx record's Host switches the port to 443,
+turns on HTTPS and hides the RTSP row. `NxCloudRelay.IsRelayHost` is the one place that
+decides what a relay host looks like (`*.vmsproxy.com`, so a pasted node name counts too).
 
 ## Endpoints
 
@@ -41,15 +79,15 @@ write** to it. See the checklist at the end.
 |---|---|---|
 | Identity, model, version | `GET /api/moduleInformation` | anonymous; `reply.id` = server GUID → the serial pin; `brand` → "DW Spectrum" / "Nx Witness" / "Wisenet WAVE" |
 | Login | `POST /rest/v3/login/sessions` | `{"username","password","setCookie":false}` → `token`; every later request carries `Authorization: Bearer <token>`; `DELETE /rest/v3/login/sessions/{token}` on dispose |
-| Cameras | `GET /rest/v3/devices` | `id`, `name`, `physicalId`, `mac`, `url`, `serverId`, `deviceType`, `status`, `schedule`, `options`, `mediaStreams` |
+| Cameras | `GET /rest/v3/devices` | `id`, `name`, `physicalId`, `mac`, `url`, `serverId`, `deviceType`, `status`, `schedule`, `options`, `parameters`, `mediaStreams`, `mediaCapabilities` |
 | One camera | `GET /rest/v3/devices/{id}` | the read-modify-write source for the bitrate PATCH |
-| Storage volumes | `GET /rest/v3/servers/{serverId}/storages` | `path`, `spaceLimitB` (reserve), `isUsedForWriting`, `isBackup`, `type`, `status` flags |
-| Volume sizes | `GET /api/storageSpace` | legacy; `reply.storages[]` with `storageId`, `url`, `totalSpace`, `freeSpace`, `reservedSpace`, `isOnline` — byte counts **as strings**; optional (a 403 leaves sizes unknown, never invented) |
-| Footage | `GET /rest/v3/devices/{id}/footage?startTimeMs=&endTimeMs=&detailLevelMs=1` | `[{startTimeMs, durationMs}]`, UTC ms; `durationMs` −1 = still recording |
-| Site setting | `GET /rest/v3/system/settings` (v4: `/rest/v4/site/settings`) | `cameraSettingsOptimization` — "Allow Site to optimize device settings" |
+| Storage volumes | `GET /rest/v3/servers/{serverId}/storages` | `path`, `spaceLimitB` (reserve), `isUsedForWriting`, `isBackup`, `type`, `status` ("Online"), **`parameters.space`** = size in bytes |
+| Volume free space | `GET /api/storageSpace` | legacy; `reply.storages[]` with `storageId`, `url`, `totalSpace`, `freeSpace`, `reservedSpace`, `isOnline` — byte counts **as strings**; optional (a refusal leaves free space unknown, never invented) |
+| Footage | `GET /rest/v3/devices/{id}/footage?startTimeMs=&endTimeMs=&detailLevelMs=` | `[{startTimeMs, durationMs, serverId}]`, UTC ms; the open period **has no `durationMs`**; `limit=1` answers `[]` on 6.1 — never use it |
+| Site setting | `GET /rest/v3/system/settings` (v4: `/rest/v4/site/settings`) | `cameraSettingsOptimization` — "Allow Site to optimize device settings"; one flat object of ~115 keys |
 | Bitrate write | `PATCH /rest/v3/devices/{id}` `{"schedule": {…}}` | every recording cell → `streamQuality: preset`, `bitrateKbps: N`; read back with GET |
 | Export | `GET /media/{id}.mkv?pos=<ms>&endPos=<ms>` | Matroska, bearer-authenticated; `ExportNaming` names the raw file `.mkv` |
-| Live / playback | `rtsp://host:7001/{id}?stream=0|1[&pos=<ms>&endPos=<ms>]` | same port as the API; `stream=1` is the secondary |
+| Live / playback | `rtsp://host:7001/{id}?stream=0|1[&pos=<ms>&endPos=<ms>]` | same port as the API on the LAN; `stream=1` is the secondary; not through the relay |
 
 Device ids are used without their braces in every path; the server accepts either.
 
@@ -84,13 +122,17 @@ Device ids are used without their braces in every path; the server accepts eithe
   Windows typed in the CLI/GUI are read the same way. Tests pin `Zone` to UTC or a fixed
   offset.
 - **"Disks" are volumes, and the reserve is not archive.** Each storage keeps `spaceLimitB`
-  free (Nx's own reserve), so `HddInfo.CapacityMB` is total − reserve and free space is free
-  − reserve — which reads 0 on a full recorder, exactly like the appliance vendors. A backup
-  volume duplicates footage and a volume that is not "used for writing" holds none: both
-  are listed (Property "backup" / "not used for writing") with `RecordsFootage` false, so
-  `StorageInfo.TotalCapacityMB` sums the recording pool only. No model or serial per volume;
-  `status` flags map to ok / offline / checking / rebuilding, and a volume whose size could
-  not be read says "size unknown" and is not counted.
+  free (Nx's own reserve — 300 GiB on Site D's 70 TB array), so `HddInfo.CapacityMB` is
+  total − reserve and free space is free − reserve — which hovers at 0 on a full recorder,
+  exactly like the appliance vendors (the server deletes the oldest footage whenever free
+  space dips under the reserve). A backup volume duplicates footage and a volume that is not
+  "used for writing" holds none — Site D lists its Z: and C: system volumes that way — so
+  both are listed (Property "backup" / "not used for writing") with `RecordsFootage` false,
+  `StorageInfo.TotalCapacityMB` sums the recording pool only, and both front ends name the
+  volumes that were left out. The size comes from v3's `parameters.space` and the free space
+  from `/api/storageSpace`; no model or serial per volume. `status` is "Online" (or the
+  flag words map to ok / offline / checking / rebuilding), and a volume whose size nothing
+  reports says "size unknown" and is not counted.
 - **The "max bitrate" is the busiest schedule cell.** Nx schedules per hour per weekday
   (`schedule.tasks[]`, `dayOfWeek` 1–7, `startTime`/`endTime` seconds, `recordingType`
   always | metadataOnly | never | metadataAndLowQuality — the legacy `RT_*` spellings are
@@ -101,40 +143,68 @@ Device ids are used without their braces in every path; the server accepts eithe
   `CameraBitrateCalculator`): `(0.1 + 0.9·q/4) · 0.009 · (w·h)^0.7 · fps · codec`, floored at
   192 kbps, codec 1.0 for H.264, 0.8 for H.265, 2.0 for MJPEG, at the primary stream's
   resolution from `mediaStreams`. 1080p at 15 fps "high" ≈ 2.8 Mbps; 2688×1520 at 15 fps
-  "highest" ≈ 5.8 Mbps. The MODE column reads MIN / LOW / NORM / HIGH / BEST for the
-  qualities and KBPS for a preset; `FixedQuality` carries the level 0–4. A schedule that is
-  disabled, or has only "never" cells, reports the camera as not enabled. A camera whose
-  resolution Nx has not probed yet (`"*"`) gets no bitrate rather than a guess.
-- **Nx archives the secondary stream too.** Unless `options.dontRecordSecondaryStream` (or
+  "highest" ≈ 5.8 Mbps. Confirmed against the server's own figure: `mediaCapabilities.
+  streamCapabilities.primary.maxBitrateKbps` is 10 666 for a 2560×1440 camera at 30 fps,
+  and the rule gives 10 657. Site D has **no** preset cell — every camera records by
+  quality (`low` … `highest`, `bitrateKbps` 0 everywhere) at 12–30 fps, mostly
+  `metadataAndLowQuality` (motion + lo-res), so its worst-case estimate assumes motion
+  around the clock and lands far under the 68 days actually held. That is the design; on a
+  motion-heavy Nx site the per-camera oldest column is the honest number. The MODE column
+  reads MIN / LOW / NORM / HIGH / BEST for the qualities and KBPS for a preset;
+  `FixedQuality` carries the level 0–4. A schedule that is disabled, or has only "never"
+  cells, reports the camera as not enabled. A camera whose resolution Nx has not probed yet
+  (`"*"`) gets no bitrate rather than a guess.
+- **`mediaStreams` is a bare array** in v3 — `[{codec, encoderIndex, resolution, transports}]`
+  — with a third entry, `encoderIndex` −1 / codec 0 / resolution `"*"`, that is the server's
+  transcoding pseudo-stream and is ignored; index 0 is the primary, 1 the secondary. Codecs
+  are FFmpeg ids (27 H.264, 173 H.265; Site D has both, up to 7552×3776 on the multi-sensor
+  units). The `{"streams": […]}` wrapper and the string-encoded form are still accepted.
+- **Two settings bags.** `options` is typed and always present: `isControlEnabled`,
+  `isDualStreamingDisabled`, `isAudioEnabled`, `backupPolicy`, … `parameters` is the
+  resource property bag — strings only, listing just what has been set (`bitratePerGOP`,
+  `hasDualStreaming`, `keepCameraTimeSettings`, `primaryStreamConfiguration`, …). The
+  "don't record the primary/secondary stream" switches are *properties*, so a camera that
+  records both (the default, all 64 on Site D) has no such key at all; `NxCamera.Parse`
+  reads either bag and takes absent as false.
+- **Nx archives the secondary stream too.** Unless `dontRecordSecondaryStream` is set (or
   `isDualStreamingDisabled`, or the camera has no second stream), the low-quality stream is
   written to disk alongside the primary — Site D's array was writing ~205 Mbps of hi-res and
   ~17 Mbps of lo-res. The client estimates it with the same rule at "low" quality, the
-  secondary's own resolution and the schedule's frame rate (704×480 at 30 fps ≈ 650 kbps;
-  Site D measures ≈ 265 kbps per camera, so this is worst-case in the right direction) and
-  reports it as `CameraStream.SecondaryRecordedKbps`. The Core model grew for this:
-  `CameraStream.RecordedBitrateKbps` (main cap + secondary) is what the CLI and GUI totals
-  sum, `PlanCamera.FixedKbps` / `PlannedCamera.FixedKbps` carry it into the planner, and
-  `StorageEstimator.PlanUniform` spends the fixed part before splitting the budget and
-  re-estimates from main + fixed. The table marks such cameras with `+` (CLI) or
-  "4096 (+650)" (GUI). Hikvision and Dahua leave it null and nothing changes for them.
+  secondary's own resolution (320×320 to 960×432 on Site D) and the schedule's frame rate
+  (640×480 at 12 fps H.265 ≈ 300 kbps; Site D measures ≈ 265 kbps per camera, so this is
+  worst-case in the right direction) and reports it as `CameraStream.SecondaryRecordedKbps`.
+  The Core model grew for this: `CameraStream.RecordedBitrateKbps` (main cap + secondary) is
+  what the CLI and GUI totals sum, `PlanCamera.FixedKbps` / `PlannedCamera.FixedKbps` carry
+  it into the planner, and `StorageEstimator.PlanUniform` spends the fixed part before
+  splitting the budget and re-estimates from main + fixed. The table marks such cameras with
+  `+` (CLI) or "4096 (+300)" (GUI). Hikvision and Dahua leave it null and nothing changes
+  for them.
 - **The number in the schedule is not necessarily the number on the camera.** Nx only pushes
   quality/fps/bitrate to a camera when the site setting "Allow Site to optimize device
-  settings" (`cameraSettingsOptimization`) is on **and** the camera's Expert setting "Keep
-  camera stream and profile settings" is off (`options.controlEnabled` true). Otherwise the
-  camera streams whatever its own profile says and the schedule's figure is fiction — which
-  is why `SetMaxBitrateAsync` reads both first and **refuses with the reason** rather than
-  PATCHing a value nobody will see. Reads do not refuse: the estimate still reflects the
-  schedule, and the caveat belongs in the doc rather than in every row. Also unmodelled:
-  per-camera `minArchivePeriodS` / `maxArchivePeriodS` (Min/Max archive days) prune footage
-  regardless of disk space, so a camera capped at 7 days shows 7 in the oldest-footage column
-  however generous the estimate.
-- **Oldest footage** is `footage?startTimeMs=0&endTimeMs=<2100>&detailLevelMs=1`, taking the
-  earliest `startTimeMs` explicitly rather than trusting order. `detailLevelMs` is left at 1
-  on purpose: a larger detail level merges *and drops* chunks shorter than itself, and a lone
-  old motion clip is exactly what must not be dropped. The reply is one entry per continuous
-  run, which on a continuous archive is a handful of objects; on a motion-only camera it can
-  be thousands, which is still fine. `limit=1` would make it one object — worth confirming
-  live that the server keeps the *oldest* period under `limit`, then adopting it.
+  settings" (`cameraSettingsOptimization`, true on Site D) is on **and** the camera's Expert
+  setting "Keep camera stream and profile settings" is off (`options.isControlEnabled` true —
+  the live spelling; `controlEnabled` is accepted too). Otherwise the camera streams whatever
+  its own profile says and the schedule's figure is fiction — which is why
+  `SetMaxBitrateAsync` reads both first and **refuses with the reason** rather than PATCHing
+  a value nobody will see. Reads do not refuse: the estimate still reflects the schedule, and
+  the caveat belongs in the doc rather than in every row.
+- **Per-camera age caps.** `schedule.maxArchiveDays` (and `maxArchivePeriodS`) prune a
+  camera's footage past that age regardless of disk space; Nx stores a *disabled* cap as a
+  negative number (Site D: −30 on most cameras, **31** enforced on some). A positive value
+  becomes `CameraStream.ArchiveCapDays`, and the DAYS column reads "30.9 (cap 31)" so a
+  camera holding less than the estimate promises explains itself. `minArchiveDays` (−1 =
+  off) is not modelled.
+- **Bitrate range** comes from `mediaCapabilities.streamCapabilities.primary` (`minBitrateKbps`
+  192, `maxBitrateKbps` e.g. 10 666) — Nx's own bounds for the schedule slider on that camera;
+  a camera without the block gets 192–65 536.
+- **Oldest footage is two passes.** The exact list (`detailLevelMs=1`) is one object per
+  continuous run — ~150 KB per motion-recorded camera, 10 MB for 64 cameras through the relay.
+  So: a coarse pass merging anything closer than an hour (`detailLevelMs=3600000`, a few
+  hundred bytes; verified to keep the same first start on Site D), then an exact pass over
+  `[0, coarseStart)` only, because a coarse detail level also *drops* chunks shorter than
+  itself and a lone old clip is exactly what must not be lost; an empty coarse pass falls
+  back to the exact everything-window. The earliest `startTimeMs` is taken explicitly, not
+  trusted to ordering. `limit=1` is not the shortcut: on 6.1 it answers `[]`.
 - **Exports are Matroska.** `/media/{id}.mkv` is the one container the server streams without
   seeking back to finish an index, so a transfer cut short still plays; `--remux` turns it
   into MP4 like every other vendor's raw export. RTSP for third-party players (VLC, and the
@@ -161,21 +231,13 @@ and asks. The canary, on operator go-ahead only: one Site D camera whose schedul
 preset, 3072 → 3104 → 3072, confirming the PATCH is accepted, the read-back matches, and the
 camera's actual stream (the Nx client's camera statistics) follows within a minute.
 
-## Live-verification checklist (needs Site D credentials)
+## Open items
 
-1. `dvrtool info --vendor nx --host 198.51.100.10 --user … ` — login, identity pin
-   `11111111-2222-3333-4444-555555555555`, "DW Spectrum Media Server 6.1.1.42624".
-2. `dvrtool channels` — 64 cameras, sorted by name; confirm `deviceType` values and that I/O
-   modules (if any) are excluded.
-3. `dvrtool storage disks` — confirm `/api/storageSpace` still exists on 6.1 and its numbers
-   match the E-Rack (63.7 TiB RAID 5, ~375 GB free on 2026-09-02, ~10 % reserve); check
-   whether v3 `storages[]` already carries size fields and, if so, prefer them.
-4. `dvrtool storage retention` — confirm `mediaStreams` arrives as an object with integer
-   codec ids, `options.controlEnabled` is the "Keep camera stream and profile settings"
-   field (if the key differs, `NxCamera.Parse` is the one place to fix), `schedule.tasks`
-   spellings, `fps` type, and that "Site D-Parking North West" (H.265, ~69 Mbps measured) comes
-   out with a plausible worst-case. Compare the estimate with the measured 205 + 17 Mbps.
-5. Oldest footage on a continuous camera and on a motion-only one; try `limit=1`.
-6. `GET /rest/v3/system/settings` — confirm `cameraSettingsOptimization` is the key and is
-   readable by the account used.
-7. Only then, with explicit go-ahead: the canary write above.
+1. The canary write above, on explicit go-ahead. Note Site D has no preset cell today: the
+   first `set --force` turns one camera's quality cells into presets, which is a visible
+   change in the DW client's schedule grid — say so before firing it.
+2. Live view and playback through the relay. The relay carries HTTP media (`/media/{id}.mp4`,
+   `.mpegts`, HLS), so LibVLC could play those instead of RTSP — but they need the bearer
+   token on the request, which LibVLC cannot add. Untested; not started.
+3. `deviceType` values seen so far: `Camera`, `MultisensorCamera`. An I/O module has not
+   been seen live; the `IOModule` exclusion follows the documentation.

@@ -53,6 +53,10 @@ public sealed record StorageInfo(
     /// <summary>Bays holding the ghost of a removed disk — wired, currently empty.</summary>
     public int GhostBayCount => Hdds.Count(h => !h.IsInstalled);
 
+    /// <summary>Installed volumes that hold no footage (backup, or not used for writing) — shown, never counted.</summary>
+    public IReadOnlyList<HddInfo> NonRecordingHdds =>
+        Hdds.Where(h => h.IsInstalled && !h.RecordsFootage).ToList();
+
     /// <summary>The recording pool: installed volumes that footage actually lands on.</summary>
     public long TotalCapacityMB =>
         Hdds.Where(h => h.IsInstalled && h.RecordsFootage).Sum(h => h.CapacityMB);
@@ -83,6 +87,11 @@ public sealed record StorageInfo(
 /// Dahua record the main stream only and leave this null. It is not controlled by the
 /// main-stream bitrate write, which is why it is carried separately from the cap.
 /// </param>
+/// <param name="ArchiveCapDays">
+/// A per-camera age limit the recorder enforces regardless of disk space (Nx's "Max archive
+/// days"), when one is set. Days held on such a camera can never exceed it, however generous
+/// the capacity estimate — so the report says so next to the number.
+/// </param>
 public sealed record CameraStream(
     int Channel,
     int TrackId,
@@ -96,7 +105,8 @@ public sealed record CameraStream(
     int? ConstantBitrateKbps,
     int? FixedQuality,
     bool FrameRateIsFull = false,
-    int? SecondaryRecordedKbps = null)
+    int? SecondaryRecordedKbps = null,
+    int? ArchiveCapDays = null)
 {
     public bool IsVbr => string.Equals(QualityControlType, "VBR", StringComparison.OrdinalIgnoreCase);
 

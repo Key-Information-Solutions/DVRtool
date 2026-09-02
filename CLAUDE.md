@@ -153,7 +153,16 @@ and **Nx archives the secondary stream too** unless `dontRecordSecondaryStream`,
 `CameraStream.SecondaryRecordedKbps` / `RecordedBitrateKbps` and `PlanCamera.FixedKbps` (Core) carry
 it into every total and the planner spends it before splitting. The write PATCHes every recording
 cell to `preset` + the bitrate and **refuses up front** when the site's `cameraSettingsOptimization`
-is off or the camera keeps its own profile (`controlEnabled` false), because Nx would then store the
-number and never send it to the camera. Times are UTC ms rendered in the operator's zone. Verified
-live so far: the anonymous endpoints, RTSP on 7001 and the certificate on Site D (a DW Blackjack E-Rack);
-**authenticated shapes and the PATCH are not yet exercised live** — credentials pending.
+is off or the camera keeps its own profile (`options.isControlEnabled` false), because Nx would then
+store the number and never send it to the camera. Times are UTC ms rendered in the operator's zone.
+**Verified live 2026-09-02 on Site D** for every read: `mediaStreams` is a bare
+array with an `encoderIndex` −1 transcoding pseudo-stream to skip; the "don't record" switches live in
+the string-typed `parameters` bag (absent = false); `parameters.space` carries a volume's size;
+`schedule.maxArchiveDays` is negative when disabled and becomes `CameraStream.ArchiveCapDays` when
+positive; footage `limit=1` answers `[]` so oldest footage is a coarse pass then an exact pass before
+it. **The PATCH has not been fired.** The site forwards nothing, so it is reached through the **DW Cloud
+relay** (`NxCloudRelay`, `docs/nx-witness-storage.md` §relay): host `<cloudSystemId>.relay.vmsproxy.com`,
+HTTPS 443, a 307 to a regional node that `NxRelayHandler` follows once keeping the Authorization
+header, chain validation instead of the cert pin (Let's Encrypt wildcard, rotates), the same local
+login, **no RTSP** (`GetLiveUri`/`GetPlaybackUri` throw `NotSupportedException` with a message the
+front ends show; the dialog and `dvrtool test` skip the RTSP row).

@@ -442,6 +442,32 @@ public class ConnectivityProbeTests
     }
 
     [Fact]
+    public async Task StartAll_ClientWithNoRtspAtAll_DoesNotThrow()
+    {
+        // Nx through its cloud relay refuses stream URLs outright (NotSupportedException);
+        // the probe must survive that too — its callers skip the RTSP row for such a record.
+        await using var service = new FakeService(req => (Reply(200, "OK"), null));
+        var conn = new NvrConnection
+        {
+            Host = "00000000-0000-0000-0000-000000000000.relay.vmsproxy.com",
+            HttpPort = 443,
+            RtspPort = service.Port,
+            SdkPort = 0,
+            Username = "u",
+            Password = "p",
+            UseTls = true,
+        };
+        // Scripted handler so the web probe never touches the network; the RTSP probe dials
+        // conn.Host, which does not resolve here — the point is only that building the URL
+        // did not throw out of StartAll.
+        var (web, rtsp, _) = ConnectivityProbe.StartAll(conn,
+            () => new DVRTool.Vendors.NxWitness.NxWitnessClient(conn,
+                new MockHttpHandler((_, _) => MockHttpHandler.Text("{}", HttpStatusCode.Unauthorized))));
+        Assert.NotEqual(ProbeStatus.Ok, (await rtsp).Status);
+        Assert.Equal(ProbeStatus.AuthFailed, (await web).Status);
+    }
+
+    [Fact]
     public async Task StartAll_WithoutAClientFactory_StillChecksTheTwoPortProbes()
     {
         await using var rtsp = new FakeService(_ => (Reply(200, "OK"), null));
