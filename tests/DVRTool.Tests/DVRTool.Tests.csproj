@@ -17,6 +17,7 @@
     <ProjectReference Include="..\..\src\DVRTool.Core\DVRTool.Core.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.Hikvision\DVRTool.Vendors.Hikvision.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.Dahua\DVRTool.Vendors.Dahua.csproj" />
+    <ProjectReference Include="..\..\src\DVRTool.Vendors.NxWitness\DVRTool.Vendors.NxWitness.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionAccess\DVRTool.Vendors.HikvisionAccess.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionSdk\DVRTool.Vendors.HikvisionSdk.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionIvms\DVRTool.Vendors.HikvisionIvms.csproj" />

@@ -414,6 +414,34 @@ public class ConnectivityProbeTests
     }
 
     [Fact]
+    public async Task StartAll_ClientThatCannotNameAStreamYet_StillProbesRtsp()
+    {
+        // An Nx client addresses cameras by id and has no list until it has read the device,
+        // so its URL builder throws on a fresh instance. The probe must take that as "no
+        // DESCRIBE target" and still report the RTSP server that answered OPTIONS.
+        await using var service = new FakeService(req => req.Method == "OPTIONS"
+            ? (Reply(200, "OK"), null)
+            : (Reply(404, "Not Found"), null));
+
+        var conn = new NvrConnection
+        {
+            Host = "127.0.0.1",
+            HttpPort = 1, // nothing listens; the web probe fails on its own and is not awaited here
+            RtspPort = service.Port,
+            SdkPort = 0,
+            Username = "u",
+            Password = "p",
+        };
+        var (_, rtsp, _) = ConnectivityProbe.StartAll(conn,
+            () => new DVRTool.Vendors.NxWitness.NxWitnessClient(conn));
+
+        var result = await rtsp;
+        Assert.Equal(ProbeStatus.Ok, result.Status);
+        Assert.Contains("OPTIONS", result.Detail);
+        Assert.DoesNotContain(service.Seen, r => r.Method == "DESCRIBE");
+    }
+
+    [Fact]
     public async Task StartAll_WithoutAClientFactory_StillChecksTheTwoPortProbes()
     {
         await using var rtsp = new FakeService(_ => (Reply(200, "OK"), null));

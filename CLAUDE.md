@@ -133,3 +133,27 @@ means "no recordings / no camera", and results are oldest-first so the everythin
 `count=1` is the oldest recording. A 403 `Authority:check failure.` is a per-config permission
 denial, not the lockout (that is 403 JSON with `RmLock`). The Dahua bitrate **write has not
 been fired live**; Site B2's saved credentials are rejected (401) and it has not been read.
+
+**Nx Witness / DW Spectrum storage** (`src/DVRTool.Vendors.NxWitness`, `docs/nx-witness-storage.md`,
+2026-09-02; `Vendor.NxWitness`, `--vendor nx`, "DW Spectrum / Nx Witness" in the Add-NVR dialog):
+a software recorder whose REST API (bearer-token sessions from `POST /rest/v3/login/sessions`),
+plain HTTP and RTSP all share **port 7001** over a self-signed cert — so the record's web and RTSP
+ports are the same number, TLS defaults on, and there is **no SDK port** (`VendorPorts.HasSdkPort`
+false, `SdkPort` 0; the dialog hides the row and `dvrtool test` probes two ports). The identity pin
+is the server GUID from the anonymous `/api/moduleInformation`, but the login still runs first so a
+wrong password is reported as one. Nx has **no channel numbers**: the client numbers the camera list
+sorted by name, keeps that list per instance, refuses a write when the list changed between the
+read and the write (the GUI reads and writes on different clients), and its URL builders throw
+until some call has read the list (`ConnectivityProbe.StartAll` tolerates that; the CLI's URL
+commands read channels first). "Disks" are storage volumes: capacity = size − `spaceLimitB`
+reserve, and backup / not-used-for-writing volumes are listed but excluded via
+`HddInfo.RecordsFootage`. A camera's "max bitrate" is its **busiest schedule cell** — the preset
+`bitrateKbps`, or Nx's own quality formula `(0.1+0.9·q/4)·0.009·(w·h)^0.7·fps·codec` (`NxBitrate`) —
+and **Nx archives the secondary stream too** unless `dontRecordSecondaryStream`, so
+`CameraStream.SecondaryRecordedKbps` / `RecordedBitrateKbps` and `PlanCamera.FixedKbps` (Core) carry
+it into every total and the planner spends it before splitting. The write PATCHes every recording
+cell to `preset` + the bitrate and **refuses up front** when the site's `cameraSettingsOptimization`
+is off or the camera keeps its own profile (`controlEnabled` false), because Nx would then store the
+number and never send it to the camera. Times are UTC ms rendered in the operator's zone. Verified
+live so far: the anonymous endpoints, RTSP on 7001 and the certificate on Site D (a DW Blackjack E-Rack);
+**authenticated shapes and the PATCH are not yet exercised live** — credentials pending.

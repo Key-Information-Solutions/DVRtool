@@ -16,7 +16,7 @@ door-access writes.
 | Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Device info, channels, recording search and the Storage tab live-verified on a DH-NVR608H; download and bitrate writes not yet |
 | Hikvision live video without RTSP | HCNetSDK `RealPlay_V40` over the SDK port (P/Invoke) | Live-verified on a DS-7716NI |
 | Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over the SDK port (P/Invoke) | Reads and writes live-verified |
-| DW Spectrum | Nx REST `/media/` | Planned |
+| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001 | Storage tab and `dvrtool storage` (`--vendor nx`) implemented against the documented REST shapes; the anonymous endpoints, port layout and certificate verified on the Site D E-Rack — authenticated reads and the schedule-bitrate write await credentials |
 | UniFi Protect | Private `/api/video/export` | Planned |
 
 ## Layout
@@ -30,6 +30,9 @@ door-access writes.
   cardholder identity map
 - `src/DVRTool.Vendors.Hikvision` — ISAPI driver (search / download / live + playback RTSP URIs)
 - `src/DVRTool.Vendors.Dahua` — CGI driver (`mediaFileFind` / `loadfile` / RTSP by time)
+- `src/DVRTool.Vendors.NxWitness` — Nx Witness / DW Spectrum driver (REST v3 sessions,
+  storage volumes and schedules for the Storage tab, footage periods, `/media/` export,
+  RTSP on the server port)
 - `src/DVRTool.Vendors.HikvisionSdk` — every HCNetSDK P/Invoke, the reference-counted SDK
   runtime, and SDK live video (`RealPlay_V40` over the SDK port, for sites with no RTSP)
 - `src/DVRTool.Vendors.HikvisionAccess` — door-panel driver, riding the SDK project above
@@ -266,6 +269,15 @@ self-signed, so the cert is pinned trust-on-first-use into
 `%APPDATA%\DVRTool\pins.json` and a later mismatch fails loudly. Note RTSP (live view
 / playback / the URL commands) stays cleartext regardless — only the HTTP API and
 downloads are encrypted.
+
+`--vendor nx` is a DW Spectrum / Nx Witness media server. Its defaults differ: HTTPS is
+always on, the API and RTSP share port **7001**, and there is no SDK port (`dvrtool test`
+probes two ports, not three). Channel numbers there are positions in the camera list sorted
+by name — `dvrtool channels` shows the numbering — because Nx addresses cameras by id. The
+Storage tab and `dvrtool storage` work the same as on the recorders, with one difference the
+report spells out: Nx archives each camera's secondary (low-quality) stream alongside the
+main one, and the retention totals include it. See
+[docs/nx-witness-storage.md](docs/nx-witness-storage.md).
 
 `--sdk-port <n>` (or `DVR_SDK_PORT`) sets the vendor SDK port, the same field the desktop
 app's Add-NVR dialog records. Its default follows `--vendor` — 8000 for Hikvision's

@@ -45,6 +45,15 @@ different from each other.
 | SDK, datagram | — | 37778 — "UDP Port" | **No** — §4. |
 | Enhanced SDK | 8443 — SDK over TLS | — | **No** — §3. |
 
+**Nx Witness / DW Spectrum** (added 2026-09-02) is deliberately not a column: it has one
+port. The media server listens on **7001** and sniffs the protocol, so HTTPS (the REST API,
+`/media/` exports), plain HTTP and RTSP all arrive there — an Nx record's web port and RTSP
+port are the same number, TLS is on by default (self-signed cert, pinned like every other
+vendor's), and there is **no vendor SDK port at all**. `VendorPorts.HasSdkPort` is false for
+it, the record carries `SdkPort` 0, the Add-NVR dialog hides the row, and `dvrtool test`
+probes two ports instead of three. Verified on the Site D E-Rack: an RTSP `OPTIONS` to
+`rtsp://198.51.100.10:7001/` answers `RTSP/1.0 307` with `Server: DW Spectrum/6.1.1.42624`.
+
 The vendors' own labels are in the table on purpose, and the GUI dialog now uses them: an
 installer reading numbers off a recorder's network page should be matching labels, not
 translating them.

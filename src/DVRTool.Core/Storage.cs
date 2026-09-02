@@ -13,6 +13,11 @@ namespace DVRTool.Core;
 /// Decimal megabytes. A healthy recorder in overwrite mode reports 0 here permanently —
 /// free space says nothing about retention, which is why estimates use capacity instead.
 /// </param>
+/// <param name="RecordsFootage">
+/// False for a volume that is present but not part of the recording pool — an Nx storage
+/// that is not "used for writing", or a backup storage that only mirrors footage — so it is
+/// listed but never counted toward retention. Recorder disk bays are always true.
+/// </param>
 public sealed record HddInfo(
     int Id,
     string Name,
@@ -22,7 +27,8 @@ public sealed record HddInfo(
     long CapacityMB,
     long FreeSpaceMB,
     string SerialNumber,
-    string Model)
+    string Model,
+    bool RecordsFootage = true)
 {
     public bool IsInstalled =>
         !string.Equals(Status, "notexist", StringComparison.OrdinalIgnoreCase);
@@ -47,9 +53,12 @@ public sealed record StorageInfo(
     /// <summary>Bays holding the ghost of a removed disk — wired, currently empty.</summary>
     public int GhostBayCount => Hdds.Count(h => !h.IsInstalled);
 
-    public long TotalCapacityMB => Hdds.Where(h => h.IsInstalled).Sum(h => h.CapacityMB);
+    /// <summary>The recording pool: installed volumes that footage actually lands on.</summary>
+    public long TotalCapacityMB =>
+        Hdds.Where(h => h.IsInstalled && h.RecordsFootage).Sum(h => h.CapacityMB);
 
-    public long TotalFreeSpaceMB => Hdds.Where(h => h.IsInstalled).Sum(h => h.FreeSpaceMB);
+    public long TotalFreeSpaceMB =>
+        Hdds.Where(h => h.IsInstalled && h.RecordsFootage).Sum(h => h.FreeSpaceMB);
 
     /// <summary>Installed disks in a state other than "ok" (error, formatting, idle…).</summary>
     public IReadOnlyList<HddInfo> UnhealthyHdds =>
@@ -67,6 +76,13 @@ public sealed record StorageInfo(
 /// </param>
 /// <param name="VbrUpperCapKbps">The VBR ceiling — the max-bitrate figure retention math uses.</param>
 /// <param name="ConstantBitrateKbps">Set when the channel is CBR (element absent on pure-VBR firmware).</param>
+/// <param name="SecondaryRecordedKbps">
+/// The bitrate of a second stream the recorder archives <em>alongside</em> the main one, when
+/// it does. Nx Witness / DW Spectrum records both the primary and the secondary (low-quality)
+/// stream of every camera unless told not to, so its disks fill at the sum; Hikvision and
+/// Dahua record the main stream only and leave this null. It is not controlled by the
+/// main-stream bitrate write, which is why it is carried separately from the cap.
+/// </param>
 public sealed record CameraStream(
     int Channel,
     int TrackId,
@@ -79,7 +95,8 @@ public sealed record CameraStream(
     int? VbrUpperCapKbps,
     int? ConstantBitrateKbps,
     int? FixedQuality,
-    bool FrameRateIsFull = false)
+    bool FrameRateIsFull = false,
+    int? SecondaryRecordedKbps = null)
 {
     public bool IsVbr => string.Equals(QualityControlType, "VBR", StringComparison.OrdinalIgnoreCase);
 
@@ -97,6 +114,18 @@ public sealed record CameraStream(
         ? VbrUpperCapKbps
         : ConstantBitrateKbps ?? VbrUpperCapKbps;
 
+    /// <summary>
+    /// Everything this camera writes to disk per second, worst case: the main-stream cap plus
+    /// any second stream the recorder archives with it. This — not <see cref="MaxBitrateKbps"/>
+    /// alone — is what retention totals must sum; on a Hikvision or Dahua recorder the two are
+    /// the same number.
+    /// </summary>
+    public int? RecordedBitrateKbps => (MaxBitrateKbps, SecondaryRecordedKbps) switch
+    {
+        (null, null) => null,
+        (var main, var secondary) => (main ?? 0) + (secondary ?? 0),
+    };
+
     public string Resolution => Width > 0 || Height > 0 ? $"{Width}x{Height}" : "";
 }
 
@@ -106,7 +135,8 @@ public sealed record BitrateRange(int MinKbps, int MaxKbps);
 /// <summary>
 /// Opt-in capability: storage inventory, retention reads and bitrate control. Implemented
 /// separately from <see cref="INvrClient"/> because not every vendor module exposes it
-/// (Hikvision ISAPI and Dahua CGI both do; the vendor modules opt in by implementing it).
+/// (Hikvision ISAPI, Dahua CGI and the Nx Witness / DW Spectrum REST API all do; the vendor
+/// modules opt in by implementing it).
 /// </summary>
 public interface IStorageClient
 {
@@ -139,11 +169,18 @@ public interface IStorageClient
 }
 
 /// <summary>One camera as the bitrate planner sees it.</summary>
-public sealed record PlanCamera(int Channel, string Name, int? CurrentKbps, int MinKbps, int MaxKbps);
+/// <param name="FixedKbps">
+/// Bitrate this camera writes regardless of the plan — a second stream the recorder archives
+/// alongside the main one (<see cref="CameraStream.SecondaryRecordedKbps"/>). It is spent from
+/// the budget before the main-stream rates are split, and never planned or written.
+/// </param>
+public sealed record PlanCamera(
+    int Channel, string Name, int? CurrentKbps, int MinKbps, int MaxKbps, int FixedKbps = 0);
 
 /// <summary>One camera's planned setting: what it records at now, and what the plan wants.</summary>
+/// <param name="FixedKbps">Carried from <see cref="PlanCamera.FixedKbps"/>; part of the total, not of the write.</param>
 public sealed record PlannedCamera(
-    int Channel, string Name, int? CurrentKbps, int PlannedKbps, bool Clamped)
+    int Channel, string Name, int? CurrentKbps, int PlannedKbps, bool Clamped, int FixedKbps = 0)
 {
     public bool Changes => CurrentKbps != PlannedKbps;
 }
@@ -152,6 +189,10 @@ public sealed record PlannedCamera(
 /// A "we need X days" bitrate plan: the uniform per-camera rate that fits the target into
 /// the disks, camera by camera after clamping to what each will accept.
 /// </summary>
+/// <param name="PlannedTotalKbps">
+/// What the disks will see: every planned main-stream rate plus every camera's fixed
+/// (secondary-stream) bitrate.
+/// </param>
 public sealed record BitratePlan(
     double TargetDays,
     int UniformKbps,
@@ -211,10 +252,11 @@ public static class StorageEstimator
     }
 
     /// <summary>
-    /// "We need X days": split the bitrate budget evenly across the cameras, snap down to
-    /// <see cref="KbpsStep"/>, clamp each camera to its own writable range, and re-estimate
-    /// from the clamped result — so the reported days are what the plan actually achieves,
-    /// not what the arithmetic wished for.
+    /// "We need X days": take the fixed (secondary-stream) bitrates off the budget first,
+    /// split what is left evenly across the cameras, snap down to <see cref="KbpsStep"/>,
+    /// clamp each camera to its own writable range, and re-estimate from the clamped result
+    /// plus the fixed part — so the reported days are what the plan actually achieves, not
+    /// what the arithmetic wished for.
     /// </summary>
     public static BitratePlan PlanUniform(
         long capacityMB, double targetDays, IReadOnlyList<PlanCamera> cameras)
@@ -223,7 +265,11 @@ public static class StorageEstimator
             throw new ArgumentException("no cameras to plan for", nameof(cameras));
 
         long budget = RequiredTotalKbps(capacityMB, targetDays);
-        int uniform = (int)Math.Clamp(budget / cameras.Count, KbpsStep, int.MaxValue);
+        // Secondary streams record whatever the plan says, so they are spent before the
+        // split; a budget they alone exceed leaves the minimum step for the main streams and
+        // the plan reports the miss.
+        long fixedTotal = cameras.Sum(c => (long)Math.Max(0, c.FixedKbps));
+        int uniform = (int)Math.Clamp((budget - fixedTotal) / cameras.Count, KbpsStep, int.MaxValue);
         uniform -= uniform % KbpsStep;
 
         var planned = new List<PlannedCamera>(cameras.Count);
@@ -231,10 +277,11 @@ public static class StorageEstimator
         {
             int clamped = Math.Clamp(uniform, cam.MinKbps, cam.MaxKbps);
             planned.Add(new PlannedCamera(
-                cam.Channel, cam.Name, cam.CurrentKbps, clamped, Clamped: clamped != uniform));
+                cam.Channel, cam.Name, cam.CurrentKbps, clamped, Clamped: clamped != uniform,
+                FixedKbps: Math.Max(0, cam.FixedKbps)));
         }
 
-        long plannedTotal = planned.Sum(p => (long)p.PlannedKbps);
+        long plannedTotal = planned.Sum(p => (long)p.PlannedKbps + p.FixedKbps);
         return new BitratePlan(targetDays, uniform, planned, plannedTotal,
             EstimateRetentionDays(capacityMB, plannedTotal));
     }

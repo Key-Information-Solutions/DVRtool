@@ -26,6 +26,9 @@ public static class ExportNaming
     {
         Vendor.Hikvision => MediaContainer.MpegProgramStream,
         Vendor.Dahua => MediaContainer.Dhav,
+        // Nx's /media/ export is asked for as Matroska: the one container it muxes without
+        // seeking back to finish an index, so a cut-short transfer still plays.
+        Vendor.NxWitness => MediaContainer.Matroska,
         _ => MediaContainer.Unknown,
     };
 

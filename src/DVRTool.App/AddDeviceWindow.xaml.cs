@@ -34,7 +34,7 @@ public partial class AddDeviceWindow : Window
     {
         InitializeComponent();
         _fleet = fleet?.ToList() ?? [];
-        ApplyVendorToSdkPort();
+        ApplyVendorToPorts();
     }
 
     public AddDeviceWindow(SavedDevice device, IEnumerable<SavedDevice>? fleet = null)
@@ -55,7 +55,7 @@ public partial class AddDeviceWindow : Window
         KindCombo.IsEnabled = false;
 
         NameBox.Text = device.Name;
-        VendorCombo.SelectedIndex = device.Vendor.Equals("dahua", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        VendorCombo.SelectedIndex = VendorIndex(device.VendorKind);
         HostBox.Text = device.Host;
         // TLS and vendor before the ports: checking the box runs OnTlsChecked, which rewrites
         // an HTTP port of 80 to 443, and picking the vendor runs OnVendorChanged, which can
@@ -69,9 +69,20 @@ public partial class AddDeviceWindow : Window
         PasswordHint.Visibility = Visibility.Visible;
     }
 
-    /// <summary>The vendor the combo is currently on.</summary>
-    private Vendor SelectedVendor =>
-        VendorCombo.SelectedIndex == 1 ? Vendor.Dahua : Vendor.Hikvision;
+    /// <summary>The vendor the combo is currently on — the combo lists them in enum order.</summary>
+    private Vendor SelectedVendor => VendorCombo.SelectedIndex switch
+    {
+        1 => Vendor.Dahua,
+        2 => Vendor.NxWitness,
+        _ => Vendor.Hikvision,
+    };
+
+    private static int VendorIndex(Vendor vendor) => vendor switch
+    {
+        Vendor.Dahua => 1,
+        Vendor.NxWitness => 2,
+        _ => 0,
+    };
 
     /// <summary>True when the dialog is describing a door panel rather than a recorder.</summary>
     private bool IsPanelKind => KindCombo.SelectedIndex == 1;
@@ -79,18 +90,18 @@ public partial class AddDeviceWindow : Window
     private void OnVendorChanged(object sender, SelectionChangedEventArgs e)
     {
         // Fires while XAML is still applying SelectedIndex="0", before the rest of the dialog
-        // is built. The hint is the last of the three controls this touches to be declared, so
+        // is built. The TLS box is the last of the controls this touches to be declared, so
         // it is the one worth testing. Nothing to paint yet — the add-mode constructor calls
-        // ApplyVendorToSdkPort itself once everything exists.
-        if (SdkPortHint is null)
+        // ApplyVendorToPorts itself once everything exists.
+        if (SdkPortHint is null || TlsCheck is null)
             return;
-        ApplyVendorToSdkPort();
+        ApplyVendorToPorts();
     }
 
     private void OnKindChanged(object sender, SelectionChangedEventArgs e)
     {
         // Same construction-order guard as OnVendorChanged.
-        if (SdkPortHint is null)
+        if (SdkPortHint is null || TlsCheck is null)
             return;
         ApplyKind();
     }
@@ -113,12 +124,13 @@ public partial class AddDeviceWindow : Window
         if (panel)
         {
             // The DS-K family is the only panel hardware DVRTool speaks, and it is driven
-            // over HCNetSDK — forcing the vendor keeps ApplyVendorToSdkPort from leaving a
+            // over HCNetSDK — forcing the vendor keeps ApplyVendorToPorts from leaving a
             // Dahua 37777 behind when the operator flips a half-filled recorder to a panel.
             VendorCombo.SelectedIndex = 0;
             VendorCombo.IsEnabled = false;
             VendorCombo.ToolTip = "Door panels are Hikvision/OEM DS-K controllers — " +
                 "the only panel family DVRTool speaks.";
+            ShowSdkPortRow(true);
             (SdkPortLabel.Text, SdkPortHint.Text) = ("SDK port",
                 "The panel's \"Server Port\" (HCNetSDK) — 8000 from the factory, and the " +
                 "only port these controllers have. Roster reads, identity and the CLI's " +
@@ -128,28 +140,54 @@ public partial class AddDeviceWindow : Window
         {
             VendorCombo.IsEnabled = true;
             VendorCombo.ToolTip = null;
-            ApplyVendorToSdkPort();
+            ApplyVendorToPorts();
         }
     }
 
     /// <summary>
-    /// Retitles and re-defaults the SDK-port row for the selected vendor. The two vendors
-    /// disagree on this port by a wide margin — 8000 for Hikvision's HCNetSDK, 37777 for
-    /// Dahua's DHNetSDK — so a Dahua recorder left on the Hikvision default gets reported as
-    /// having a dead port by <b>Test connection</b> when nothing is wrong with it.
+    /// Re-defaults the port rows for the selected vendor. The two appliance vendors disagree
+    /// on the SDK port by a wide margin — 8000 for Hikvision's HCNetSDK, 37777 for Dahua's
+    /// DHNetSDK — so a Dahua recorder left on the Hikvision default gets reported as having a
+    /// dead port by <b>Test connection</b> when nothing is wrong with it. Nx is different
+    /// again: HTTPS and RTSP share 7001 and there is no SDK port, so that row disappears.
     /// </summary>
-    private void ApplyVendorToSdkPort()
+    private void ApplyVendorToPorts()
     {
         var vendor = SelectedVendor;
-        int mine = VendorPorts.Sdk(vendor);
-        int theirs = VendorPorts.Sdk(vendor == Vendor.Dahua ? Vendor.Hikvision : Vendor.Dahua);
 
-        // Only overwrite a box still holding the *other* vendor's factory number (or nothing
-        // at all). A port the operator read off the device is theirs to keep: flipping the
-        // vendor combo must not silently discard it.
-        string current = SdkPortBox.Text.Trim();
-        if (current.Length == 0 || current == theirs.ToString(CultureInfo.InvariantCulture))
-            SdkPortBox.Text = mine.ToString(CultureInfo.InvariantCulture);
+        // Only overwrite a box still holding *another* vendor's factory number (or nothing at
+        // all). A port the operator read off the device is theirs to keep: flipping the vendor
+        // combo must not silently discard it.
+        var others = Enum.GetValues<Vendor>().Where(v => v != vendor).ToList();
+        void Redefault(TextBox box, int mine, IEnumerable<int> theirs)
+        {
+            string current = box.Text.Trim();
+            if (current.Length == 0 ||
+                theirs.Any(t => current == t.ToString(CultureInfo.InvariantCulture)))
+                box.Text = mine.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // Nx serves HTTPS from the factory; the appliance vendors serve HTTP. Set the box
+        // before the ports so OnTlsChecked's 80↔443 swap has already run.
+        if (VendorPorts.DefaultsToTls(vendor) && TlsCheck.IsChecked != true)
+            TlsCheck.IsChecked = true;
+        else if (!VendorPorts.DefaultsToTls(vendor) && TlsCheck.IsChecked == true &&
+                 HttpPortBox.Text.Trim() == VendorPorts.NxWitnessServer.ToString(CultureInfo.InvariantCulture))
+            TlsCheck.IsChecked = false;
+
+        bool tls = TlsCheck.IsChecked == true;
+        Redefault(HttpPortBox, VendorPorts.Web(vendor, tls),
+            others.SelectMany(v => new[] { VendorPorts.Web(v, true), VendorPorts.Web(v, false) }));
+        Redefault(RtspPortBox, VendorPorts.Rtsp(vendor), others.Select(VendorPorts.Rtsp));
+
+        if (!VendorPorts.HasSdkPort(vendor))
+        {
+            ShowSdkPortRow(false);
+            return;
+        }
+        ShowSdkPortRow(true);
+        Redefault(SdkPortBox, VendorPorts.Sdk(vendor),
+            others.Where(VendorPorts.HasSdkPort).Select(VendorPorts.Sdk));
 
         // Name the port the way the device's own web UI names it, so an installer reading
         // values off a recorder is matching labels rather than translating them. The two
@@ -166,6 +204,18 @@ public partial class AddDeviceWindow : Window
                "closed — so on Hikvision this one is worth getting right.");
     }
 
+    /// <summary>
+    /// The SDK-port row exists only for vendors that have one. Hidden rather than disabled
+    /// for Nx: a greyed box with a number in it would still read as a port to forward.
+    /// </summary>
+    private void ShowSdkPortRow(bool visible)
+    {
+        var visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        SdkPortLabel.Visibility = visibility;
+        SdkPortBox.Visibility = visibility;
+        SdkPortHint.Visibility = visibility;
+    }
+
     private SavedDevice? BuildDevice(out string? error)
     {
         error = null;
@@ -176,7 +226,11 @@ public partial class AddDeviceWindow : Window
             error = "Host is required.";
             return null;
         }
-        if (!TryPort(SdkPortBox.Text, out int sdkPort))
+        var vendor = panel ? Vendor.Hikvision : SelectedVendor;
+        // A vendor with no SDK port (Nx) has the row hidden, and the record carries 0: there
+        // is nothing for the number to mean, and the port check must not dial it.
+        int sdkPort = 0;
+        if ((panel || VendorPorts.HasSdkPort(vendor)) && !TryPort(SdkPortBox.Text, out sdkPort))
         {
             error = "Ports must be numbers between 1 and 65535.";
             return null;
@@ -195,7 +249,7 @@ public partial class AddDeviceWindow : Window
         {
             Name = NameBox.Text.Trim().Length > 0 ? NameBox.Text.Trim() : host,
             Kind = panel ? "panel" : "recorder",
-            Vendor = !panel && SelectedVendor == Vendor.Dahua ? "dahua" : "hikvision",
+            Vendor = VendorNames.Key(vendor),
             Host = host,
             HttpPort = httpPort,
             RtspPort = rtspPort,
@@ -279,8 +333,9 @@ public partial class AddDeviceWindow : Window
             return;
         }
 
-        // All three ports at once: an installer chasing a missing port forward wants the
-        // whole picture, and a firewalled port costs a full timeout to discover.
+        // All the ports at once: an installer chasing a missing port forward wants the
+        // whole picture, and a firewalled port costs a full timeout to discover. A vendor
+        // with no SDK port (Nx) gets two rows, not a third one probing nothing.
         var conn = device.ToConnection();
         string webLabel = device.UseTls ? $"HTTPS {conn.HttpPort}" : $"HTTP {conn.HttpPort}";
         string rtspLabel = $"RTSP {conn.RtspPort}";
@@ -291,11 +346,12 @@ public partial class AddDeviceWindow : Window
         string sdkLabel = device.VendorKind == Vendor.Dahua
             ? $"TCP {conn.SdkPort}"
             : $"SDK {conn.SdkPort}";
+        bool hasSdkPort = VendorPorts.HasSdkPort(device.VendorKind);
 
         TestResults.Children.Clear();
         var webRow = AddRow(webLabel);
         var rtspRow = AddRow(rtspLabel);
-        var sdkRow = AddRow(sdkLabel);
+        var sdkRow = hasSdkPort ? AddRow(sdkLabel) : null;
 
         TestButton.IsEnabled = false;
         try
@@ -304,10 +360,14 @@ public partial class AddDeviceWindow : Window
                 conn, device.CreateClient, _probes.Token,
                 device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null,
                 device.Name);
-            var results = await Task.WhenAll(
+            var renders = new List<Task<ProbeResult>>
+            {
                 RenderWhenDone(webRow, webLabel, web),
                 RenderWhenDone(rtspRow, rtspLabel, rtsp),
-                RenderWhenDone(sdkRow, sdkLabel, sdk));
+            };
+            if (sdkRow is not null)
+                renders.Add(RenderWhenDone(sdkRow, sdkLabel, sdk));
+            var results = await Task.WhenAll(renders);
             AddSummary(results, device.VendorKind);
 
             // A test that reached the device is the natural moment to bind the record to it —
@@ -394,7 +454,8 @@ public partial class AddDeviceWindow : Window
         var worst = results.Max(r => r.Severity);
         if (worst == ProbeSeverity.Pass)
         {
-            ShowLine("All three ports reachable.", Brushes.DarkGreen, italic: true);
+            ShowLine(results.Length == 3 ? "All three ports reachable." : "Both ports reachable.",
+                Brushes.DarkGreen, italic: true);
             return;
         }
 

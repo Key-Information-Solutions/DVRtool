@@ -44,4 +44,56 @@ public class VendorPortsTests
         var conn = new NvrConnection { Host = "10.0.0.5", Username = "admin", Password = "x" };
         Assert.Equal(VendorPorts.HikvisionSdk, conn.SdkPort);
     }
+
+    [Fact]
+    public void Nx_HasNoSdkPort_AndPutsEverythingOn7001()
+    {
+        // A Network Optix server multiplexes HTTPS, HTTP and RTSP on one listener, and
+        // there is no private-SDK port to forward at all — so the web and RTSP defaults are
+        // the same number and the SDK slot is 0, which nothing may dial.
+        Assert.False(VendorPorts.HasSdkPort(Vendor.NxWitness));
+        Assert.Equal(0, VendorPorts.Sdk(Vendor.NxWitness));
+        Assert.Equal(7001, VendorPorts.NxWitnessServer);
+        Assert.Equal(7001, VendorPorts.Web(Vendor.NxWitness, tls: true));
+        Assert.Equal(7001, VendorPorts.Web(Vendor.NxWitness, tls: false));
+        Assert.Equal(7001, VendorPorts.Rtsp(Vendor.NxWitness));
+        Assert.True(VendorPorts.DefaultsToTls(Vendor.NxWitness));
+
+        // The appliance vendors keep the numbers they always had.
+        Assert.True(VendorPorts.HasSdkPort(Vendor.Hikvision));
+        Assert.True(VendorPorts.HasSdkPort(Vendor.Dahua));
+        Assert.Equal(80, VendorPorts.Web(Vendor.Dahua, tls: false));
+        Assert.Equal(443, VendorPorts.Web(Vendor.Hikvision, tls: true));
+        Assert.Equal(554, VendorPorts.Rtsp(Vendor.Dahua));
+        Assert.False(VendorPorts.DefaultsToTls(Vendor.Hikvision));
+    }
+
+    [Theory]
+    [InlineData("hikvision", Vendor.Hikvision)]
+    [InlineData("HIK", Vendor.Hikvision)]
+    [InlineData("dahua", Vendor.Dahua)]
+    [InlineData("amcrest", Vendor.Dahua)]
+    [InlineData("nx", Vendor.NxWitness)]
+    [InlineData("dwspectrum", Vendor.NxWitness)]
+    [InlineData("dw", Vendor.NxWitness)]
+    [InlineData(" NxWitness ", Vendor.NxWitness)]
+    public void VendorNames_ParseEverySpelling(string text, Vendor expected)
+    {
+        Assert.True(VendorNames.TryParse(text, out var vendor));
+        Assert.Equal(expected, vendor);
+    }
+
+    [Fact]
+    public void VendorNames_RoundTripTheirKeys_AndRejectNonsense()
+    {
+        foreach (var vendor in Enum.GetValues<Vendor>())
+        {
+            Assert.True(VendorNames.TryParse(VendorNames.Key(vendor), out var parsed));
+            Assert.Equal(vendor, parsed);
+            Assert.Contains(VendorNames.Key(vendor), VendorNames.CliChoices.Split('|'));
+        }
+        Assert.False(VendorNames.TryParse("axis", out _));
+        Assert.False(VendorNames.TryParse(null, out _));
+        Assert.Equal("DW Spectrum / Nx Witness", VendorNames.Display(Vendor.NxWitness));
+    }
 }

@@ -15,7 +15,8 @@ namespace DVRTool.Cli;
 internal static class StorageCommands
 {
     private const string Usage = """
-        dvrtool storage — disks, retention and bitrate planning (Hikvision and Dahua)
+        dvrtool storage — disks, retention and bitrate planning (Hikvision, Dahua, and
+        DW Spectrum / Nx Witness with --vendor nx)
 
         Usage:
           dvrtool storage disks       [connection options]
@@ -38,7 +39,9 @@ internal static class StorageCommands
 
         Estimates are worst-case on purpose: they assume every camera records at its
         configured maximum around the clock. VBR + smart codecs usually do better, so
-        real retention lands at or above the estimate.
+        real retention lands at or above the estimate. On Nx the "max" is what the
+        busiest schedule cell asks for, and the totals include the secondary stream
+        Nx archives alongside the main one (marked + in the table).
 
         Connection options are the same as every other command (--host/--user/--pass or
         DVR_HOST/DVR_USER/DVR_PASS, --tls, --expect-serial, …).
@@ -157,6 +160,7 @@ internal static class StorageCommands
         var now = DateTime.Now;
         DateTime? systemOldest = null;
         long totalKbps = 0;
+        long secondaryKbps = 0;
         int enabledCount = 0;
         var failures = new List<string>();
         foreach (var s in streams)
@@ -186,26 +190,37 @@ internal static class StorageCommands
                 failures.Add($"channel {s.Channel}: {ex.Message}");
             }
 
-            if (s.Enabled && s.MaxBitrateKbps is int kbps)
+            // Everything the camera writes: the main-stream cap plus any second stream the
+            // recorder archives with it (Nx does, unless told not to).
+            if (s.Enabled && s.RecordedBitrateKbps is int kbps)
             {
                 totalKbps += kbps;
+                secondaryKbps += s.SecondaryRecordedKbps ?? 0;
                 enabledCount++;
             }
 
             string name = names.GetValueOrDefault(s.Channel, "");
+            string maxKbps = (s.MaxBitrateKbps?.ToString() ?? "?") +
+                             (s.SecondaryRecordedKbps is not null ? "+" : "");
             Console.WriteLine($"{s.Channel,3}  {Fit(name, 22),-22}  {s.CodecType,-7}  " +
                 $"{s.Resolution,-11}  {FpsColumn(s),5}  {s.QualityControlType,-4}  " +
-                $"{s.MaxBitrateKbps,8}  {oldestText,-19}  {daysText}");
+                $"{maxKbps,8}  {oldestText,-19}  {daysText}");
         }
 
         if (streams.Any(s => s.FrameRateIsFull))
             Console.WriteLine("* camera set to Full Frame Rate; shown is its native maximum");
+        if (streams.Any(s => s.SecondaryRecordedKbps is not null))
+            Console.WriteLine("+ a secondary (low-quality) stream is archived alongside the main " +
+                "one; the totals below include it");
 
         Console.WriteLine();
         Console.WriteLine($"Disks: {FormatTb(info.TotalCapacityMB)} across " +
                           $"{info.InstalledCount} disk(s).");
         Console.WriteLine($"Configured max bitrate: {totalKbps:N0} kbps across {enabledCount} " +
-                          "enabled camera(s).");
+                          "enabled camera(s)" +
+                          (secondaryKbps > 0
+                              ? $", of which {secondaryKbps:N0} kbps is secondary streams."
+                              : "."));
         if (StorageEstimator.EstimateRetentionDays(info.TotalCapacityMB, totalKbps) is double est)
             Console.WriteLine($"Worst-case retention estimate: {est:F1} days " +
                 "(every camera at its configured max, around the clock).");
@@ -248,14 +263,16 @@ internal static class StorageCommands
         var names = (await client.GetChannelsAsync(ct)).ToDictionary(c => c.Id, c => c.Name);
 
         // Each camera's writable range, so the plan promises only what the hardware will
-        // accept. A camera that won't say gets the ISAPI-typical span.
+        // accept. A camera that won't say gets the ISAPI-typical span. A second stream the
+        // recorder archives alongside the main one is a fixed cost the plan spends first.
         var cameras = new List<PlanCamera>(streams.Count);
         foreach (var s in streams)
         {
             var range = await storage.GetBitrateRangeAsync(s.Channel, ct)
                 ?? new BitrateRange(32, 16384);
             cameras.Add(new PlanCamera(s.Channel, names.GetValueOrDefault(s.Channel, ""),
-                s.MaxBitrateKbps, range.MinKbps, range.MaxKbps));
+                s.MaxBitrateKbps, range.MinKbps, range.MaxKbps,
+                FixedKbps: s.SecondaryRecordedKbps ?? 0));
         }
 
         var plan = StorageEstimator.PlanUniform(info.TotalCapacityMB, days, cameras);
@@ -295,7 +312,10 @@ internal static class StorageCommands
         }
 
         Console.WriteLine($"\nApplying to {toWrite.Count} camera(s) …");
-        long appliedTotalKbps = plan.Cameras.Where(c => !c.Changes).Sum(c => (long)c.PlannedKbps);
+        // Unchanged cameras at their planned rate, every camera's fixed (secondary) part, and
+        // then each write's read-back as it lands.
+        long appliedTotalKbps = plan.Cameras.Where(c => !c.Changes).Sum(c => (long)c.PlannedKbps) +
+                                plan.Cameras.Sum(c => (long)c.FixedKbps);
         var writeFailures = new List<string>();
         foreach (var cam in toWrite)
         {

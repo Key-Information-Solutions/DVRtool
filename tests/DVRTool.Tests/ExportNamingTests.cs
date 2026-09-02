@@ -70,6 +70,9 @@ public class ExportNamingTests
     {
         Assert.Equal(MediaContainer.MpegProgramStream, ExportNaming.RawContainerFor(Vendor.Hikvision));
         Assert.Equal(MediaContainer.Dhav, ExportNaming.RawContainerFor(Vendor.Dahua));
+        // Nx's /media/ export is requested as Matroska, so the raw file is honestly .mkv.
+        Assert.Equal(MediaContainer.Matroska, ExportNaming.RawContainerFor(Vendor.NxWitness));
+        Assert.Equal($"{Base}.mkv", ExportNaming.SuggestedFileName(Base, Vendor.NxWitness, remux: false));
     }
 
     [Fact]
@@ -86,7 +89,7 @@ public class ExportNamingTests
     public void SaveFilter_AlwaysKeepsAnAllFilesEscapeHatch()
     {
         foreach (bool remux in new[] { true, false })
-            foreach (var vendor in new[] { Vendor.Hikvision, Vendor.Dahua })
+            foreach (var vendor in Enum.GetValues<Vendor>())
                 Assert.EndsWith("All files|*.*", ExportNaming.SaveFilter(vendor, remux));
     }
 
@@ -96,7 +99,7 @@ public class ExportNamingTests
         // WPF throws on a filter whose "label|pattern" pairs do not balance, and it
         // throws when the dialog opens — in front of the operator, mid-export.
         foreach (bool remux in new[] { true, false })
-            foreach (var vendor in new[] { Vendor.Hikvision, Vendor.Dahua })
+            foreach (var vendor in Enum.GetValues<Vendor>())
                 Assert.Equal(0, ExportNaming.SaveFilter(vendor, remux).Split('|').Length % 2);
     }
 }

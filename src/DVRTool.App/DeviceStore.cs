@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using DVRTool.Core;
 using DVRTool.Vendors.Dahua;
 using DVRTool.Vendors.Hikvision;
+using DVRTool.Vendors.NxWitness;
 
 namespace DVRTool.App;
 
@@ -63,9 +64,7 @@ public sealed class SavedDevice
     /// </summary>
     [JsonIgnore]
     public DVRTool.Core.Vendor VendorKind =>
-        Vendor.Equals("dahua", StringComparison.OrdinalIgnoreCase)
-            ? DVRTool.Core.Vendor.Dahua
-            : DVRTool.Core.Vendor.Hikvision;
+        VendorNames.TryParse(Vendor, out var vendor) ? vendor : DVRTool.Core.Vendor.Hikvision;
 
     /// <summary>True when this record is a door-access controller rather than a recorder.</summary>
     [JsonIgnore]
@@ -109,9 +108,12 @@ public sealed class SavedDevice
         if (IsPanel)
             throw new InvalidOperationException(
                 $"'{Name}' is a door panel — it has no NVR client.");
-        return VendorKind == DVRTool.Core.Vendor.Dahua
-            ? new DahuaClient(ToConnection())
-            : new HikvisionClient(ToConnection());
+        return VendorKind switch
+        {
+            DVRTool.Core.Vendor.Dahua => new DahuaClient(ToConnection()),
+            DVRTool.Core.Vendor.NxWitness => new NxWitnessClient(ToConnection()),
+            _ => new HikvisionClient(ToConnection()),
+        };
     }
 
     /// <summary>This record as the Access engine's connection type. Panels only.</summary>

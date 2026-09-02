@@ -5,7 +5,8 @@ namespace DVRTool.App;
 
 /// <summary>
 /// The Storage tab: disk inventory, retention ("how many days are we actually holding"),
-/// and the bitrate planner — Hikvision and Dahua recorders via <see cref="IStorageClient"/>.
+/// and the bitrate planner — Hikvision and Dahua recorders and DW Spectrum / Nx Witness
+/// servers via <see cref="IStorageClient"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,8 +20,10 @@ namespace DVRTool.App;
 /// </para>
 /// <para>
 /// Estimates are worst-case on purpose: recorders in overwrite mode report zero free
-/// space forever, so days-held come from capacity ÷ configured max bitrates. See
-/// <c>docs/hikvision-storage.md</c> and <c>docs/dahua-storage.md</c>.
+/// space forever, so days-held come from capacity ÷ configured max bitrates — including,
+/// on Nx, the secondary stream the server archives alongside the main one. See
+/// <c>docs/hikvision-storage.md</c>, <c>docs/dahua-storage.md</c> and
+/// <c>docs/nx-witness-storage.md</c>.
 /// </para>
 /// </remarks>
 public partial class MainWindow
@@ -242,13 +245,18 @@ public partial class MainWindow
 
         var now = DateTime.Now;
         long totalKbps = EnabledMaxTotalKbps(cameras);
+        long secondaryKbps = cameras.Where(c => c.Stream.Enabled)
+            .Sum(c => (long)(c.Stream.SecondaryRecordedKbps ?? 0));
         int enabled = cameras.Count(c => c.Stream.Enabled);
         DateTime? systemOldest = cameras
             .Where(c => c.Oldest is not null)
             .Min(c => c.Oldest);
 
         string summary =
-            $"{enabled} enabled camera(s), {totalKbps:N0} kbps configured max total.";
+            $"{enabled} enabled camera(s), {totalKbps:N0} kbps configured max total" +
+            (secondaryKbps > 0
+                ? $" (including {secondaryKbps:N0} kbps of secondary streams the recorder archives too)."
+                : ".");
         if (StorageEstimator.EstimateRetentionDays(info.TotalCapacityMB, totalKbps) is double est)
             summary += $" Worst-case retention: {est:F1} days.";
         if (systemOldest is DateTime so)
@@ -258,7 +266,8 @@ public partial class MainWindow
 
         var problems = new List<string>();
         foreach (var bad in info.UnhealthyHdds)
-            problems.Add($"bay {bad.Id} ({bad.Model}) reports status '{bad.Status}'");
+            problems.Add($"bay {bad.Id} ({(bad.Model.Length > 0 ? bad.Model : bad.Name)}) " +
+                         $"reports status '{bad.Status}'");
         var searchFailures = cameras.Where(c => c.OldestError is not null).ToList();
         if (searchFailures.Count > 0)
             problems.Add($"oldest-footage search failed on {searchFailures.Count} camera(s) — " +
@@ -288,18 +297,23 @@ public partial class MainWindow
                              plannedByChannel.TryGetValue(s.Channel, out int p)
                 ? p.ToString()
                 : "";
+            // "4096 (+512)" when the recorder archives a second stream alongside the main
+            // one (Nx): the cap the plan can change, plus the part it cannot.
+            string maxKbps = (s.MaxBitrateKbps?.ToString() ?? "?") +
+                             (s.SecondaryRecordedKbps is int sec ? $" (+{sec})" : "");
             return new StorageCameraRow(
                 s.Channel, c.Name, s.CodecType, s.Resolution,
                 s.FrameRateText,
                 s.Enabled ? s.QualityControlType : $"{s.QualityControlType} (off)",
-                s.MaxBitrateKbps?.ToString() ?? "?",
+                maxKbps,
                 planned, oldest, days);
         }).ToList();
     }
 
+    /// <summary>Everything the enabled cameras write: main-stream caps plus any archived second streams.</summary>
     private static long EnabledMaxTotalKbps(IReadOnlyList<StorageCamera> cameras) =>
         cameras.Where(c => c.Stream.Enabled)
-            .Sum(c => (long)(c.Stream.MaxBitrateKbps ?? 0));
+            .Sum(c => (long)(c.Stream.RecordedBitrateKbps ?? 0));
 
     // ----- planner -----
 
@@ -317,10 +331,12 @@ public partial class MainWindow
             return;
         }
 
+        // A second stream the recorder archives alongside the main one (Nx) is a fixed cost
+        // the plan spends before splitting the rest; it is never written.
         var planCameras = cameras
             .Where(c => c.Stream.Enabled)
             .Select(c => new PlanCamera(c.Stream.Channel, c.Name, c.Stream.MaxBitrateKbps,
-                c.Range.MinKbps, c.Range.MaxKbps))
+                c.Range.MinKbps, c.Range.MaxKbps, FixedKbps: c.Stream.SecondaryRecordedKbps ?? 0))
             .ToList();
         if (planCameras.Count == 0)
         {

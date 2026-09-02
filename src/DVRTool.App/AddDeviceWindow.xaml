@@ -49,6 +49,15 @@
                   SelectionChanged="OnVendorChanged">
             <ComboBoxItem Content="Hikvision / LTS"/>
             <ComboBoxItem Content="Dahua / Amcrest"/>
+            <ComboBoxItem Content="DW Spectrum / Nx Witness">
+                <ComboBoxItem.ToolTip>
+                    <TextBlock>
+                        A Network Optix media server (DW Spectrum, Nx Witness, Wisenet WAVE).<LineBreak/>
+                        One port — 7001 from the factory — carries HTTPS, HTTP and RTSP,<LineBreak/>
+                        and there is no vendor SDK port.
+                    </TextBlock>
+                </ComboBoxItem.ToolTip>
+            </ComboBoxItem>
         </ComboBox>
 
         <TextBlock Grid.Row="3" Grid.Column="0" Text="Host / IP" VerticalAlignment="Center"/>

@@ -138,11 +138,21 @@ public static class ConnectivityProbe
     {
         // The vendor's own channel-1 live URL, so the RTSP probe can DESCRIBE a path the
         // device actually serves instead of guessing one. Pure string building — no I/O.
+        // A client that cannot name a stream without first reading the device (Nx addresses
+        // cameras by id, and a fresh client has no list yet) says so by throwing; the RTSP
+        // probe then stops at "an RTSP server answered", which is all it can honestly claim.
         Uri? streamTarget = null;
         if (clientFactory is not null)
         {
             using var urlSource = clientFactory();
-            streamTarget = urlSource.GetLiveUri(1, StreamType.Main, includeCredentials: false);
+            try
+            {
+                streamTarget = urlSource.GetLiveUri(1, StreamType.Main, includeCredentials: false);
+            }
+            catch (InvalidOperationException)
+            {
+                streamTarget = null;
+            }
         }
 
         return (

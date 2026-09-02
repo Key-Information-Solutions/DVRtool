@@ -128,4 +128,72 @@ public class StorageEstimatorTests
         Assert.All(plan.Cameras, c => Assert.True(c.PlannedKbps >= 32));
         Assert.False(plan.MeetsTarget);
     }
+
+    [Fact]
+    public void PlanUniform_FixedSecondaryStreams_AreSpentBeforeTheSplit_AndCountedInTheTotal()
+    {
+        // Four Nx cameras each archiving a 500 kbps secondary stream. 10 TB for 30 days is a
+        // budget of ~30,864 kbps; 2,000 of it is spoken for, so the main streams share
+        // ~28,864 → 7,216 each → snapped to 7,200, and the disks see 4 × 7,200 + 2,000.
+        var cams = Enumerable.Range(1, 4)
+            .Select(ch => new PlanCamera(ch, $"cam{ch}", 8000, 192, 65536, FixedKbps: 500))
+            .ToList();
+        var plan = StorageEstimator.PlanUniform(10_000_000, 30, cams);
+
+        Assert.Equal(7200, plan.UniformKbps);
+        Assert.All(plan.Cameras, c => Assert.Equal(500, c.FixedKbps));
+        Assert.Equal(4 * 7200 + 2000, plan.PlannedTotalKbps);
+        Assert.True(plan.MeetsTarget, $"estimated {plan.EstimatedDays}");
+
+        // The same cameras without the fixed part would have been given more.
+        var without = StorageEstimator.PlanUniform(10_000_000, 30,
+            cams.Select(c => c with { FixedKbps = 0 }).ToList());
+        Assert.True(without.UniformKbps > plan.UniformKbps);
+        Assert.Equal(0, without.Cameras[0].FixedKbps);
+    }
+
+    [Fact]
+    public void PlanUniform_FixedPartAloneOverBudget_FloorsTheMainsAndReportsTheMiss()
+    {
+        var cams = Enumerable.Range(1, 10)
+            .Select(ch => new PlanCamera(ch, "", 512, 32, 16384, FixedKbps: 5000))
+            .ToList();
+        // 100 GB for a year: the secondary streams alone blow the budget.
+        var plan = StorageEstimator.PlanUniform(100_000, 365, cams);
+
+        Assert.All(plan.Cameras, c => Assert.Equal(32, c.PlannedKbps));
+        Assert.Equal(10 * 32 + 50_000, plan.PlannedTotalKbps);
+        Assert.False(plan.MeetsTarget);
+    }
+
+    [Fact]
+    public void CameraStream_RecordedBitrate_AddsTheArchivedSecondaryStream()
+    {
+        var hik = new CameraStream(1, 101, true, "H.265", 2688, 1520, 20, "VBR", 4096, null, null);
+        Assert.Equal(4096, hik.RecordedBitrateKbps); // no second stream: same as the cap
+
+        var nx = hik with { QualityControlType = "BEST", SecondaryRecordedKbps = 512 };
+        Assert.Equal(4096, nx.MaxBitrateKbps);      // the cap the planner may write
+        Assert.Equal(4608, nx.RecordedBitrateKbps); // what the disks actually see
+
+        var unknownMain = nx with { VbrUpperCapKbps = null };
+        Assert.Null(unknownMain.MaxBitrateKbps);
+        Assert.Equal(512, unknownMain.RecordedBitrateKbps);
+        Assert.Null((hik with { VbrUpperCapKbps = null }).RecordedBitrateKbps);
+    }
+
+    [Fact]
+    public void StorageInfo_VolumesThatDoNotRecord_AreListedButNotCounted()
+    {
+        var info = new StorageInfo(
+        [
+            new HddInfo(1, @"D:\", "local", "ok", "main", 60_000_000, 0, "", ""),
+            new HddInfo(2, @"E:\", "local", "ok", "backup", 8_000_000, 0, "", "", RecordsFootage: false),
+            new HddInfo(3, "bay3", "SATA", "notexist", "", 0, 0, "", "WD"),
+        ], null, null);
+
+        Assert.Equal(2, info.InstalledCount);
+        Assert.Equal(1, info.GhostBayCount);
+        Assert.Equal(60_000_000, info.TotalCapacityMB);
+    }
 }

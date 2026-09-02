@@ -5,6 +5,7 @@ using DVRTool.Core;
 using DVRTool.Vendors.Dahua;
 using DVRTool.Vendors.Hikvision;
 using DVRTool.Vendors.HikvisionSdk;
+using DVRTool.Vendors.NxWitness;
 
 const string Usage = """
     dvrtool — multi-vendor NVR footage tool (Key Information Solutions)
@@ -27,17 +28,19 @@ const string Usage = """
       playback-url    Print the RTSP playback-by-time URI
 
     Options:
-      --vendor <hikvision|dahua>   default: hikvision
+      --vendor <hikvision|dahua|nx>  default: hikvision (nx = DW Spectrum / Nx Witness)
       --host <ip[:port]>           or DVR_HOST (HTTP port; default 80, 443 with --tls —
-                                   many NVRs serve HTTPS on 8443: --host 10.0.0.5:8443)
+                                   many NVRs serve HTTPS on 8443: --host 10.0.0.5:8443.
+                                   nx: 7001, HTTPS, and RTSP on the same port)
       --user <name>                or DVR_USER
       --pass <password>            or DVR_PASS; omit both to be prompted (avoid the
                                    flag: it persists in shell history and audit logs)
-      --rtsp-port <n>              default: 554
+      --rtsp-port <n>              default: 554 (nx: 7001)
       --sdk-port <n>               vendor SDK port, or DVR_SDK_PORT (default 8000 on
                                    Hikvision, 37777 on Dahua — changeable from the
-                                   recorder, so don't assume it)
-      --tls                        HTTPS to the NVR (self-signed cert pinned on first use)
+                                   recorder, so don't assume it; nx has none)
+      --tls                        HTTPS to the NVR (self-signed cert pinned on first use;
+                                   always on for nx)
       --expect-serial <s>          refuse to act unless the device answers with this serial
       --trust-new-device           accept a device whose serial differs from the pinned
                                    one, and re-pin it (a replaced recorder — not a
@@ -151,9 +154,11 @@ try
     }
 
     // URL-only commands don't authenticate; only demand a password when it is
-    // actually used (so `dvrtool live-url` never blocks on a prompt).
-    bool needsPassword = command is not ("live-url" or "playback-url")
-        || opts.ContainsKey("with-creds");
+    // actually used (so `dvrtool live-url` never blocks on a prompt). Nx is the exception:
+    // its cameras are addressed by id, so even a URL needs the camera list read first.
+    bool isUrlCommand = command is "live-url" or "playback-url";
+    bool needsPassword = !isUrlCommand || opts.ContainsKey("with-creds") ||
+        ParseVendor(opts) == Vendor.NxWitness;
     using INvrClient client = BuildClient(opts, needsPassword);
 
     // Before anything acts on the device. Authentication only proves the credentials are
@@ -161,6 +166,11 @@ try
     // every command downstream reports another system's channels, footage and accounts as if
     // they were this one's.
     await VerifyIdentityAsync(client, command, opts, cts.Token);
+
+    // An Nx channel number is a position in the camera list, so the list is read before a URL
+    // names one — the one place a URL command contacts the device.
+    if (isUrlCommand && client.Vendor == Vendor.NxWitness)
+        await client.GetChannelsAsync(cts.Token);
 
     switch (command)
     {
@@ -447,6 +457,13 @@ static async Task<int> RunLiveAsync(NvrConnection conn, Vendor vendor,
             "docs/device-ports.md. On Dahua, use `dvrtool live-url` and RTSP.");
         return 2;
     }
+    if (vendor != Vendor.Hikvision)
+    {
+        Console.Error.WriteLine(
+            $"error: `live` is Hikvision-only. {VendorNames.Display(vendor)} has no SDK port; " +
+            "its live video is RTSP on the server port — use `dvrtool live-url`.");
+        return 2;
+    }
 
     // Checked here rather than left to SdkRuntime so the message names the command, and so
     // the platform analyzer can see that everything below is Windows-only.
@@ -668,8 +685,13 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? e
     var (web, rtsp, sdk) = ConnectivityProbe.StartAll(conn, () => ClientFor(conn, vendor), ct,
         expectSerial, expectSerial is { Length: > 0 } ? "--expect-serial" : null);
 
+    // A vendor with no SDK port (Nx) gets two rows, not a third one probing nothing.
+    var rows = new List<(string Label, Task<ProbeResult> Probe)> { (webLabel, web), (rtspLabel, rtsp) };
+    if (VendorPorts.HasSdkPort(vendor))
+        rows.Add((sdkLabel, sdk));
+
     var results = new List<ProbeResult>();
-    foreach (var (label, probe) in new[] { (webLabel, web), (rtspLabel, rtsp), (sdkLabel, sdk) })
+    foreach (var (label, probe) in rows)
     {
         var result = await probe;
         results.Add(result);
@@ -701,7 +723,7 @@ static async Task<int> RunTestAsync(NvrConnection conn, Vendor vendor, string? e
     var dead = results.Where(r => r.Severity == ProbeSeverity.Fail).Select(r => r.Target).ToList();
     if (dead.Count == 0 && results.All(r => r.Severity == ProbeSeverity.Pass))
     {
-        Console.WriteLine("All three ports reachable.");
+        Console.WriteLine(results.Count == 3 ? "All three ports reachable." : "Both ports reachable.");
         return 0;
     }
 
@@ -835,8 +857,24 @@ static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPasswor
 static INvrClient ClientFor(NvrConnection conn, Vendor vendor) => vendor switch
 {
     Vendor.Dahua => new DahuaClient(conn),
+    Vendor.NxWitness => new NxWitnessClient(conn),
     _ => new HikvisionClient(conn),
 };
+
+/// <summary>
+/// <c>--vendor</c>, resolved before the connection is built because the port defaults depend
+/// on it: 8000 is Hikvision's SDK port and 37777 is Dahua's (defaulting a Dahua recorder to
+/// 8000 would make `test` call a healthy unit's SDK port dead), and Nx puts HTTPS and RTSP
+/// together on 7001 with no SDK port at all.
+/// </summary>
+static Vendor ParseVendor(Dictionary<string, string> opts)
+{
+    string vendorName = opts.GetValueOrDefault("vendor", "hikvision");
+    return VendorNames.TryParse(vendorName, out var vendor)
+        ? vendor
+        : throw new ArgumentException(
+            $"unknown vendor '{vendorName}' (use {VendorNames.CliChoices.Replace("|", ", ")})");
+}
 
 /// <summary>
 /// Resolves the connection and its vendor without building a client, so a caller that needs
@@ -846,9 +884,12 @@ static INvrClient ClientFor(NvrConnection conn, Vendor vendor) => vendor switch
 static (NvrConnection Conn, Vendor Vendor) BuildConnection(
     Dictionary<string, string> opts, bool needsPassword = true)
 {
+    // Vendor first: every port default below follows from it (see ParseVendor).
+    Vendor vendor = ParseVendor(opts);
+
     string host = Require(opts, "host", "DVR_HOST");
-    bool useTls = opts.ContainsKey("tls");
-    int httpPort = useTls ? 443 : 80;
+    bool useTls = opts.ContainsKey("tls") || VendorPorts.DefaultsToTls(vendor);
+    int httpPort = VendorPorts.Web(vendor, useTls);
     if (host.Contains(':'))
     {
         var parts = host.Split(':', 2);
@@ -858,28 +899,20 @@ static (NvrConnection Conn, Vendor Vendor) BuildConnection(
 
     string user = Require(opts, "user", "DVR_USER");
 
-    // Vendor is resolved before the connection, not after, because the SDK port's default
-    // depends on it: 8000 is Hikvision's and 37777 is Dahua's. Defaulting a Dahua recorder
-    // to 8000 would make `test` call a perfectly healthy unit's SDK port dead.
-    string vendorName = opts.GetValueOrDefault("vendor", "hikvision").ToLowerInvariant();
-    Vendor vendor = vendorName switch
-    {
-        "hikvision" or "hik" => Vendor.Hikvision,
-        "dahua" or "amcrest" => Vendor.Dahua,
-        _ => throw new ArgumentException($"unknown vendor '{vendorName}' (use hikvision or dahua)"),
-    };
-
     var conn = new NvrConnection
     {
         Host = host,
         HttpPort = httpPort,
         RtspPort = opts.TryGetValue("rtsp-port", out var rp)
-            ? ParsePort(rp, "--rtsp-port") : 554,
-        SdkPort = opts.TryGetValue("sdk-port", out var sp)
-            ? ParsePort(sp, "--sdk-port")
-            : Environment.GetEnvironmentVariable("DVR_SDK_PORT") is { Length: > 0 } envSdk
-                ? ParsePort(envSdk, "DVR_SDK_PORT")
-                : VendorPorts.Sdk(vendor),
+            ? ParsePort(rp, "--rtsp-port") : VendorPorts.Rtsp(vendor),
+        // A vendor without an SDK port carries 0 whatever the flags say: there is nothing
+        // for the number to mean, and the port check must not dial it.
+        SdkPort = !VendorPorts.HasSdkPort(vendor) ? 0
+            : opts.TryGetValue("sdk-port", out var sp)
+                ? ParsePort(sp, "--sdk-port")
+                : Environment.GetEnvironmentVariable("DVR_SDK_PORT") is { Length: > 0 } envSdk
+                    ? ParsePort(envSdk, "DVR_SDK_PORT")
+                    : VendorPorts.Sdk(vendor),
         Username = user,
         Password = GetPassword(opts, user, host, needsPassword),
         UseTls = useTls,

@@ -129,8 +129,11 @@ public partial class MainWindow
     {
         if (device.VendorKind != Vendor.Hikvision)
         {
-            SetStatus("The SDK transport is Hikvision-only. Dahua's private protocol " +
-                "(DHNetSDK on 37777) is not implemented — use RTSP.");
+            SetStatus(device.VendorKind == Vendor.Dahua
+                ? "The SDK transport is Hikvision-only. Dahua's private protocol " +
+                  "(DHNetSDK on 37777) is not implemented — use RTSP."
+                : $"The SDK transport is Hikvision-only. {VendorNames.Display(device.VendorKind)} " +
+                  "has no SDK port; its live video is RTSP on the server port — use RTSP.");
             return;
         }
         if (_sdkStartTask is { IsCompleted: false })
