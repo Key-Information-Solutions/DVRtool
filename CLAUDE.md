@@ -47,7 +47,8 @@ size, fps, bitrate for the selected/maximized camera; `MainWindow.LiveStats.cs`,
 VLC 3's `DecodedVideo` counts **twice per frame** (once per packet in, once per picture out),
 `DisplayedPictures` counts 80 ms refresh re-renders, and the whole block is a 250 ms snapshot,
 so fps is the decoded delta halved over a four-second `LiveStatsWindow`, never a one-second
-delta and never the displayed counter.
+delta and never the displayed counter; it reads "11/12 fps", measured over the configured rate
+the encoder declares in the track header.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs

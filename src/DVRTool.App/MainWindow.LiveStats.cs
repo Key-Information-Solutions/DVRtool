@@ -161,6 +161,7 @@ public partial class MainWindow
 
         string codec = "";
         int width = 0, height = 0;
+        double configuredFps = 0;
         foreach (var track in media.Tracks)
         {
             if (track.TrackType != TrackType.Video)
@@ -168,6 +169,10 @@ public partial class MainWindow
             codec = LiveStats.CodecName(track.Codec);
             width = (int)track.Data.Video.Width;
             height = (int)track.Data.Video.Height;
+            // The encoder's declared rate — on Hikvision, the frame rate the camera is set to
+            // (Site C: 90000/4500 on a 20 fps camera, 12000/1000 on a 12 fps one).
+            if (track.Data.Video.FrameRateNum > 0 && track.Data.Video.FrameRateDen > 0)
+                configuredFps = (double)track.Data.Video.FrameRateNum / track.Data.Video.FrameRateDen;
             break;
         }
         // The track header can lag the picture, or report the SPS size before cropping; the
@@ -181,7 +186,7 @@ public partial class MainWindow
 
         if (rates is null && codec.Length == 0 && width == 0 && stats.DemuxReadBytes == 0)
             return "connecting …";
-        return LiveStats.Describe(codec, width, height, rates, sdk?.BytesDropped ?? 0);
+        return LiveStats.Describe(codec, width, height, rates, sdk?.BytesDropped ?? 0, configuredFps);
     }
 
     private void ShowLiveStats(string text)

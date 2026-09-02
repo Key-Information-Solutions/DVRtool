@@ -418,6 +418,11 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
     14 and 26 from one second to the next. Rates are therefore taken over the last **four
     seconds** (`LiveStatsWindow` in Core) and fps is shown as a whole number. The same window
     stops the once-a-GOP keyframe from making the bitrate jump every few seconds.
+  - **The denominator is the camera's configured rate**, read off the video track's
+    `FrameRateNum/Den` — the encoder's declared timing (SPS VUI), which on Hikvision is the
+    frame rate the camera is set to (Site C: 90000/4500 → 20, 12000/1000 → 12; the .233 over
+    RTSP 30000/1000 → 30). So "11/12 fps" is measured over configured with no extra device
+    call, and a stream that omits the timing shows the measured figure alone.
 
   It was not the Direct3D plane: the double count and the jitter reproduce identically with
   hardware decode, software decode (`:avcodec-hw=none`) and no window at all. The codec comes

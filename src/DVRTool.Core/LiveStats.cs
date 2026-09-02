@@ -179,8 +179,14 @@ public static class LiveStats
     /// callback buffer). Non-zero is a viewer problem, not a camera problem, and is named
     /// as such.
     /// </param>
+    /// <param name="configuredFps">
+    /// The frame rate the camera is set to, as its encoder stamps it into the stream header
+    /// (the SPS timing info libvlc surfaces on the video track), or 0 when the stream does
+    /// not say. Shown as the denominator — "11/12 fps" — so a tech can see at a glance
+    /// whether the frames arriving are the frames the camera was told to send.
+    /// </param>
     public static string Describe(string codec, int width, int height, LiveStatsRates? rates,
-        long viewerDroppedBytes = 0)
+        long viewerDroppedBytes = 0, double configuredFps = 0)
     {
         var parts = new List<string>(6);
         if (codec.Length > 0)
@@ -189,7 +195,9 @@ public static class LiveStats
             parts.Add($"{width}×{height}");
         if (rates is { } r)
         {
-            parts.Add($"{r.FramesPerSecond:0} fps");
+            parts.Add(configuredFps > 0
+                ? $"{r.FramesPerSecond:0}/{configuredFps:0.##} fps"
+                : $"{r.FramesPerSecond:0} fps");
             parts.Add(FormatBitrate(r.BitsPerSecond));
             if (r.FramesLost > 0)
                 parts.Add($"{r.FramesLost} dropped");

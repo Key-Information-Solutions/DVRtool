@@ -248,6 +248,16 @@ public class LiveStatsTests
     }
 
     [Fact]
+    public void DescribeShowsTheConfiguredRateAsTheDenominator()
+    {
+        var line = LiveStats.Describe("H.264", 704, 480, new LiveStatsRates(11.2, 300_000, 0), 0, 12);
+        Assert.Equal("H.264  ·  704×480  ·  11/12 fps  ·  300 kbps", line);
+        // Fractional settings keep their fraction; a stream that does not say gets no denominator.
+        Assert.Contains("13/12.5 fps", LiveStats.Describe("", 0, 0, new LiveStatsRates(12.7, 0, 0), 0, 12.5));
+        Assert.StartsWith("20 fps  ·  ", LiveStats.Describe("", 0, 0, new LiveStatsRates(20, 0, 0), 0, 0));
+    }
+
+    [Fact]
     public void DescribeBeforeAnythingIsKnown()
     {
         Assert.Equal("measuring …", LiveStats.Describe("", 0, 0, null));
