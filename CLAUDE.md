@@ -102,9 +102,10 @@ live write has been fired** — the `.223`/ocb2 canary is gated on operator go-a
 
 **Storage / retention:** the GUI Storage tab (`MainWindow.Storage.cs`) and `dvrtool storage
 disks | retention | plan | set` cover disk inventory, per-camera oldest-footage/days-held, the
-worst-case retention estimate, and the "we need X days" bitrate planner — Hikvision only, via
-`IStorageClient` (`Storage.cs` in Core, `HikvisionClient.Storage.cs`; the estimator math is pure
-and in Core). Read `docs/hikvision-storage.md` before touching any of it — notably: capacity is
+worst-case retention estimate, and the "we need X days" bitrate planner — Hikvision and Dahua,
+via `IStorageClient` (`Storage.cs` in Core, `HikvisionClient.Storage.cs`,
+`DahuaClient.Storage.cs`; the estimator math is pure and in Core). Read
+`docs/hikvision-storage.md` before touching any of it — notably: capacity is
 decimal MB and **free space is permanently 0** on a healthy recorder (retention = capacity ÷
 max bitrates, never free space); `status=notexist` disk rows are ghosts of removed drives, and
 the capabilities hddList `size` is a firmware ceiling, not the chassis bay count; recording
@@ -117,3 +118,18 @@ to the earliest recorded day and searches only that day. Writes
 "GUI writes stay in the CLI", since a bitrate change is reversible from the same tab) do a
 full-document PUT, then read back and report what the device kept. Estimates are worst-case on
 purpose (validated on Site C: estimated 16.5 days, held 24.1).
+
+**Dahua storage** (`docs/dahua-storage.md`, verified 2026-09-02 on Site B, a
+DH-NVR608H-128-4KS3/I): disks come from `storageDevice.cgi?action=getDeviceAllInfo` as
+**float byte counts** summed over `list.info[N].Detail[M]` partitions, with no model/serial/
+health over CGI; streams from the 0-based `Encode[ch].MainFormat[t]` table, which lists only
+bound channels, and the reported max bitrate is the **highest of General/Motion/Alarm** (`t`
+0/1/2) — the write sets all three in one `setConfig`; `RecordMode[ch].Mode=2` marks a channel
+as not recording; `encode.cgi?action=getConfigCaps` **ignores its channel parameter** and
+returns `caps[N]` for every channel (`BitRateOptions=min,max` kbps). **`mediaFileFind`'s
+`condition.Channel` is 1-based** (0 → 400 Bad Request) while `items[].Channel` is 0-based —
+this was a live bug in the Dahua search/download path until 2026-09-02; 400 from `findFile`
+means "no recordings / no camera", and results are oldest-first so the everything window with
+`count=1` is the oldest recording. A 403 `Authority:check failure.` is a per-config permission
+denial, not the lockout (that is 403 JSON with `RmLock`). The Dahua bitrate **write has not
+been fired live**; Site B2's saved credentials are rejected (401) and it has not been read.

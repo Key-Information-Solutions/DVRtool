@@ -10,17 +10,16 @@ namespace DVRTool.Vendors.Dahua;
 ///
 /// Channel numbering: the public API uses 1-based display channels. Dahua's CGI is
 /// inconsistent: config tables are 0-based; loadfile.cgi and RTSP URLs are 1-based.
-/// mediaFileFind's condition.Channel is 1-based per the official doc examples
-/// ("start from 1") but 0-based in field-proven clients (python-amcrest,
-/// dahua-cam-playback); the response items[i].Channel is documented as
-/// "input − 1" (0-based) in Amcrest docs yet echoed 1-based in Dahua V1.51 docs.
-/// This driver follows the field-proven convention (send display−1, map result+1).
-/// LIVE-TEST ITEM: verify per model line — doc-conformant firmware would search
-/// one channel low, and channel 0 is a mosaic stream on some NVRs.
+/// mediaFileFind's condition.Channel is 1-based, as the official doc says ("start from
+/// 1"), and the response's items[i].Channel is 0-based ("input − 1") — both settled live
+/// on 2026-09-02 against a DH-NVR608H-128-4KS3/I (4.000.0000000.6.R): Channel=0 is
+/// rejected with 400 Bad Request, Channel=1 answers display channel 1 with items whose
+/// Channel=0. Field clients that send display−1 (python-amcrest) search one channel low
+/// on this firmware. So: send the display number, map result+1.
 ///
 /// Downloads arrive as .dav (DHAV container); remux with <see cref="Remux"/>.
 /// </summary>
-public sealed class DahuaClient : INvrClient, IUserManagementClient
+public sealed partial class DahuaClient : INvrClient, IUserManagementClient
 {
     private const string CgiTimeFormat = "yyyy-MM-dd HH:mm:ss";
     private const string RtspTimeFormat = "yyyy_MM_dd_HH_mm_ss";
@@ -69,9 +68,23 @@ public sealed class DahuaClient : INvrClient, IUserManagementClient
 
         return new DeviceInfo(
             name,
-            system.GetValueOrDefault("deviceType", ""),
+            ModelFrom(system),
             system.GetValueOrDefault("serialNumber", ""),
             firmware);
+    }
+
+    /// <summary>
+    /// The market model. Cameras put it in <c>deviceType</c>; NVRs answer a bare number
+    /// there (<c>deviceType=31</c> on a DH-NVR608H) and carry the model string in
+    /// <c>updateSerial</c> (<c>DH-NVR608H-128-4KS3/I</c>), so prefer that whenever
+    /// <c>deviceType</c> has no letters.
+    /// </summary>
+    internal static string ModelFrom(Dictionary<string, string> systemInfo)
+    {
+        string deviceType = systemInfo.GetValueOrDefault("deviceType", "");
+        string updateSerial = systemInfo.GetValueOrDefault("updateSerial", "");
+        bool typeIsNumeric = deviceType.Length > 0 && deviceType.All(char.IsDigit);
+        return typeIsNumeric && updateSerial.Length > 0 ? updateSerial : deviceType;
     }
 
     public async Task<IReadOnlyList<Channel>> GetChannelsAsync(CancellationToken ct = default)
@@ -104,10 +117,10 @@ public sealed class DahuaClient : INvrClient, IUserManagementClient
         var results = new List<RecordingSegment>();
         try
         {
-            // condition.Channel is 0-based in the CGI spec (display ch1 = 0).
+            // condition.Channel is 1-based (display ch1 = 1); see the class remarks.
             string condition =
                 $"/cgi-bin/mediaFileFind.cgi?action=findFile&object={finder}" +
-                $"&condition.Channel={channel - 1}" +
+                $"&condition.Channel={channel}" +
                 $"&condition.StartTime={Uri.EscapeDataString(FormatCgiTime(start))}" +
                 $"&condition.EndTime={Uri.EscapeDataString(FormatCgiTime(end))}" +
                 "&condition.Types[0]=dav";
@@ -119,7 +132,8 @@ public sealed class DahuaClient : INvrClient, IUserManagementClient
             }
             catch (NvrException ex) when (ex.StatusCode is 400)
             {
-                // Some firmware answers 400/Error when the window simply has no recordings.
+                // 400/Error is how the recorder says "nothing to find": a window with no
+                // recordings, or a channel with no camera bound (verified live).
                 return results;
             }
             if (!findResponse.Contains("OK", StringComparison.OrdinalIgnoreCase))

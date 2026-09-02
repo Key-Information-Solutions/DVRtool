@@ -13,7 +13,7 @@ door-access writes.
 | Vendor | Protocol | Status |
 |---|---|---|
 | Hikvision (incl. LT Security OEM) | ISAPI over HTTP (digest) + RTSP | In progress — first target |
-| Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Driver written, needs live verification |
+| Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Device info, channels, recording search and the Storage tab live-verified on a DH-NVR608H; download and bitrate writes not yet |
 | Hikvision live video without RTSP | HCNetSDK `RealPlay_V40` over the SDK port (P/Invoke) | Live-verified on a DS-7716NI |
 | Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over the SDK port (P/Invoke) | Reads and writes live-verified |
 | DW Spectrum | Nx REST `/media/` | Planned |

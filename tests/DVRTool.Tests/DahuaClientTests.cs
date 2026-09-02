@@ -14,6 +14,21 @@ public class DahuaClientTests
     };
 
     [Fact]
+    public void Model_PrefersUpdateSerial_WhenDeviceTypeIsANumber()
+    {
+        // Verbatim getSystemInfo from a DH-NVR608H-128-4KS3/I.
+        var nvr = DahuaClient.ParseKeyValues(
+            "deviceType=31\nprocessor=ST7108\nserialNumber=AJ0C56APAZ4145B\nupdateSerial=DH-NVR608H-128-4KS3/I\n");
+        Assert.Equal("DH-NVR608H-128-4KS3/I", DahuaClient.ModelFrom(nvr));
+
+        var camera = DahuaClient.ParseKeyValues("deviceType=IPC-HDW2431T-AS\nserialNumber=X\n");
+        Assert.Equal("IPC-HDW2431T-AS", DahuaClient.ModelFrom(camera));
+
+        var bare = DahuaClient.ParseKeyValues("deviceType=31\nserialNumber=X\n");
+        Assert.Equal("31", DahuaClient.ModelFrom(bare));
+    }
+
+    [Fact]
     public async Task Search_DrivesFinderLifecycle_AndParsesItems()
     {
         var paths = new List<string>();
@@ -26,8 +41,9 @@ public class DahuaClientTests
                 return MockHttpHandler.Text("result=12345\r\n");
             if (pathAndQuery.Contains("action=findFile"))
             {
-                // Display channel 2 → CGI 0-based channel 1.
-                Assert.Contains("condition.Channel=1", pathAndQuery);
+                // Display channel 2 → condition.Channel=2 (1-based, settled live on a
+                // DH-NVR608H: Channel=0 is rejected with 400).
+                Assert.Contains("condition.Channel=2&", pathAndQuery);
                 Assert.Contains("condition.StartTime=2026-07-21%2000%3A00%3A00", pathAndQuery);
                 return MockHttpHandler.Text("OK\r\n");
             }

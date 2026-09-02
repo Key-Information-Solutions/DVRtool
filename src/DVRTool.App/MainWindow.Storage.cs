@@ -5,7 +5,7 @@ namespace DVRTool.App;
 
 /// <summary>
 /// The Storage tab: disk inventory, retention ("how many days are we actually holding"),
-/// and the bitrate planner — Hikvision recorders via <see cref="IStorageClient"/>.
+/// and the bitrate planner — Hikvision and Dahua recorders via <see cref="IStorageClient"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -20,7 +20,7 @@ namespace DVRTool.App;
 /// <para>
 /// Estimates are worst-case on purpose: recorders in overwrite mode report zero free
 /// space forever, so days-held come from capacity ÷ configured max bitrates. See
-/// <c>docs/hikvision-storage.md</c>.
+/// <c>docs/hikvision-storage.md</c> and <c>docs/dahua-storage.md</c>.
 /// </para>
 /// </remarks>
 public partial class MainWindow
@@ -185,7 +185,7 @@ public partial class MainWindow
                     {
                         oldest = await storage.FindOldestRecordingAsync(s.Channel, ct);
                     }
-                    catch (NvrException ex)
+                    catch (Exception ex) when (NvrException.IsPerDeviceFailure(ex, ct))
                     {
                         oldestError = ex.Message;
                     }
@@ -425,7 +425,7 @@ public partial class MainWindow
                     int actual = await storage.SetMaxBitrateAsync(cam.Channel, cam.PlannedKbps, ct);
                     actualByChannel[cam.Channel] = actual;
                 }
-                catch (NvrException ex)
+                catch (Exception ex) when (NvrException.IsPerDeviceFailure(ex, ct))
                 {
                     failures.Add($"ch{cam.Channel}: {Shorten(ex.Message)}");
                 }

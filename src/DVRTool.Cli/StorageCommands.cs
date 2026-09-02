@@ -15,7 +15,7 @@ namespace DVRTool.Cli;
 internal static class StorageCommands
 {
     private const string Usage = """
-        dvrtool storage — disks, retention and bitrate planning (Hikvision)
+        dvrtool storage — disks, retention and bitrate planning (Hikvision and Dahua)
 
         Usage:
           dvrtool storage disks       [connection options]
@@ -178,8 +178,10 @@ internal static class StorageCommands
                     oldestText = "(no recordings)";
                 }
             }
-            catch (NvrException ex)
+            catch (Exception ex) when (NvrException.IsPerDeviceFailure(ex, ct))
             {
+                // A transport blip on one camera must not take the whole report down;
+                // the camera is labeled "(search failed)" and listed at the end.
                 oldestText = "(search failed)";
                 failures.Add($"channel {s.Channel}: {ex.Message}");
             }
@@ -303,7 +305,7 @@ internal static class StorageCommands
                     : $"  ch{cam.Channel}: {cam.CurrentKbps} → asked {cam.PlannedKbps}, the " +
                       $"device kept {actual} kbps");
             }
-            catch (NvrException ex)
+            catch (Exception ex) when (NvrException.IsPerDeviceFailure(ex, ct))
             {
                 // Carry the camera's configured rate forward so the final estimate reflects
                 // the fleet as it actually stands after the partial apply.

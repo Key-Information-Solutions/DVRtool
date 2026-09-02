@@ -95,7 +95,7 @@ public sealed record BitrateRange(int MinKbps, int MaxKbps);
 /// <summary>
 /// Opt-in capability: storage inventory, retention reads and bitrate control. Implemented
 /// separately from <see cref="INvrClient"/> because not every vendor module exposes it
-/// (Hikvision ISAPI does; Dahua is not implemented).
+/// (Hikvision ISAPI and Dahua CGI both do; the vendor modules opt in by implementing it).
 /// </summary>
 public interface IStorageClient
 {
