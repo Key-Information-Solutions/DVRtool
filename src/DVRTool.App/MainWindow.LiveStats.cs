@@ -15,11 +15,12 @@ namespace DVRTool.App;
 /// <remarks>
 /// <para>
 /// The numbers come from LibVLC's per-media statistics, sampled once a second on the UI
-/// thread and turned into rates by <see cref="LiveStats"/>. They are therefore what the
-/// viewer received and decoded, the same over RTSP and over the SDK port — which is the
-/// figure a tech wants when a picture stutters: a bitrate that tracks the camera's configured
-/// rate with a full frame rate says the link is fine, a low or lumpy bitrate says it is not,
-/// and drops with a healthy bitrate say the viewer is behind.
+/// thread and turned into rates over the last four seconds by <see cref="LiveStatsWindow"/>
+/// (see <see cref="LiveStats"/> for why neither one second nor the raw counters will do).
+/// They are therefore what the viewer received and decoded, the same over RTSP and over the
+/// SDK port — which is the figure a tech wants when a picture stutters: a bitrate that tracks
+/// the camera's configured rate with a full frame rate says the link is fine, a low or lumpy
+/// bitrate says it is not, and drops with a healthy bitrate say the viewer is behind.
 /// </para>
 /// <para>
 /// Which player is "selected" is decided afresh on every tick rather than tracked through
@@ -36,7 +37,7 @@ public partial class MainWindow
     /// <summary>The native media the last sample came from; a different one resets the rates.</summary>
     private IntPtr _liveStatsMedia;
 
-    private LiveStatsSample? _liveStatsPrevious;
+    private readonly LiveStatsWindow _liveStatsWindow = new();
 
     /// <summary>The grid tile the operator clicked, if any. Cleared when the grid rebuilds.</summary>
     private LiveTile? _selectedTile;
@@ -102,7 +103,7 @@ public partial class MainWindow
         if (source is null)
         {
             _liveStatsMedia = IntPtr.Zero;
-            _liveStatsPrevious = null;
+            _liveStatsWindow.Reset();
             ShowLiveStats("");
             return;
         }
@@ -148,16 +149,15 @@ public partial class MainWindow
         if (media.NativeReference != _liveStatsMedia)
         {
             _liveStatsMedia = media.NativeReference;
-            _liveStatsPrevious = null;
+            _liveStatsWindow.Reset();
         }
 
+        // DemuxReadBytes, not ReadBytes: over RTSP live555 is an access-demux and nothing
+        // passes through the stream layer, so ReadBytes stays 0 for the whole session.
         var stats = media.Statistics;
         var sample = new LiveStatsSample(Environment.TickCount64,
-            stats.ReadBytes, stats.DecodedVideo, stats.DisplayedPictures, stats.LostPictures);
-        LiveStatsRates? rates = _liveStatsPrevious is { } previous
-            ? LiveStats.Rates(previous, sample)
-            : null;
-        _liveStatsPrevious = sample;
+            stats.DemuxReadBytes, stats.DecodedVideo, stats.DisplayedPictures, stats.LostPictures);
+        LiveStatsRates? rates = _liveStatsWindow.Add(sample);
 
         string codec = "";
         int width = 0, height = 0;
@@ -179,7 +179,7 @@ public partial class MainWindow
             height = (int)py;
         }
 
-        if (rates is null && codec.Length == 0 && width == 0 && stats.ReadBytes == 0)
+        if (rates is null && codec.Length == 0 && width == 0 && stats.DemuxReadBytes == 0)
             return "connecting …";
         return LiveStats.Describe(codec, width, height, rates, sdk?.BytesDropped ?? 0);
     }

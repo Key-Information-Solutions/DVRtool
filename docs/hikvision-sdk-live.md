@@ -393,10 +393,34 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
   sampled once a second from `Media.Statistics` on whichever player is "selected" — the
   maximized camera (main stream once it has a picture, sub until then), else the tile the
   operator single-clicked (blue border), else the single view while it plays. The rates are
-  deltas of `ReadBytes` / `DecodedVideo` between samples, not libvlc's `InputBitrate`, whose
-  units are version-dependent; `ReadBytes` is a 32-bit truncation and wraps at 4 GB, which
-  the delta undoes, and a counter that went *backwards by less than that* means the player
-  was given a new media, so the first reading after a restart is discarded. The codec comes
+  deltas of `DemuxReadBytes` / `DecodedVideo` between samples, not libvlc's `InputBitrate`,
+  whose units are version-dependent — and not `ReadBytes`, which is **0 for the whole session
+  over RTSP** (live555 is an access-demux; nothing passes through the stream layer) while
+  `DemuxReadBytes` counts the bytes leaving the demuxer on every transport, within 1 % of
+  `ReadBytes` on the SDK route. Both are 32-bit truncations that wrap at 4 GB, which the delta
+  undoes, and a counter that went *backwards by less than that* means the player
+  was given a new media, so the first reading after a restart is discarded. Three facts about
+  those counters, found when the footer showed "over 60 fps" on 30 fps cameras (Site C,
+  2026-09-02, VLC 3.0.21) and confirmed in VLC's source:
+  - **`DecodedVideo` counts twice per frame.** `src/input/decoder.c` bumps it in
+    `DecoderDecode` for every packet the decoder accepts and again in `DecoderQueueVideo` for
+    every picture it outputs, and a program stream is one packet per frame. Measured: 39–40/s
+    on the 20 fps HEVC main stream, 24/s on a 12 fps H.264 sub stream, both frame-counted
+    independently with ffmpeg on a raw capture. The fps figure is the delta **halved**
+    (`LiveStats.DecodedCountsPerFrame`).
+  - **`DisplayedPictures` is not a frame rate either.** The video output re-renders the
+    current picture every 80 ms (`VOUT_REDISPLAY_DELAY`) and counts each render; the 12 fps
+    camera "displayed" about 20 a second. Nothing derives a rate from it. Pictures the vout
+    skips because the *next* one is already due are counted neither as displayed nor as lost.
+  - **The statistics block is a snapshot refreshed at most every 250 ms** (`MainLoopStatistics`
+    in `src/input/input.c`, after each demux iteration), so two readings one second apart
+    cover anywhere from about 700 to 1300 ms of stream — a steady 20 fps read anywhere between
+    14 and 26 from one second to the next. Rates are therefore taken over the last **four
+    seconds** (`LiveStatsWindow` in Core) and fps is shown as a whole number. The same window
+    stops the once-a-GOP keyframe from making the bitrate jump every few seconds.
+
+  It was not the Direct3D plane: the double count and the jitter reproduce identically with
+  hardware decode, software decode (`:avcodec-hw=none`) and no window at all. The codec comes
   from the media's video track (`h264`/`hevc` fourcc → "H.264"/"H.265") and the size from
   `MediaPlayer.Size`, which is what is actually on screen. `LostPictures` shows as
   "N dropped" only when non-zero, and on the SDK route `SdkMediaStream.BytesDropped` shows
