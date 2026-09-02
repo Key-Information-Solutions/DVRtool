@@ -290,7 +290,7 @@ public partial class MainWindow
                 : "";
             return new StorageCameraRow(
                 s.Channel, c.Name, s.CodecType, s.Resolution,
-                s.FrameRateFps is double fps ? fps.ToString("F1") : "",
+                s.FrameRateText,
                 s.Enabled ? s.QualityControlType : $"{s.QualityControlType} (off)",
                 s.MaxBitrateKbps?.ToString() ?? "?",
                 planned, oldest, days);

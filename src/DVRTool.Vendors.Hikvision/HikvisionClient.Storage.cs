@@ -78,11 +78,23 @@ public sealed partial class HikvisionClient : IStorageClient
             bool videoEnabled = video is null || !string.Equals(Child(video, "enabled"), "false",
                 StringComparison.OrdinalIgnoreCase);
 
-            // ISAPI encodes frame rate as fps*100 (2000 = 20.0 fps).
+            // ISAPI encodes frame rate as fps*100 (2000 = 20.0 fps). 0 is not "unknown":
+            // it is the web UI's "Full Frame Rate" choice, and the channel's capabilities
+            // say what that resolves to on this camera at this resolution.
             double? fps = null;
-            if (video is not null && int.TryParse(Child(video, "maxFrameRate"), out int rawFps) &&
-                rawFps > 0)
-                fps = rawFps / 100.0;
+            bool fullRate = false;
+            if (video is not null && int.TryParse(Child(video, "maxFrameRate"), out int rawFps))
+            {
+                if (rawFps > 0)
+                    fps = rawFps / 100.0;
+                else if (rawFps == 0)
+                {
+                    fullRate = true;
+                    var caps = await TryGetXmlAsync(
+                        $"/ISAPI/Streaming/channels/{trackId}/capabilities", ct, null);
+                    fps = FullFrameRateFps(caps);
+                }
+            }
 
             streams.Add(new CameraStream(
                 Channel: trackId / 100,
@@ -97,10 +109,33 @@ public sealed partial class HikvisionClient : IStorageClient
                     : Child(video, "videoQualityControlType") ?? "",
                 VbrUpperCapKbps: TryParseInt(video, "vbrUpperCap"),
                 ConstantBitrateKbps: TryParseInt(video, "constantBitRate"),
-                FixedQuality: TryParseInt(video, "fixedQuality")));
+                FixedQuality: TryParseInt(video, "fixedQuality"),
+                FrameRateIsFull: fullRate));
         }
 
         return streams.OrderBy(s => s.Channel).ToList();
+    }
+
+    /// <summary>
+    /// What "Full Frame Rate" means on this channel: the highest non-zero entry of the
+    /// capabilities' <c>maxFrameRate opt="0,3000,2500,…"</c> list, in fps. The list is
+    /// resolution-aware (a 4096-wide channel tops out at 2000 where a 2688-wide one offers
+    /// 3000), so it is the rate the camera actually streams at. Null when the capabilities
+    /// are unavailable or carry no list.
+    /// </summary>
+    internal static double? FullFrameRateFps(XDocument? capabilities)
+    {
+        var opt = capabilities?.Root?.Descendants()
+            .FirstOrDefault(e => e.Name.LocalName == "maxFrameRate")
+            ?.Attribute("opt")?.Value;
+        if (string.IsNullOrWhiteSpace(opt))
+            return null;
+
+        int max = 0;
+        foreach (string part in opt.Split(',', StringSplitOptions.TrimEntries))
+            if (int.TryParse(part, out int value) && value > max)
+                max = value;
+        return max > 0 ? max / 100.0 : null;
     }
 
     /// <summary>Test seam: "now" for the calendar fallback's month walk.</summary>

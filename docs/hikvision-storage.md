@@ -25,7 +25,15 @@ namespace-agnostic and tested under both, like everything else in the client.
 
 - **Capacity and free space are decimal megabytes** (10^6 bytes): a "8 TB" WD85PURZ
   reports `7630885`. Bitrates are kbps (1000 bit/s). `maxFrameRate` is fps×100
-  (`2000` = 20.0 fps); some channels omit it entirely.
+  (`2000` = 20.0 fps). **`maxFrameRate` 0 is "Full Frame Rate", not missing:** the
+  channel's `/ISAPI/Streaming/channels/{id}/capabilities` lists `0` as a legitimate
+  option (`maxFrameRate opt="0,3000,2500,…,6"`) and the camera streams at the highest
+  non-zero entry, which is resolution-aware (2688-wide → 3000, a 4096-wide channel tops
+  out at 2000). `GetMainStreamsAsync` fetches the capabilities for zero-rate channels
+  only and reports the resolved rate with `FrameRateIsFull` set ("30.0 (full)" in both
+  front ends). The bitrate write round-trips the channel document unchanged, so the `0`
+  is preserved and Apply never turns a full-rate camera into a fixed-rate one. Verified
+  on the lab recorder 2026-09-02, where 6 of 9 cameras are set to full rate.
 - **Free space is permanently 0 on a healthy recorder.** Overwrite mode keeps the
   disks full forever, so retention math uses **total capacity ÷ configured max
   bitrates**, never free space. A nonzero free space usually just means a recently

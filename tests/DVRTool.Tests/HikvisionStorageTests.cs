@@ -158,6 +158,121 @@ public class HikvisionStorageTests
         Assert.False(ch2.IsVbr);
         Assert.Equal(4096, ch2.MaxBitrateKbps); // CBR reads constantBitRate
         Assert.Equal(15.0, ch2.FrameRateFps);
+        Assert.False(ch2.FrameRateIsFull);
+        Assert.Equal("15.0", ch2.FrameRateText);
+    }
+
+    // the lab recorder 2026-09-02: 6 of 9 cameras send maxFrameRate 0 — the web UI's "Full Frame
+    // Rate" — and the channel capabilities' opt list says what that resolves to.
+    private static string FullRateChannelsXml(string ns) => $"""
+        <StreamingChannelList version="2.0" xmlns="{ns}">
+        <StreamingChannel>
+          <id>101</id><channelName>101</channelName><enabled>true</enabled>
+          <Video>
+            <enabled>true</enabled>
+            <videoCodecType>H.265</videoCodecType>
+            <videoResolutionWidth>2688</videoResolutionWidth>
+            <videoResolutionHeight>1520</videoResolutionHeight>
+            <videoQualityControlType>VBR</videoQualityControlType>
+            <vbrUpperCap>8192</vbrUpperCap>
+            <maxFrameRate>0</maxFrameRate>
+          </Video>
+        </StreamingChannel>
+        <StreamingChannel>
+          <id>201</id><channelName>201</channelName><enabled>true</enabled>
+          <Video>
+            <enabled>true</enabled>
+            <videoCodecType>H.265</videoCodecType>
+            <videoResolutionWidth>4096</videoResolutionWidth>
+            <videoResolutionHeight>1840</videoResolutionHeight>
+            <videoQualityControlType>VBR</videoQualityControlType>
+            <vbrUpperCap>5120</vbrUpperCap>
+            <maxFrameRate>0</maxFrameRate>
+          </Video>
+        </StreamingChannel>
+        <StreamingChannel>
+          <id>601</id><channelName>601</channelName><enabled>true</enabled>
+          <Video>
+            <enabled>true</enabled>
+            <videoCodecType>H.265</videoCodecType>
+            <videoResolutionWidth>2592</videoResolutionWidth>
+            <videoResolutionHeight>1944</videoResolutionHeight>
+            <videoQualityControlType>VBR</videoQualityControlType>
+            <vbrUpperCap>6144</vbrUpperCap>
+            <maxFrameRate>2500</maxFrameRate>
+          </Video>
+        </StreamingChannel>
+        </StreamingChannelList>
+        """;
+
+    [Theory]
+    [InlineData(Ns)]
+    [InlineData(IsapiNs)]
+    public async Task MainStreams_FullFrameRate_ResolvesFromChannelCapabilities(string ns)
+    {
+        var handler = new MockHttpHandler((req, _) => req.RequestUri!.AbsolutePath switch
+        {
+            "/ISAPI/Streaming/channels" => MockHttpHandler.Xml(FullRateChannelsXml(ns)),
+            // The opt list is resolution-aware: 2688-wide offers 30 fps, 4096-wide tops at 20.
+            "/ISAPI/Streaming/channels/101/capabilities" => MockHttpHandler.Xml($"""
+                <StreamingChannel version="2.0" xmlns="{ns}"><Video>
+                <videoResolutionWidth opt="1280,1920,2304,2560,2688">2688</videoResolutionWidth>
+                <maxFrameRate opt="0,3000,2500,2200,2000,1800,1600,1500,1200,1000,800,600,400,200,100,50,25,12,6">0</maxFrameRate>
+                </Video></StreamingChannel>
+                """),
+            "/ISAPI/Streaming/channels/201/capabilities" => MockHttpHandler.Xml($"""
+                <StreamingChannel version="2.0" xmlns="{ns}"><Video>
+                <maxFrameRate opt="0,2000,1800,1600,1500,1200,1000,800,600,400,200,100,50,25,12,6">0</maxFrameRate>
+                </Video></StreamingChannel>
+                """),
+            _ => throw new Xunit.Sdk.XunitException(
+                $"unexpected request {req.RequestUri.AbsolutePath}"),
+        });
+        using var client = new HikvisionClient(Conn, handler);
+
+        var streams = await client.GetMainStreamsAsync();
+
+        Assert.Equal(3, streams.Count);
+        Assert.Equal(30.0, streams[0].FrameRateFps);
+        Assert.True(streams[0].FrameRateIsFull);
+        Assert.Equal("30.0 (full)", streams[0].FrameRateText);
+        Assert.Equal(20.0, streams[1].FrameRateFps);
+        Assert.True(streams[1].FrameRateIsFull);
+        // An explicit rate never costs a capabilities round trip.
+        Assert.Equal(25.0, streams[2].FrameRateFps);
+        Assert.False(streams[2].FrameRateIsFull);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.DoesNotContain(handler.Requests,
+            r => r.Request.RequestUri!.AbsolutePath == "/ISAPI/Streaming/channels/601/capabilities");
+    }
+
+    [Fact]
+    public async Task MainStreams_FullFrameRate_CapabilitiesUnavailable_StaysUnknownButFlagged()
+    {
+        var handler = new MockHttpHandler((req, _) => req.RequestUri!.AbsolutePath switch
+        {
+            "/ISAPI/Streaming/channels" => MockHttpHandler.Xml(FullRateChannelsXml(IsapiNs)),
+            "/ISAPI/Streaming/channels/101/capabilities" => new HttpResponseMessage(
+                HttpStatusCode.NotFound),
+            // Capabilities without an opt list resolve nothing either.
+            "/ISAPI/Streaming/channels/201/capabilities" => MockHttpHandler.Xml($"""
+                <StreamingChannel version="2.0" xmlns="{IsapiNs}"><Video>
+                <maxFrameRate>0</maxFrameRate>
+                </Video></StreamingChannel>
+                """),
+            _ => throw new Xunit.Sdk.XunitException(
+                $"unexpected request {req.RequestUri.AbsolutePath}"),
+        });
+        using var client = new HikvisionClient(Conn, handler);
+
+        var streams = await client.GetMainStreamsAsync();
+
+        Assert.Null(streams[0].FrameRateFps);
+        Assert.True(streams[0].FrameRateIsFull);
+        Assert.Equal("", streams[0].FrameRateText);
+        Assert.Null(streams[1].FrameRateFps);
+        Assert.True(streams[1].FrameRateIsFull);
+        Assert.Equal(25.0, streams[2].FrameRateFps);
     }
 
     [Theory]

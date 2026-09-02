@@ -60,6 +60,11 @@ public sealed record StorageInfo(
 /// The recording (main) stream settings of one camera, as configured on the recorder.
 /// </summary>
 /// <param name="FrameRateFps">Decoded from ISAPI's fps×100 encoding (2000 → 20.0).</param>
+/// <param name="FrameRateIsFull">
+/// The channel is configured for "Full Frame Rate" (ISAPI sends <c>maxFrameRate</c> 0) and
+/// <paramref name="FrameRateFps"/> is the camera's native maximum resolved from its
+/// capabilities, not a rate the operator picked.
+/// </param>
 /// <param name="VbrUpperCapKbps">The VBR ceiling — the max-bitrate figure retention math uses.</param>
 /// <param name="ConstantBitrateKbps">Set when the channel is CBR (element absent on pure-VBR firmware).</param>
 public sealed record CameraStream(
@@ -73,9 +78,15 @@ public sealed record CameraStream(
     string QualityControlType,
     int? VbrUpperCapKbps,
     int? ConstantBitrateKbps,
-    int? FixedQuality)
+    int? FixedQuality,
+    bool FrameRateIsFull = false)
 {
     public bool IsVbr => string.Equals(QualityControlType, "VBR", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>"20.0", or "30.0 (full)" when the camera runs at its native maximum.</summary>
+    public string FrameRateText => FrameRateFps is double fps
+        ? FrameRateIsFull ? $"{fps:F1} (full)" : fps.ToString("F1")
+        : "";
 
     /// <summary>
     /// The worst-case recording bitrate this channel is allowed to produce — the number

@@ -194,9 +194,12 @@ internal static class StorageCommands
 
             string name = names.GetValueOrDefault(s.Channel, "");
             Console.WriteLine($"{s.Channel,3}  {Fit(name, 22),-22}  {s.CodecType,-7}  " +
-                $"{s.Resolution,-11}  {s.FrameRateFps,5:F1}  {s.QualityControlType,-4}  " +
+                $"{s.Resolution,-11}  {FpsColumn(s),5}  {s.QualityControlType,-4}  " +
                 $"{s.MaxBitrateKbps,8}  {oldestText,-19}  {daysText}");
         }
+
+        if (streams.Any(s => s.FrameRateIsFull))
+            Console.WriteLine("* camera set to Full Frame Rate; shown is its native maximum");
 
         Console.WriteLine();
         Console.WriteLine($"Disks: {FormatTb(info.TotalCapacityMB)} across " +
@@ -386,4 +389,9 @@ internal static class StorageCommands
     };
 
     private static string Fit(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
+
+    /// <summary>"20.0", or "30.0*" for a camera on Full Frame Rate (footnoted under the table).</summary>
+    private static string FpsColumn(CameraStream s) => s.FrameRateFps is double fps
+        ? s.FrameRateIsFull ? $"{fps:F1}*" : fps.ToString("F1")
+        : "";
 }
