@@ -108,7 +108,11 @@ and in Core). Read `docs/hikvision-storage.md` before touching any of it — not
 decimal MB and **free space is permanently 0** on a healthy recorder (retention = capacity ÷
 max bitrates, never free space); `status=notexist` disk rows are ghosts of removed drives, and
 the capabilities hddList `size` is a firmware ceiling, not the chassis bay count; recording
-search returns oldest-first, which is what makes per-camera oldest one cheap POST. Writes
+search returns oldest-first, which is what makes per-camera oldest one cheap POST. One
+firmware (Site E, DS-7716NI-I4/16P V4.61.030) rejects the everything-window search
+with a nonsense 500 every time and fails wide windows intermittently, so on a non-401 failure
+`FindOldestRecordingAsync` walks the playback calendar (`dailyDistribution`, per month)
+to the earliest recorded day and searches only that day. Writes
 (`plan --force`, `set --force`, the GUI Apply button — the deliberate exception to
 "GUI writes stay in the CLI", since a bitrate change is reversible from the same tab) do a
 full-document PUT, then read back and report what the device kept. Estimates are worst-case on

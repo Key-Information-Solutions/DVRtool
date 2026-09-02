@@ -50,6 +50,47 @@ namespace-agnostic and tested under both, like everything else in the client.
   Per-camera oldest is worth reading: one Site C camera held 15.1 days while the
   rest held 24 — a per-system number would have hidden it.
 
+## Firmware that cannot search the everything window (Site E)
+
+**Found 2026-09-02** on Site E, a DS-7716NI-I4/16P on V4.61.030 build 240123. the lab recorder's
+DS-7716NI-I4/16P(B) runs the same V4.61.030 and searches the everything window fine, so this
+is a property of the unit (its index, disks or quota layout), not of the firmware version. Probed with ~150 hand-built
+`POST /ISAPI/ContentMgmt/search` requests over digest auth:
+
+- The 2000→2038 window is rejected **every time**, in ~0.16 s, HTTP 500
+  `deviceError` with `subStatusString` "Tag 13 is invalid (two root tags)" (the tag
+  number is one past the last element of our body — "Tag 11" without the
+  `metadataList` — so the message is nonsense, not a parse error in our XML). Any
+  start earlier than roughly 2023 is rejected the same way; an end of 2040 too (32-bit
+  time), 2038-01-01 is fine.
+- Windows that make the device enumerate thousands of segments (a year on a busy
+  channel; `numOfMatches` caps at 4000) take ~0.3–0.6 s and fail intermittently —
+  identical back-to-back requests alternate 200/500, roughly half fail, and on the
+  busiest channel they failed 6 of 6. Reusing the `searchID`, spacing requests out
+  to 8 s, paging a "MORE" search past its end and Basic auth changed nothing.
+- Narrow windows are reliable: one day, one month, or anything with a small match
+  count answered 200 in 0.13 s on every attempt (30+), including windows with zero
+  matches back to 2024.
+- The web UI's playback calendar,
+  `POST /ISAPI/ContentMgmt/record/tracks/{track}/dailyDistribution` with
+  `<trackDailyParam><year/><monthOfYear/></trackDailyParam>`, answers
+  `<trackDailyDistribution><dayList><day><dayOfMonth/><record>true|false</record>…`
+  in ~0.1 s, deterministically, for any month (2000 included, 200 with no days).
+
+So `FindOldestRecordingAsync` keeps the one-POST everything window as the primary path
+and, on any non-401 HTTP failure, **falls back to the calendar**: walk months backwards
+from today, remember the earliest recorded day, stop after six empty months past it (or
+36 empty months with nothing found → null), then search **that one day** with
+`maxResults=1` (one retry on a 5xx) for the exact first segment. If the calendar says
+the day recorded but the day search returns nothing, the day's midnight is reported.
+401 never falls back (each retry burns a lockout attempt). Verified live on Site E:
+channel 1 → 2025-12-31 11:10:42, matching the hand probe.
+
+Also noted on this recorder: `workMode` is **quota**, not group. The retention
+estimate here assumes one shared overwrite pool; under quota mode each camera is capped
+at its own slice, so the per-camera oldest column is the honest number on such a unit
+and the system-wide estimate is optimistic.
+
 ## The write path (`SetMaxBitrateAsync`)
 
 GET the channel document, set `vbrUpperCap` **and** `constantBitRate` where present

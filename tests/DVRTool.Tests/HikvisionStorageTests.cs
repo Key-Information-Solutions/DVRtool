@@ -216,6 +216,198 @@ public class HikvisionStorageTests
         Assert.Null(await client.FindOldestRecordingAsync(1));
     }
 
+    // ----- calendar fallback (DS-7716NI-I4/16P V4.61.030 rejects the everything window) -----
+
+    private const string WideWindowRejected = """
+        <?xml version="1.0" encoding="UTF-8" ?>
+        <ResponseStatus version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">
+        <statusCode>3</statusCode>
+        <statusString>Device Error</statusString>
+        <subStatusCode>deviceError</subStatusCode>
+        <subStatusString>Tag 13 is invalid (two root tags)</subStatusString>
+        </ResponseStatus>
+        """;
+
+    private static readonly DateTime FallbackNow = new(2026, 9, 2, 8, 0, 0);
+
+    private static (int Year, int Month) CalendarMonth(string body)
+    {
+        var doc = System.Xml.Linq.XDocument.Parse(body);
+        return (int.Parse(doc.Root!.Element("year")!.Value),
+                int.Parse(doc.Root.Element("monthOfYear")!.Value));
+    }
+
+    private static HttpResponseMessage CalendarXml(int year, int month, params int[] recordedDays)
+    {
+        var days = string.Join("", Enumerable.Range(1, DateTime.DaysInMonth(year, month))
+            .Select(d => recordedDays.Contains(d)
+                ? $"<day><id>{d}</id><dayOfMonth>{d}</dayOfMonth><record>true</record><recordType>event</recordType></day>"
+                : $"<day><id>{d}</id><dayOfMonth>{d}</dayOfMonth><record>false</record></day>"));
+        return MockHttpHandler.Xml($"""
+            <trackDailyDistribution version="2.0" xmlns="{IsapiNs}">
+            <dayList>{days}</dayList>
+            </trackDailyDistribution>
+            """);
+    }
+
+    private static HttpResponseMessage SearchResult(string? firstStart) => MockHttpHandler.Xml(
+        firstStart is null
+            ? $"""
+              <CMSearchResult version="2.0" xmlns="{IsapiNs}">
+              <searchID>X</searchID><responseStatus>true</responseStatus>
+              <responseStatusStrg>NO MATCHES</responseStatusStrg><numOfMatches>0</numOfMatches>
+              <matchList/>
+              </CMSearchResult>
+              """
+            : $"""
+              <CMSearchResult version="2.0" xmlns="{IsapiNs}">
+              <searchID>X</searchID><responseStatus>true</responseStatus>
+              <responseStatusStrg>MORE</responseStatusStrg><numOfMatches>188</numOfMatches>
+              <matchList><searchMatchItem><trackID>301</trackID>
+              <timeSpan><startTime>{firstStart}</startTime><endTime>{firstStart}</endTime></timeSpan>
+              </searchMatchItem></matchList>
+              </CMSearchResult>
+              """);
+
+    private static bool IsCalendar(HttpRequestMessage req) =>
+        req.RequestUri!.AbsolutePath.EndsWith("/dailyDistribution");
+
+    private static bool IsSearch(HttpRequestMessage req) =>
+        req.RequestUri!.AbsolutePath == "/ISAPI/ContentMgmt/search";
+
+    [Fact]
+    public async Task FindOldestRecording_WideWindowRejected_WalksCalendarThenSearchesThatDay()
+    {
+        var handler = new MockHttpHandler((req, body) =>
+        {
+            if (IsSearch(req))
+            {
+                if (body.Contains("2000-01-01T00:00:00Z"))
+                    return MockHttpHandler.Xml(WideWindowRejected, HttpStatusCode.InternalServerError);
+                Assert.Contains("<startTime>2025-12-31T00:00:00Z</startTime>", body);
+                Assert.Contains("<endTime>2026-01-01T00:00:00Z</endTime>", body);
+                Assert.Contains("<maxResults>1</maxResults>", body);
+                return SearchResult("2025-12-31T11:10:42Z");
+            }
+            Assert.Equal("/ISAPI/ContentMgmt/record/tracks/301/dailyDistribution",
+                req.RequestUri!.AbsolutePath);
+            var (y, m) = CalendarMonth(body);
+            // Footage from 31 Dec 2025 to today; nothing older.
+            return (y, m) switch
+            {
+                (2026, _) => CalendarXml(y, m, 1, 2),
+                (2025, 12) => CalendarXml(y, m, 31),
+                _ => CalendarXml(y, m),
+            };
+        });
+        using var client = new HikvisionClient(Conn, handler) { Clock = () => FallbackNow };
+
+        var oldest = await client.FindOldestRecordingAsync(3);
+
+        Assert.Equal(new DateTime(2025, 12, 31, 11, 10, 42), oldest);
+        Assert.Equal(DateTimeKind.Unspecified, oldest!.Value.Kind);
+        var calendar = handler.Requests.Where(r => IsCalendar(r.Request)).ToList();
+        // Sep 2026 back to Dec 2025 (10 months) plus six empty months to be sure.
+        Assert.Equal(16, calendar.Count);
+        Assert.Equal((2026, 9), CalendarMonth(calendar[0].Body));
+        Assert.Equal((2025, 6), CalendarMonth(calendar[^1].Body));
+        Assert.Equal(2, handler.Requests.Count(r => IsSearch(r.Request)));
+    }
+
+    [Fact]
+    public async Task FindOldestRecording_Fallback_ToleratesGaps_AndUsesMidnightWhenDaySearchIsEmpty()
+    {
+        var handler = new MockHttpHandler((req, body) =>
+        {
+            if (IsSearch(req))
+                return body.Contains("2000-01-01T00:00:00Z")
+                    ? MockHttpHandler.Xml(WideWindowRejected, HttpStatusCode.InternalServerError)
+                    : SearchResult(null);
+            var (y, m) = CalendarMonth(body);
+            // Camera offline May–Aug 2026 (four empty months inside the held range), footage on
+            // 15 Apr 2026 and nothing before.
+            return (y, m) switch
+            {
+                (2026, 9) => CalendarXml(y, m, 1),
+                (2026, 4) => CalendarXml(y, m, 15, 16),
+                _ => CalendarXml(y, m),
+            };
+        });
+        using var client = new HikvisionClient(Conn, handler) { Clock = () => FallbackNow };
+
+        var oldest = await client.FindOldestRecordingAsync(1);
+
+        Assert.Equal(new DateTime(2026, 4, 15), oldest);
+        Assert.Equal(DateTimeKind.Unspecified, oldest!.Value.Kind);
+    }
+
+    [Fact]
+    public async Task FindOldestRecording_Fallback_RetriesDaySearchOnce()
+    {
+        int daySearches = 0;
+        var handler = new MockHttpHandler((req, body) =>
+        {
+            if (IsSearch(req))
+            {
+                if (body.Contains("2000-01-01T00:00:00Z"))
+                    return MockHttpHandler.Xml(WideWindowRejected, HttpStatusCode.InternalServerError);
+                return ++daySearches == 1
+                    ? MockHttpHandler.Xml(WideWindowRejected, HttpStatusCode.InternalServerError)
+                    : SearchResult("2026-09-01T06:00:00Z");
+            }
+            var (y, m) = CalendarMonth(body);
+            return (y, m) == (2026, 9) ? CalendarXml(y, m, 1) : CalendarXml(y, m);
+        });
+        using var client = new HikvisionClient(Conn, handler) { Clock = () => FallbackNow };
+
+        Assert.Equal(new DateTime(2026, 9, 1, 6, 0, 0), await client.FindOldestRecordingAsync(1));
+        Assert.Equal(2, daySearches);
+    }
+
+    [Fact]
+    public async Task FindOldestRecording_Fallback_NoRecordedDays_ReturnsNull()
+    {
+        var handler = new MockHttpHandler((req, body) =>
+            IsSearch(req)
+                ? MockHttpHandler.Xml(WideWindowRejected, HttpStatusCode.InternalServerError)
+                : CalendarXml(CalendarMonth(body).Year, CalendarMonth(body).Month));
+        using var client = new HikvisionClient(Conn, handler) { Clock = () => FallbackNow };
+
+        Assert.Null(await client.FindOldestRecordingAsync(1));
+        // 36 empty months from today, then give up; no second search.
+        Assert.Equal(36, handler.Requests.Count(r => IsCalendar(r.Request)));
+        Assert.Equal(1, handler.Requests.Count(r => IsSearch(r.Request)));
+    }
+
+    [Fact]
+    public async Task FindOldestRecording_Fallback_CalendarUnsupported_ReportsBothFailures()
+    {
+        var handler = new MockHttpHandler((req, _) =>
+            IsSearch(req)
+                ? MockHttpHandler.Xml(WideWindowRejected, HttpStatusCode.InternalServerError)
+                : MockHttpHandler.Text("Not Found", HttpStatusCode.NotFound));
+        using var client = new HikvisionClient(Conn, handler) { Clock = () => FallbackNow };
+
+        var ex = await Assert.ThrowsAsync<NvrException>(() => client.FindOldestRecordingAsync(1));
+
+        Assert.Contains("500", ex.Message);
+        Assert.Contains("calendar fallback also failed", ex.Message);
+        Assert.Contains("404", ex.Message);
+    }
+
+    [Fact]
+    public async Task FindOldestRecording_Unauthorized_DoesNotFallBack()
+    {
+        var handler = new MockHttpHandler((_, _) =>
+            MockHttpHandler.Text("Unauthorized", HttpStatusCode.Unauthorized));
+        using var client = new HikvisionClient(Conn, handler);
+
+        var ex = await Assert.ThrowsAsync<NvrException>(() => client.FindOldestRecordingAsync(1));
+
+        Assert.Equal(401, ex.StatusCode);
+        Assert.Single(handler.Requests); // no calendar walk burning login attempts
+    }
+
     [Fact]
     public async Task BitrateRange_ReadsMinMaxAttributes()
     {
