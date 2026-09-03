@@ -70,6 +70,9 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
     private bool _hasFrame;
     private bool _mipsGenerated;
 
+    private IDXGISwapChain1? _swapChain;
+    private int _swapWidth;
+    private int _swapHeight;
     private ID3D11Texture2D? _target;
     private ID3D11RenderTargetView? _targetView;
     private ID3D11Texture2D? _readback;
@@ -113,8 +116,8 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
     public string AdapterDescription { get; }
 
     /// <summary>
-    /// The Direct3D 11 device, so a presenter can open a surface shared with it. Owned by this
-    /// renderer unless it was handed one.
+    /// The Direct3D 11 device this renderer created, exposed so a caller can ask it about its own
+    /// capabilities or share resources with it. Its lifetime is this renderer's.
     /// </summary>
     public ID3D11Device Device => _device;
 
@@ -319,6 +322,7 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
         _readback?.Dispose();
         _targetView?.Dispose();
         _target?.Dispose();
+        _swapChain?.Dispose();
         _luma?.Dispose();
         _chromaInterleaved?.Dispose();
         _chromaU?.Dispose();
@@ -339,41 +343,94 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
     }
 
     /// <summary>
-    /// Replaces the render target with a texture created elsewhere — the shared surface a WPF
-    /// presenter owns.
+    /// Points this renderer at a window, so a finished pane is shown without ever coming back
+    /// across the bus.
     /// </summary>
     /// <remarks>
-    /// The renderer normally makes its own target, which is all a readback or an export needs.
-    /// Presenting to WPF needs the target to be a surface WPF can already see, so the presenter
-    /// creates it and hands it over here. Passing null gives the renderer its own back.
+    /// <para>
+    /// <b>A DXGI swap chain on a hosted child window, rather than WPF's <c>D3DImage</c>.</b> The
+    /// alternative is real, and is what most WPF/Direct3D interop does: render into a Direct3D 9Ex
+    /// surface shared with the 11 device and hand that to <c>D3DImage</c>, which is a true WPF
+    /// <c>ImageSource</c> and composites like any other element. It was rejected here for three
+    /// reasons. It drags in a whole second graphics API and its device-lost handling for nothing
+    /// but the bridge; its front buffer is not dependably available in exactly the remote sessions
+    /// the CPU fallback already exists for; and <b>this application has already accepted the
+    /// trade</b> - the Live tab's video is a <c>VideoView</c>, which is itself a child window
+    /// painting over WPF content. A dewarped pane sits in the same sort of place as that video.
+    /// </para>
+    /// <para>
+    /// The cost of the choice is airspace: WPF content cannot be drawn on top of this pane, so
+    /// overlays belong beside it rather than over it. The gain is that the pane never leaves the
+    /// adapter. Reading it back instead would add about as much again as the draw and the upload
+    /// together, on the CPU, for a picture that is already in the right memory.
+    /// </para>
     /// </remarks>
-    public void SetExternalTarget(ID3D11Texture2D? texture)
+    public void AttachToWindow(IntPtr windowHandle, int width, int height)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _targetView?.Dispose();
-        _targetView = null;
-        if (!ExternalTarget)
-            _target?.Dispose();
-        _target = texture;
-        ExternalTarget = texture is not null;
-        _readback?.Dispose();
-        _readback = null;
-        if (texture is not null)
-        {
-            var description = texture.Description;
-            OutputWidth = (int)description.Width;
-            OutputHeight = (int)description.Height;
-            _targetView = _device.CreateRenderTargetView(texture);
-        }
-        else
-        {
-            OutputWidth = 0;
-            OutputHeight = 0;
-        }
+        if (windowHandle == IntPtr.Zero)
+            throw new ArgumentException("A window handle is required.", nameof(windowHandle));
+        DetachFromWindow();
+
+        using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+        using var adapter = dxgiDevice.GetAdapter();
+        using var factory = adapter.GetParent<IDXGIFactory2>();
+        _swapChain = factory.CreateSwapChainForHwnd(_device, windowHandle,
+            new SwapChainDescription1
+            {
+                Width = (uint)Math.Max(1, width),
+                Height = (uint)Math.Max(1, height),
+                Format = Format.B8G8R8A8_UNorm,
+                Stereo = false,
+                SampleDescription = new SampleDescription(1, 0),
+                BufferUsage = Vortice.DXGI.Usage.RenderTargetOutput,
+                // Two buffers and the flip model: the bitblt model it replaced copies the whole
+                // back buffer through the compositor on every present.
+                BufferCount = 2,
+                Scaling = Scaling.Stretch,
+                SwapEffect = SwapEffect.FlipDiscard,
+                AlphaMode = Vortice.DXGI.AlphaMode.Ignore,
+                Flags = SwapChainFlags.None,
+            });
+        _swapWidth = Math.Max(1, width);
+        _swapHeight = Math.Max(1, height);
     }
 
-    /// <summary>True when the render target belongs to a presenter rather than to this object.</summary>
-    public bool ExternalTarget { get; private set; }
+    /// <summary>Releases the window this renderer was drawing to, if any.</summary>
+    public void DetachFromWindow()
+    {
+        ReleaseBackBuffer();
+        if (_swapChain is null)
+            return;
+        _swapChain.Dispose();
+        _swapChain = null;
+        OutputWidth = 0;
+        OutputHeight = 0;
+    }
+
+    /// <summary>True when a finished pane goes to a window rather than to a private texture.</summary>
+    public bool AttachedToWindow => _swapChain is not null;
+
+    /// <summary>
+    /// Shows the pane drawn by the last <see cref="RenderPane"/>. Only meaningful after
+    /// <see cref="AttachToWindow"/>.
+    /// </summary>
+    /// <remarks>
+    /// Call <see cref="CopyOutput"/> before this rather than after: the flip model leaves the back
+    /// buffer's contents undefined once it has been presented.
+    /// </remarks>
+    public void Present()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_swapChain is null)
+            return;
+        // No vsync wait. A camera delivers frames on its own schedule and the compositor paces
+        // what it shows; blocking here would only add latency to a live view.
+        _swapChain.Present(0, PresentFlags.None);
+        // The flip model rotates the buffers, so the texture and view acquired for this frame
+        // belong to the frame that has just gone. They are re-acquired on the next draw.
+        ReleaseBackBuffer();
+    }
 
     /// <summary>
     /// Blocks until the adapter has finished the queued draw. Only for measurement: a timing
@@ -422,16 +479,22 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
         _context.PSSetConstantBuffer(0, _constants);
         _context.Draw(3, 0);
 
-        // The shader resources are unbound before returning so the next frame's UpdateSubresource
-        // on the same textures is not fighting a live binding.
-        _context.PSSetShaderResources(0, new ID3D11ShaderResourceView?[views.Length]);
-        _context.OMSetRenderTargets((ID3D11RenderTargetView?)null);
+        // The shader resources and the render target are unbound before returning, so the next
+        // frame's upload into the same textures is not fighting a live binding and the swap
+        // chain's back buffer is not still referenced when the flip model rotates it. Direct3D
+        // takes nulls here to mean "nothing bound" -- the null-forgiving operators are Vortice's
+        // signatures being stricter than the API, not a nullability risk being waved away.
+        _context.PSSetShaderResources(0, new ID3D11ShaderResourceView[views.Length]!);
+        _context.OMSetRenderTargets((ID3D11RenderTargetView)null!);
     }
 
     private void EnsureTarget(int width, int height)
     {
-        if (ExternalTarget)
+        if (_swapChain is not null)
+        {
+            EnsureSwapChainTarget(width, height);
             return;
+        }
         if (_target is not null && OutputWidth == width && OutputHeight == height)
             return;
 
@@ -456,6 +519,46 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
         _targetView = _device.CreateRenderTargetView(_target);
         OutputWidth = width;
         OutputHeight = height;
+    }
+
+    /// <summary>
+    /// Resizes the swap chain if the pane has changed size, then takes the current back buffer as
+    /// the render target.
+    /// </summary>
+    /// <remarks>
+    /// The buffer is re-acquired for every frame because the flip model rotates them, so a cached
+    /// render target view would be aimed at the buffer already on screen. Creating a view costs a
+    /// few microseconds against a draw measured in tens of them.
+    /// </remarks>
+    private void EnsureSwapChainTarget(int width, int height)
+    {
+        if (width != _swapWidth || height != _swapHeight)
+        {
+            ReleaseBackBuffer();
+            _readback?.Dispose();
+            _readback = null;
+            _swapChain!.ResizeBuffers(2, (uint)width, (uint)height,
+                Format.B8G8R8A8_UNorm, SwapChainFlags.None);
+            _swapWidth = width;
+            _swapHeight = height;
+        }
+        OutputWidth = _swapWidth;
+        OutputHeight = _swapHeight;
+        if (_targetView is not null)
+            return;
+        _target = _swapChain!.GetBuffer<ID3D11Texture2D>(0);
+        _targetView = _device.CreateRenderTargetView(_target);
+    }
+
+    private void ReleaseBackBuffer()
+    {
+        _targetView?.Dispose();
+        _targetView = null;
+        if (_swapChain is null)
+            return;
+        // Only a swap chain's buffer is borrowed per frame; a private target is kept.
+        _target?.Dispose();
+        _target = null;
     }
 
     private void EnsureReadback(int width, int height)
@@ -590,7 +693,8 @@ public sealed class Direct3DDewarpRenderer : IDewarpRenderer
         var defines = planarChroma
             ? new[] { new ShaderMacro("CHROMA_PLANAR", "1") }
             : [];
-        var result = Compiler.Compile(source, defines, null, entryPoint, "Dewarp.hlsl", profile,
+        // No include handler: this shader includes nothing, and passing null is how you say so.
+        var result = Compiler.Compile(source, defines, null!, entryPoint, "Dewarp.hlsl", profile,
             ShaderFlags.OptimizationLevel3, out var blob, out var errors);
         using (blob)
         using (errors)

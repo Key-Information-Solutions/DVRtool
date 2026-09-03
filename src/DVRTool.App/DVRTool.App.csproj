@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DVRTool.Core\DVRTool.Core.csproj" />
+    <ProjectReference Include="..\DVRTool.Render.D3D11\DVRTool.Render.D3D11.csproj" />
     <ProjectReference Include="..\DVRTool.Vendors.Hikvision\DVRTool.Vendors.Hikvision.csproj" />
     <ProjectReference Include="..\DVRTool.Vendors.Dahua\DVRTool.Vendors.Dahua.csproj" />
     <ProjectReference Include="..\DVRTool.Vendors.NxWitness\DVRTool.Vendors.NxWitness.csproj" />

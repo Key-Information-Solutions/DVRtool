@@ -363,6 +363,55 @@ public class Direct3DDewarpTests
     }
 
     [Fact]
+    public void PresentingThroughASwapChainDrawsTheSamePicture()
+    {
+        if (Skip(out string? why)) { Assert.NotNull(why); return; }
+
+        // The presentation path the GUI actually uses. A pane shown on screen is drawn into a
+        // DXGI swap chain's back buffer rather than into a texture of the renderer's own, and
+        // that is a different code path through EnsureTarget -- one that has to resize the chain,
+        // re-acquire the buffer after every present because the flip model rotates them, and
+        // build a fresh render target view each frame. None of that should change a single pixel,
+        // which is exactly what makes it worth asserting.
+        var frame = Frame(512, 512, Chroma.Smooth, Luma.Smooth);
+        var request = Request(512, new ViewOrientation(40, 20, 0), fov: 60, 320, 240);
+
+        using var offscreen = Direct3DDewarpRenderer.Create();
+        var expected = Gpu(offscreen, frame, request);
+
+        IntPtr window = CreateHiddenWindow();
+        try
+        {
+            using var windowed = Direct3DDewarpRenderer.Create();
+            windowed.AttachToWindow(window, request.OutputWidth, request.OutputHeight);
+            Assert.True(windowed.AttachedToWindow);
+
+            windowed.Render(frame, request);
+            // Before Present, deliberately: the flip model leaves the back buffer undefined once
+            // it has been shown.
+            var actual = Read(windowed);
+            windowed.Present();
+            Assert.Equal(expected, actual);
+
+            // And again at a different size, which is what a window being dragged wider does.
+            var wider = request with { OutputWidth = 500, OutputHeight = 260 };
+            windowed.Render(frame, wider);
+            var resized = Read(windowed);
+            windowed.Present();
+            Assert.Equal(500, windowed.OutputWidth);
+            Assert.Equal(260, windowed.OutputHeight);
+            Assert.Equal(Gpu(offscreen, frame, wider), resized);
+
+            windowed.DetachFromWindow();
+            Assert.False(windowed.AttachedToWindow);
+        }
+        finally
+        {
+            DestroyWindow(window);
+        }
+    }
+
+    [Fact]
     public void TheProbeDescribesThisMachine()
     {
         // Runs everywhere, including on a headless agent: either way the probe has to come back
@@ -387,6 +436,30 @@ public class Direct3DDewarpTests
         reason = Unavailable.Value;
         return reason is not null;
     }
+
+    /// <summary>
+    /// An unmapped top-level window to hang a swap chain off. Hidden rather than shown, so the
+    /// test needs no message pump and disturbs nothing on the desktop: presenting to an occluded
+    /// window is allowed and the back buffer is still drawn, which is all this checks.
+    /// </summary>
+    private static IntPtr CreateHiddenWindow()
+    {
+        const int wsOverlapped = 0x00000000;
+        IntPtr window = CreateWindowEx(0, "static", "DVRTool dewarp test", wsOverlapped,
+            0, 0, 640, 480, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        Assert.NotEqual(IntPtr.Zero, window);
+        return window;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet =
+        System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowEx(
+        int exStyle, string className, string? windowName, int style,
+        int x, int y, int width, int height,
+        IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyWindow(IntPtr window);
 
     private static DewarpRenderRequest Request(int source, ViewOrientation orientation,
         double fov, int width, int height, DewarpViewMode mode = DewarpViewMode.Rectilinear) =>
