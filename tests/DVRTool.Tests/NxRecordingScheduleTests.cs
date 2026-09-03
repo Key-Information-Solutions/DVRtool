@@ -38,14 +38,14 @@ public class NxRecordingScheduleTests
             .Select(d => Cell(d, 0, 86_400, "metadataAndLowQuality", "motion")));
         var schedule = ScheduleOf($$"""{"isEnabled": true, "tasks": [{{cells}}]}""");
 
-        Assert.Equal("Motion + low-res always", schedule.Summary);
+        Assert.Equal("Motion & low-res always", schedule.Summary);
         Assert.True(schedule.IsEventOnly);
         Assert.False(schedule.IsMixed);
         Assert.Equal(7, schedule.RecordingSpans.Count);
         Assert.All(schedule.RecordingSpans, s => Assert.Equal(
             RecordingTrigger.Motion | RecordingTrigger.LowResContinuous, s.Triggers));
-        Assert.Equal(["Mon–Sun  00:00–24:00 Motion + low-res always"], schedule.DescribeWeek());
-        Assert.Equal("Motion + low-res always", schedule.DescribeNow(new DateTime(2026, 9, 2, 9, 0, 0)));
+        Assert.Equal(["Mon–Sun  00:00–24:00 Motion & low-res always"], schedule.DescribeWeek());
+        Assert.Equal("Motion & low-res always", schedule.DescribeNow(new DateTime(2026, 9, 2, 9, 0, 0)));
     }
 
     [Fact]
@@ -61,12 +61,15 @@ public class NxRecordingScheduleTests
         var schedule = ScheduleOf(
             $$"""{"isEnabled": true, "tasks": [{{string.Join(",", weekdays.Concat(weekend))}}]}""");
 
-        Assert.Equal("Motion + low-res always 70h, Continuous 50h, Motion | Objects 48h", schedule.Summary);
+        Assert.Equal("Motion & low-res always* + Continuous* + Motion | Objects*", schedule.Summary);
+        Assert.Equal("Motion & low-res always 70 h/wk, Continuous 50 h/wk, Motion | Objects 48 h/wk",
+            schedule.HoursText);
+        Assert.False(schedule.HasDeadTime);
         Assert.True(schedule.IsMixed);
         Assert.False(schedule.IsEventOnly);
         Assert.Equal(
         [
-            "Mon–Fri  00:00–08:00 Motion + low-res always; 08:00–18:00 Continuous; 18:00–24:00 Motion + low-res always",
+            "Mon–Fri  00:00–08:00 Motion & low-res always; 08:00–18:00 Continuous; 18:00–24:00 Motion & low-res always",
             "Sat–Sun  00:00–24:00 Motion | Objects",
         ], schedule.DescribeWeek());
 
@@ -95,7 +98,8 @@ public class NxRecordingScheduleTests
               {{Cell(2, 43_200, 86_400, "always")}}
             ]}
             """);
-        Assert.Equal("Continuous (12 h/wk)", schedule.Summary);
+        Assert.Equal("Continuous*", schedule.Summary);
+        Assert.Equal("Continuous 12 h/wk; nothing records for 156 h/wk", schedule.HoursText);
         Assert.Single(schedule.RecordingSpans);
         Assert.Equal(DayOfWeek.Tuesday, schedule.RecordingSpans[0].Day);
 
@@ -111,8 +115,8 @@ public class NxRecordingScheduleTests
     [InlineData("metadataOnly", "motion|objects", "Motion | Objects", RecordingTrigger.Motion | RecordingTrigger.Analytics)]
     [InlineData("metadataOnly", "none", "Motion", RecordingTrigger.Motion)]
     [InlineData("RT_MotionOnly", "", "Motion", RecordingTrigger.Motion)]
-    [InlineData("RT_MotionAndLowQuality", "", "Motion + low-res always", RecordingTrigger.Motion | RecordingTrigger.LowResContinuous)]
-    [InlineData("metadataAndLowQuality", "objects", "Objects + low-res always", RecordingTrigger.Analytics | RecordingTrigger.LowResContinuous)]
+    [InlineData("RT_MotionAndLowQuality", "", "Motion & low-res always", RecordingTrigger.Motion | RecordingTrigger.LowResContinuous)]
+    [InlineData("metadataAndLowQuality", "objects", "Objects & low-res always", RecordingTrigger.Analytics | RecordingTrigger.LowResContinuous)]
     public void CellTypes_ReadAsTheDwClientNamesThem(string type, string metadata, string mode,
         RecordingTrigger triggers)
     {

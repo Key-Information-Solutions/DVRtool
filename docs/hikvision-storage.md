@@ -157,11 +157,89 @@ a bitrate change is reversible from the same tab, and it still re-verifies devic
 identity on a fresh client (`DeviceIdentityGuard.Ensure`) and confirms via dialog
 before the first PUT.
 
+## Recording-mode notation (all vendors)
+
+**Established 2026-09-03.** `RecordingSchedule.Summary` is the one string the Recording column,
+`retention`'s RECORDING column and `storage schedule` all print, and it uses the same three
+marks on Hikvision, Dahua and Nx (`RecordingSchedule.Notation` is the legend, printed under each
+of those tables so it never has to be remembered):
+
+| Mark | Means | Example |
+| --- | --- | --- |
+| `\|` | triggers sharing one span | `Motion \| Alarm` — one Hikvision `ALARMORMOTION` action |
+| `+` | modes splitting the week | `Continuous* + Motion*` |
+| `*` | **that mode does not run the whole week** | `Continuous*` |
+
+The star is the point of the whole scheme. A fleet is normally 24/7, so the interesting camera
+is the one that is *nearly* normal — set to continuous like the others, with a hole in its
+week — and the previous wording ("Continuous (50 h/wk)", "Motion 118h, Continuous 50h") buried
+that in arithmetic. `Continuous` now means 24/7 and nothing else does. It is a mark rather than
+more words because **"Continuous + Motion" is a plausible-looking mode name in its own right**
+(newer firmware does mix types per span), and an operator must never have to work out which
+reading is meant; with the stars, `Continuous* + Motion*` cannot be read as a single mode.
+
+- Starring is per mode, decided by the **union** of that mode's own spans, not their sum: a
+  recorder that writes one day as two adjacent entries still reads `Continuous`, and one that
+  answers with overlapping entries cannot inflate its way past 168 h and lose the star.
+- Because it is per mode, every mode in a mix is starred — a week split between continuous and
+  motion has no mode that runs all week, even though *something* records at every hour.
+- "Nothing records at all" is therefore a **separate** question: `HasDeadTime` /
+  `DeadTime`, surfaced as "nothing records for 6 h/wk" in `HoursText` (the GUI's Recording
+  tooltip, and a line under each camera in `storage schedule`) and counted in both front ends'
+  summaries. Dead air is footage nobody has; a mode boundary is not.
+- The hours did not disappear, they moved: `HoursText` per camera, `DescribeWeek` for the week
+  day by day.
+- Nx's combined cell is labelled **"Motion & low-res always"**, not "+ low-res always" — a mode
+  name carrying its own `+` would make the mix separator unreadable.
+
+Live on the lab recorder 2026-09-03: 9/9 `Continuous`, no stars — the ordinary case reads as ordinary.
+
 ## The planner
 
 `StorageEstimator.PlanUniform` (Core, pure math, no I/O): required total kbps =
-capacity bits ÷ target seconds; split evenly; snap down to 32 kbps steps; clamp each
-camera to its writable range (`/capabilities` min/max, defaulting 32–16384); then
-**re-estimate from the clamped sum** so the reported days are what the plan actually
-achieves. When camera minimums push the total over budget the plan says plainly that
-the target is missed rather than quietly promising it.
+capacity bits ÷ target seconds; take off the fixed part (an Nx secondary stream) and the
+**pinned** cameras; split what is left evenly across the cameras the planner is free to decide
+for; snap down to 32 kbps steps; clamp each camera to its writable range (`/capabilities`
+min/max, defaulting 32–16384); then **re-estimate from the clamped sum** so the reported days
+are what the plan actually achieves. When camera minimums or pinned rates push the total over
+budget the plan says plainly that the target is missed rather than quietly promising it.
+
+### Pinned cameras
+
+**Added 2026-09-03**, live-verified on the lab recorder the same day. A uniform plan is the wrong answer
+for a site where one camera watches a licence plate and another was set to 8 Mbps because an
+insurer asked — so `ChannelPinStore` (`ChannelPins.cs` in Core,
+`%APPDATA%\DVRTool\channel-pins.json`, keyed by `host:port` beside `pins.json` and
+`identities.json`) records the cameras the planner may not decide for. GUI: select rows in the
+Storage tab and **Pin** / **Unpin** / **Clear all pins**, with a Pin column and the pin summary
+under the planner. CLI: `dvrtool storage pin [--channel n [--kbps k] [--reason text]] [--unpin]
+[--clear]`, plus `plan --ignore-pins` and `set --pin`.
+
+- A pin either **names a rate** (held, and written if the camera has drifted off it) or is
+  **"keep current"** (`kbps: null`, resolved against what the device reports at plan time).
+  Two different promises: the number survives someone changing the camera by hand.
+- Pinned rates come off the budget **before** the split, exactly like Nx secondary streams, and
+  a pin above what the camera accepts is clamped and flagged — only what the camera will really
+  record is spent. Live: pinning Front Door at 16,384 took the other eight cameras from 3,904
+  to 2,368 kbps and still made 30.0 days.
+- A pin is a promise about a **camera**, but it can only be stored against a channel number —
+  and on Nx a channel number is positional (the client numbers the camera list sorted by name),
+  so adding a camera shifts every number after it. The camera's **name** is therefore recorded
+  with the pin and checked: a channel now answering to a different name is **reported, not
+  applied**. A rename costs one re-pin; a renumber would otherwise cost a retention commitment,
+  discovered months later. Either name unknown (a recorder that will not list its channels)
+  skips the check rather than guessing.
+- The device's **serial** is recorded too, and pins recorded against another serial at the same
+  address are carried but never applied ("clear them if the recorder was replaced").
+- `BitratePlan.MissReason` names the pins **before** "camera minimums": an operator reading
+  "minimums keep the total up" on a system they over-pinned themselves would go price disks
+  for their own decision. Live at `--days 200`: "the 1 pinned camera(s) alone want 16,384 kbps,
+  and 200.0 days needs the whole system under 5,299 kbps — the 8 unpinned camera(s) were
+  floored at 32 kbps and it still does not fit."
+- Failures here are **loud**, the opposite of the identity store's write policy: an unreadable
+  or corrupt pin file propagates (`InvalidDataException` naming the file) and the planner
+  refuses, and a save error is reported instead of swallowed. Silently reporting "nothing is
+  pinned" would let the next plan overwrite every pinned camera — the one outcome a pin exists
+  to prevent. `--ignore-pins` is a dry-run view for the same reason and refuses `--force`.
+- Pinning writes nothing to the recorder, and changing pins discards any previewed plan (it was
+  costed against the old ones).

@@ -131,8 +131,11 @@ public class DahuaRecordingScheduleTests
         var ch2 = (await client.GetMainStreamsAsync())[1];
         var schedule = ch2.Schedule!;
 
-        // Motion: 2 × 24 h at the weekend + 5 × 14 h on weekdays; Continuous: 5 × 10 h.
-        Assert.Equal("Motion 118h, Continuous 50h", ch2.RecordingText);
+        // Motion: 2 × 24 h at the weekend + 5 × 14 h on weekdays; Continuous: 5 × 10 h. Both
+        // starred: neither runs the whole week, though between them they cover it.
+        Assert.Equal("Motion* + Continuous*", ch2.RecordingText);
+        Assert.Equal("Motion 118 h/wk, Continuous 50 h/wk", schedule.HoursText);
+        Assert.False(schedule.HasDeadTime);
         Assert.True(schedule.IsMixed);
         Assert.False(schedule.IsEventOnly);
         Assert.Equal(

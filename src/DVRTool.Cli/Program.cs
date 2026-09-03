@@ -1042,7 +1042,13 @@ static Dictionary<string, string> ParseOptions(string[] args)
     // Flags without a value (or followed by another --flag) are stored as "".
     // --remux is deliberately absent: it takes an optional container name, and bare
     // "--remux" still lands here as "" via the lookahead below.
-    string[] boolFlags = ["with-creds", "tls", "force", "trust-new-device", "dry-run"];
+    string[] boolFlags =
+    [
+        "with-creds", "tls", "force", "trust-new-device", "dry-run",
+        // `storage pin` / `storage plan` / `storage set`: valueless by design, and listed
+        // here so a following bare word is reported as unexpected rather than swallowed.
+        "pin", "unpin", "clear", "ignore-pins",
+    ];
     // Flags that may be given more than once (e.g. `access onboard --group A --group B`).
     // Repeats accumulate, joined by an ASCII unit separator the caller splits back out; a
     // plain dictionary would otherwise keep only the last one.

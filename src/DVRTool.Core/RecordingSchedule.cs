@@ -56,7 +56,7 @@ public enum RecordingState
 /// <param name="End">Offset from that day's midnight, exclusive — 24:00 is the end of the day.</param>
 /// <param name="Mode">
 /// The recording type in the recorder's own words, normalized for display: "Continuous",
-/// "Motion", "Motion | Alarm", "Motion + low-res always", …
+/// "Motion", "Motion | Alarm", "Motion & low-res always", …
 /// </param>
 /// <param name="Triggers">The same, classified.</param>
 public sealed record RecordingSpan(
@@ -73,12 +73,40 @@ public sealed record RecordingSpan(
 /// Nx "never" cell, a Dahua section with mask 0) is simply absent.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The vendor modules build these; everything here is presentation and pure math. Two
 /// readings matter to the retention report: <see cref="Summary"/> is the "Recording" column
-/// ("Continuous", "Motion", "Motion + low-res always", or the mix across the week with hours
-/// per mode), and <see cref="IsEventOnly"/> marks the cameras whose worst-case estimate is
-/// pessimistic on purpose — they only record when something happens, while the estimate
-/// assumes they record around the clock.
+/// ("Continuous", "Continuous*", "Continuous* + Motion*"), and <see cref="IsEventOnly"/>
+/// marks the cameras whose worst-case estimate is pessimistic on purpose — they only record
+/// when something happens, while the estimate assumes they record around the clock.
+/// </para>
+/// <para>
+/// One notation is used for every vendor, because the interesting question on a fleet is
+/// "which camera is not like the others" and the answer has to read the same on Hikvision,
+/// Dahua and Nx (<see cref="Notation"/>):
+/// </para>
+/// <list type="bullet">
+///   <item><description>
+///     <c>|</c> joins triggers that share one span — Hikvision's "Motion | Alarm" is one
+///     schedule entry that two things can start.
+///   </description></item>
+///   <item><description>
+///     <c>+</c> joins modes that split the week — "Continuous* + Motion*" is continuous for
+///     part of the week and motion for another part.
+///   </description></item>
+///   <item><description>
+///     <c>*</c> marks a mode that does <em>not</em> run the whole week. The fleet is normally
+///     24/7, so the star is the whole point: "Continuous" is the camera that is set the usual
+///     way, "Continuous*" is the one with a gap in it. It is deliberately a marker rather than
+///     more words, because "Continuous + Motion" is itself a plausible-looking mode name and
+///     an operator should never have to guess which reading is meant.
+///   </description></item>
+/// </list>
+/// <para>
+/// The hours behind the stars are one call away and never crowd the column:
+/// <see cref="HoursText"/> is the per-mode weekly total (and the dead air, when there is
+/// any), and <see cref="DescribeWeek"/> lays the week out day by day.
+/// </para>
 /// </remarks>
 public sealed record RecordingSchedule(RecordingState State, IReadOnlyList<RecordingSpan> Spans)
 {
@@ -117,8 +145,36 @@ public sealed record RecordingSchedule(RecordingState State, IReadOnlyList<Recor
         RecordingSpans is { Count: > 0 } spans &&
         spans.All(s => !s.Triggers.HasFlag(RecordingTrigger.Continuous));
 
-    /// <summary>More than one mode across the week, so the summary is a mix with hours.</summary>
+    /// <summary>More than one mode across the week, so the summary joins them with "+".</summary>
     public bool IsMixed => TimePerMode.Count > 1;
+
+    /// <summary>
+    /// Recording time over the week counted once — the union of the spans, so a vendor that
+    /// writes overlapping entries cannot inflate it past 168 hours the way summing would.
+    /// </summary>
+    public TimeSpan CoveredTime => State switch
+    {
+        RecordingState.Off => TimeSpan.Zero,
+        RecordingState.ManualContinuous => FullWeek,
+        _ => Union(RecordingSpans),
+    };
+
+    /// <summary>Week time when this camera records nothing at all.</summary>
+    public TimeSpan DeadTime
+    {
+        get
+        {
+            var covered = CoveredTime;
+            return covered >= FullWeek ? TimeSpan.Zero : FullWeek - covered;
+        }
+    }
+
+    /// <summary>
+    /// True when there are hours in the week that record nothing at all — as opposed to hours
+    /// another mode covers. This is the reading that matters to retention: dead air is footage
+    /// nobody has, while a week split between continuous and motion is still watched all week.
+    /// </summary>
+    public bool HasDeadTime => RecordsAnything && DeadTime > OneMinute;
 
     /// <summary>Scheduled time per mode over the week, most time first (ties keep schedule order).</summary>
     public IReadOnlyList<(string Mode, TimeSpan Time)> TimePerMode
@@ -144,10 +200,11 @@ public sealed record RecordingSchedule(RecordingState State, IReadOnlyList<Recor
     }
 
     /// <summary>
-    /// The "Recording" column: "Off", "Continuous (manual)", one mode when the whole week
-    /// records that way ("Motion"), the mode with its weekly hours when only part of the week
-    /// records ("Continuous (50 h/wk)"), or the mix, most time first ("Continuous 50h,
-    /// Motion 118h").
+    /// The "Recording" column: "Off", "Continuous (manual)", the mode when it runs the whole
+    /// week ("Motion"), the mode starred when it does not ("Continuous*"), or the week's modes
+    /// joined most-time-first and each starred ("Continuous* + Motion*"). See the type remarks
+    /// for why a star carries this rather than words, and <see cref="Notation"/> for the
+    /// legend to print under a table of these.
     /// </summary>
     public string Summary
     {
@@ -163,16 +220,57 @@ public sealed record RecordingSchedule(RecordingState State, IReadOnlyList<Recor
             var modes = TimePerMode;
             if (modes.Count == 0)
                 return "Off (nothing scheduled)";
-            if (modes.Count == 1)
-            {
-                var (mode, time) = modes[0];
-                return time >= FullWeek - TimeSpan.FromMinutes(1)
-                    ? mode
-                    : $"{mode} ({FormatHours(time)} h/wk)";
-            }
-            string text = string.Join(", ", modes.Take(3).Select(m => $"{m.Mode} {FormatHours(m.Time)}h"));
-            return modes.Count > 3 ? text + ", …" : text;
+            string text = string.Join(" + ", modes.Take(3).Select(m => Star(m.Mode)));
+            return modes.Count > 3 ? text + " + …" : text;
         }
+    }
+
+    /// <summary>
+    /// The legend for <see cref="Summary"/>, printed once under a table of them. It lives here
+    /// so both front ends explain the notation in the same words.
+    /// </summary>
+    public const string Notation =
+        "RECORDING: \"*\" marks a mode that does not run the whole week (another mode covers " +
+        "the rest, or nothing does); \"+\" joins modes that split the week; \"|\" joins triggers " +
+        "that share one span. So \"Continuous\" is 24/7 and \"Continuous*\" has a gap in it.";
+
+    /// <summary>
+    /// What the stars are hiding: each mode's weekly hours, most time first, plus the dead air
+    /// when the week is not fully covered — "Continuous 50 h/wk, Motion 112 h/wk; nothing
+    /// records for 6 h/wk".
+    /// </summary>
+    public string HoursText
+    {
+        get
+        {
+            switch (State)
+            {
+                case RecordingState.Off:
+                    return "Recording is switched off.";
+                case RecordingState.ManualContinuous:
+                    return "Manual continuous recording, the whole week.";
+            }
+            var modes = TimePerMode;
+            if (modes.Count == 0)
+                return "Nothing is scheduled.";
+            string text = string.Join(", ", modes.Select(m => $"{m.Mode} {FormatHours(m.Time)} h/wk"));
+            return HasDeadTime
+                ? $"{text}; nothing records for {FormatHours(DeadTime)} h/wk"
+                : text;
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="mode"/> with a star unless its own spans cover the whole week. The
+    /// union decides, not the sum: two overlapping vendor entries for one mode are still only
+    /// the hours they span.
+    /// </summary>
+    private string Star(string mode)
+    {
+        var own = RecordingSpans
+            .Where(s => string.Equals(s.Mode, mode, StringComparison.Ordinal))
+            .ToList();
+        return Union(own) >= FullWeek - OneMinute ? mode : mode + "*";
     }
 
     /// <summary>The span in effect at a local wall-clock moment, or null when nothing records then.</summary>
@@ -313,6 +411,50 @@ public sealed record RecordingSchedule(RecordingState State, IReadOnlyList<Recor
     public static string FormatClock(TimeSpan time) => time >= EndOfDay
         ? "24:00"
         : $"{(int)time.TotalHours:00}:{time.Minutes:00}";
+
+    /// <summary>A minute of slack, so a schedule written to 23:59:59 still reads as the whole week.</summary>
+    private static readonly TimeSpan OneMinute = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// How much of the week a set of spans covers, counting overlaps once: they are laid on
+    /// one Monday-first timeline and merged. That is what makes a day-by-day schedule
+    /// comparable with "168 hours" — and a sum is not, because nothing stops a recorder from
+    /// answering with two entries over the same hour.
+    /// </summary>
+    private static TimeSpan Union(IReadOnlyList<RecordingSpan> spans)
+    {
+        if (spans.Count == 0)
+            return TimeSpan.Zero;
+        var intervals = spans
+            .Select(s => (
+                Start: IndexFromMonday(s.Day) * 86_400L + (long)s.Start.TotalSeconds,
+                End: IndexFromMonday(s.Day) * 86_400L + (long)s.End.TotalSeconds))
+            .Where(i => i.End > i.Start)
+            .OrderBy(i => i.Start)
+            .ToList();
+
+        long total = 0, openFrom = 0, openTo = 0;
+        bool open = false;
+        foreach (var (start, end) in intervals)
+        {
+            if (!open)
+            {
+                (openFrom, openTo, open) = (start, end, true);
+            }
+            else if (start > openTo)
+            {
+                total += openTo - openFrom;
+                (openFrom, openTo) = (start, end);
+            }
+            else if (end > openTo)
+            {
+                openTo = end;
+            }
+        }
+        if (open)
+            total += openTo - openFrom;
+        return TimeSpan.FromSeconds(total);
+    }
 
     private static string FormatHours(TimeSpan time) =>
         time.TotalHours.ToString("0.#", CultureInfo.InvariantCulture);

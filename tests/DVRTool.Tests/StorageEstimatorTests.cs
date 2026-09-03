@@ -166,6 +166,158 @@ public class StorageEstimatorTests
         Assert.False(plan.MeetsTarget);
     }
 
+    // ----- pinned cameras -----
+
+    [Fact]
+    public void PlanUniform_PinnedCameras_AreSpentFirst_AndTheRestSplitWhatIsLeft()
+    {
+        // 10 TB for 30 days is a ~30,864 kbps budget. One camera is pinned at 12,000, so the
+        // other nine share ~18,864 → 2,096 each → snapped to 2,080. Without the pin they
+        // would each have had 3,072.
+        var cams = Enumerable.Range(1, 10)
+            .Select(ch => new PlanCamera(ch, $"cam{ch}", 5120, 32, 16384,
+                PinnedKbps: ch == 1 ? 12_000 : null))
+            .ToList();
+
+        var plan = StorageEstimator.PlanUniform(10_000_000, 30, cams);
+
+        Assert.Equal(2080, plan.UniformKbps);
+        Assert.Equal(12_000, plan.Cameras[0].PlannedKbps);
+        Assert.True(plan.Cameras[0].Pinned);
+        Assert.All(plan.Cameras.Skip(1), c => Assert.Equal(2080, c.PlannedKbps));
+        Assert.All(plan.Cameras.Skip(1), c => Assert.False(c.Pinned));
+        Assert.Equal(1, plan.PinnedCount);
+        Assert.Equal(9, plan.FreeCount);
+        Assert.False(plan.AllPinned);
+        Assert.Equal(12_000, plan.PinnedTotalKbps);
+        Assert.Equal(12_000 + 9 * 2080, plan.PlannedTotalKbps);
+        Assert.True(plan.MeetsTarget, $"estimated {plan.EstimatedDays}");
+        Assert.Null(plan.MissReason);
+    }
+
+    [Fact]
+    public void PlanUniform_PinnedAtItsCurrentRate_IsNotAWrite_ButPinningAnotherRateIs()
+    {
+        var cams = new List<PlanCamera>
+        {
+            new(1, "held", 4096, 32, 16384, PinnedKbps: 4096),  // "keep what it reads"
+            new(2, "moved", 4096, 32, 16384, PinnedKbps: 8192),  // an instruction
+            new(3, "free", 4096, 32, 16384),
+        };
+
+        var plan = StorageEstimator.PlanUniform(10_000_000, 30, cams);
+
+        Assert.False(plan.Cameras[0].Changes);
+        Assert.True(plan.Cameras[1].Changes);
+        Assert.True(plan.Cameras[1].Pinned);
+    }
+
+    [Fact]
+    public void PlanUniform_PinAboveWhatTheCameraAccepts_IsClampedAndFlagged()
+    {
+        var cams = new List<PlanCamera>
+        {
+            new(1, "legacy", 2048, 512, 2048, PinnedKbps: 9000),
+            new(2, "free", 4096, 32, 16384),
+        };
+
+        var plan = StorageEstimator.PlanUniform(10_000_000, 30, cams);
+
+        Assert.Equal(2048, plan.Cameras[0].PlannedKbps);
+        Assert.True(plan.Cameras[0].Clamped);
+        Assert.True(plan.Cameras[0].Pinned);
+        // Only what the camera will really record is spent from the budget.
+        Assert.Equal(2048, plan.PinnedTotalKbps);
+    }
+
+    [Fact]
+    public void PlanUniform_EveryCameraPinned_HasNoUniformRate_AndSaysSoWhenItMisses()
+    {
+        var cams = Enumerable.Range(1, 4)
+            .Select(ch => new PlanCamera(ch, $"cam{ch}", 8192, 32, 16384, PinnedKbps: 8192))
+            .ToList();
+
+        // 1 TB for 60 days is a ~1,543 kbps budget; the pins ask for 32,768.
+        var plan = StorageEstimator.PlanUniform(1_000_000, 60, cams);
+
+        Assert.Equal(0, plan.UniformKbps);      // nothing was left to the planner
+        Assert.True(plan.AllPinned);
+        Assert.Equal(0, plan.FreeCount);
+        Assert.All(plan.Cameras, c => Assert.Equal(8192, c.PlannedKbps));
+        Assert.False(plan.MeetsTarget);
+        Assert.Contains("every camera is pinned", plan.MissReason);
+        Assert.Contains("Unpin a camera", plan.MissReason);
+    }
+
+    [Fact]
+    public void PlanUniform_PinsAloneOverBudget_BlamesThePins_NotCameraMinimums()
+    {
+        // Two cameras pinned at 8 Mbps against a budget of ~1,543 kbps: the eight free
+        // cameras end up on the floor and it still does not fit. An operator reading
+        // "camera minimums keep the total up" here would go price disks for a decision they
+        // made themselves, which is why the pins are named first.
+        var cams = Enumerable.Range(1, 10)
+            .Select(ch => new PlanCamera(ch, $"cam{ch}", 4096, 32, 16384,
+                PinnedKbps: ch <= 2 ? 8192 : null))
+            .ToList();
+
+        var plan = StorageEstimator.PlanUniform(1_000_000, 60, cams);
+
+        Assert.All(plan.Cameras.Skip(2), c => Assert.Equal(32, c.PlannedKbps));
+        Assert.False(plan.MeetsTarget);
+        Assert.Contains("2 pinned camera(s) alone want 16,384 kbps", plan.MissReason);
+        Assert.Contains("floored at 32 kbps", plan.MissReason);
+        Assert.DoesNotContain("camera minimums", plan.MissReason);
+    }
+
+    [Fact]
+    public void PlanUniform_MissWithNoPins_StillBlamesCameraMinimums()
+    {
+        var cams = new List<PlanCamera>
+        {
+            new(1, "wide", 8192, 32, 16384),
+            new(2, "legacy", 2048, 1024, 2048),
+        };
+        var plan = StorageEstimator.PlanUniform(2_000_000, 365, cams);
+
+        Assert.Equal(0, plan.PinnedCount);
+        Assert.Contains("camera minimums", plan.MissReason);
+        Assert.Contains("More disk, fewer cameras", plan.MissReason);
+    }
+
+    [Fact]
+    public void PlanUniform_PinsAndSecondaryStreams_BothComeOffTheBudgetBeforeTheSplit()
+    {
+        // An Nx-shaped system: every camera archives a 500 kbps secondary stream, and one
+        // camera is pinned at 6,000. 10 TB/30 days ≈ 30,864 → less 2,000 fixed, less 6,000
+        // pinned → 22,864 over three cameras → 7,621 → snapped to 7,616.
+        var cams = Enumerable.Range(1, 4)
+            .Select(ch => new PlanCamera(ch, $"cam{ch}", 8000, 192, 65536, FixedKbps: 500,
+                PinnedKbps: ch == 1 ? 6000 : null))
+            .ToList();
+
+        var plan = StorageEstimator.PlanUniform(10_000_000, 30, cams);
+
+        Assert.Equal(7616, plan.UniformKbps);
+        Assert.Equal(2000, plan.FixedTotalKbps);
+        Assert.Equal(6000, plan.PinnedTotalKbps);
+        Assert.Equal(6000 + 3 * 7616 + 2000, plan.PlannedTotalKbps);
+        // A pinned camera keeps its own fixed part in the total, like every other camera.
+        Assert.Equal(500, plan.Cameras[0].FixedKbps);
+        Assert.True(plan.MeetsTarget, $"estimated {plan.EstimatedDays}");
+    }
+
+    [Fact]
+    public void PlanUniform_BudgetIsReported_SoAMissCanBeExplainedInKbps()
+    {
+        var cams = new List<PlanCamera> { new(1, "a", 4096, 32, 16384) };
+        var plan = StorageEstimator.PlanUniform(10_000_000, 30, cams);
+
+        Assert.Equal(StorageEstimator.RequiredTotalKbps(10_000_000, 30), plan.BudgetKbps);
+        Assert.Equal(0, plan.PinnedTotalKbps);
+        Assert.Equal(0, plan.FixedTotalKbps);
+    }
+
     [Fact]
     public void CameraStream_RecordedBitrate_AddsTheArchivedSecondaryStream()
     {

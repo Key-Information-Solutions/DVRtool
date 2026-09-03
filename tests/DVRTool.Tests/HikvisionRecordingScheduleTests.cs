@@ -158,7 +158,7 @@ public class HikvisionRecordingScheduleTests
     }
 
     [Fact]
-    public async Task MixedWeek_SumsHoursPerMode_AndNamesWhatIsInEffectNow()
+    public async Task MixedWeek_StarsEveryMode_AndNamesWhatIsInEffectNow()
     {
         using var client = new HikvisionClient(Conn, Server());
 
@@ -166,7 +166,9 @@ public class HikvisionRecordingScheduleTests
         var schedule = ch2.Schedule!;
 
         // Monday: 8 h "Motion | Alarm" (EDR), 16 h Continuous; six more days of Motion.
-        Assert.Equal("Motion 144h, Continuous 16h, Motion | Alarm 8h", ch2.RecordingText);
+        Assert.Equal("Motion* + Continuous* + Motion | Alarm*", ch2.RecordingText);
+        Assert.Equal("Motion 144 h/wk, Continuous 16 h/wk, Motion | Alarm 8 h/wk", schedule.HoursText);
+        Assert.False(schedule.HasDeadTime);
         Assert.True(schedule.IsMixed);
         Assert.False(schedule.IsEventOnly);
         Assert.Equal(

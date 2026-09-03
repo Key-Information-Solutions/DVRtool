@@ -22,8 +22,10 @@ internal static class StorageCommands
           dvrtool storage disks       [connection options]
           dvrtool storage retention   [--channel <n>] [connection options]
           dvrtool storage schedule    [--channel <n>] [connection options]
-          dvrtool storage plan --days <n> [--force] [connection options]
-          dvrtool storage set --channel <n> --kbps <k> [--force] [connection options]
+          dvrtool storage plan --days <n> [--ignore-pins] [--force] [connection options]
+          dvrtool storage set --channel <n> --kbps <k> [--pin] [--force] [connection options]
+          dvrtool storage pin         [--channel <n> [--kbps <k>] [--reason <text>]]
+                                      [--unpin] [--clear] [connection options]
 
         Subcommands:
           disks       Disk inventory: per-bay model/serial/status/capacity, work mode,
@@ -31,16 +33,26 @@ internal static class StorageCommands
           retention   Per-camera recording settings, recording mode and the oldest
                       footage still on disk — the "how many days are we actually
                       holding" report. --channel limits it to one camera.
-          schedule    Each camera's recording mode — continuous, motion, alarm, "motion +
+          schedule    Each camera's recording mode — continuous, motion, alarm, "motion &
                       low-res always" and the rest of the vendor's vocabulary — with the
                       week laid out day by day and what is in effect right now. Quick:
                       no footage searches. --channel limits it to one camera.
           plan        "We need X days": compute the uniform per-camera max bitrate that
-                      fits --days into the installed disks. DRY RUN by default — prints
-                      the per-camera before → after and what the plan actually achieves.
-                      --force applies it camera by camera, reading each value back.
+                      fits --days into the installed disks, working around the pinned
+                      cameras. DRY RUN by default — prints the per-camera before → after
+                      and what the plan actually achieves. --force applies it camera by
+                      camera, reading each value back. --ignore-pins plans as if nothing
+                      were pinned (a dry-run "what would it be without them").
           set         Set one camera's max recording bitrate. DRY RUN by default;
-                      --force writes it and reports what the device kept.
+                      --force writes it and reports what the device kept. --pin moves
+                      the camera's pin to the new rate at the same time.
+          pin         Cameras the planner may not decide for. With no options, lists this
+                      device's pins. --channel <n> pins it: --kbps <k> holds that exact
+                      rate, no --kbps holds whatever it is set to now; --reason records
+                      why. --unpin removes one channel's pin, --clear removes all of them.
+                      Pins are a local preference (%APPDATA%\DVRTool\channel-pins.json),
+                      per device and shared with the GUI; pinning writes nothing to the
+                      recorder.
 
         Estimates are worst-case on purpose: they assume every camera records at its
         configured maximum around the clock. VBR + smart codecs usually do better, so
@@ -84,7 +96,8 @@ internal static class StorageCommands
             "retention" => await RetentionAsync(client, storage, opts, ct),
             "schedule" => await ScheduleAsync(client, storage, opts, ct),
             "plan" => await PlanAsync(client, storage, opts, ct),
-            "set" => await SetAsync(storage, opts, ct),
+            "set" => await SetAsync(client, storage, opts, ct),
+            "pin" => await PinAsync(client, storage, opts, ct),
             _ => UnknownSubcommand(subcommand),
         };
     }
@@ -222,9 +235,12 @@ internal static class StorageCommands
                 "one; the totals below include it");
         if (streams.Any(s => s.Schedule is null))
             Console.WriteLine("? in RECORDING: the recorder did not answer its schedule endpoint");
-        if (streams.Any(s => s.Schedule?.IsMixed == true))
-            Console.WriteLine("RECORDING sums a schedule that mixes modes across the week; " +
-                "`dvrtool storage schedule` lays the week out");
+        if (streams.Any(s => s.Schedule is { State: RecordingState.Scheduled } sc && sc.RecordsAnything))
+            Console.WriteLine(RecordingSchedule.Notation);
+        int deadAir = streams.Count(s => s.Enabled && s.Schedule?.HasDeadTime == true);
+        if (deadAir > 0)
+            Console.WriteLine($"{deadAir} camera(s) have hours in the week when nothing records at " +
+                "all — not another mode, nothing. `dvrtool storage schedule` names them.");
 
         Console.WriteLine();
         Console.WriteLine($"Disks: {FormatTb(info.TotalCapacityMB)} across " +
@@ -299,14 +315,24 @@ internal static class StorageCommands
             string streamNote = !s.Enabled && schedule.RecordsAnything ? "   [stream disabled]" : "";
             Console.WriteLine($"ch{s.Channel,-3} {name,-22}  {schedule.Summary}   — now: " +
                               $"{schedule.DescribeNow(now)}{streamNote}");
+            if (schedule.RecordsAnything)
+                Console.WriteLine($"       {schedule.HoursText}");
             foreach (string line in schedule.DescribeWeek())
                 Console.WriteLine($"       {line}");
         }
 
         Console.WriteLine();
-        Console.WriteLine($"{streams.Count} camera(s): {continuous} continuous all week, {eventOnly} on " +
+        // "continuous" here means the mode, not the coverage: a camera set to continuous with a
+        // hole in its week is still in this bucket, and the star (and the dead-air line) is
+        // what tells them apart.
+        Console.WriteLine($"{streams.Count} camera(s): {continuous} continuous, {eventOnly} on " +
                           $"events only, {mixed} mixed across the week, {off} off" +
                           (unknown > 0 ? $", {unknown} unknown" : "") + ".");
+        Console.WriteLine(RecordingSchedule.Notation);
+        int deadAir = streams.Count(s => s.Schedule?.HasDeadTime == true);
+        if (deadAir > 0)
+            Console.WriteLine($"{deadAir} camera(s) have dead air — hours when nothing records at " +
+                              "all, listed above as \"nothing records for N h/wk\".");
         if (eventOnly + mixed > 0)
             Console.WriteLine("Retention estimates assume every camera records around the clock; " +
                               "cameras on events hold more than the estimate says.");
@@ -366,27 +392,59 @@ internal static class StorageCommands
                 FixedKbps: s.SecondaryRecordedKbps ?? 0));
         }
 
-        var plan = StorageEstimator.PlanUniform(info.TotalCapacityMB, days, cameras);
+        // The pinned cameras the planner must work around. --ignore-pins is a dry-run
+        // question ("what would this be without them"), so it refuses to write: applying a
+        // plan that ignores pins is exactly what pins exist to prevent.
+        bool ignorePins = opts.ContainsKey("ignore-pins");
+        var pins = ignorePins ? ChannelPinSet.Empty("") : PinsFor(client);
+        var input = pins.Apply(cameras);
+        foreach (string problem in input.Problems)
+            Console.Error.WriteLine($"warning: {problem}");
+        if (ignorePins && force)
+        {
+            Console.Error.WriteLine("error: --ignore-pins is a dry-run view; it cannot be " +
+                "combined with --force. Unpin what should change, then plan again.");
+            return 2;
+        }
+
+        var plan = StorageEstimator.PlanUniform(info.TotalCapacityMB, days, input.Cameras);
 
         Console.WriteLine($"Target: {days:F1} days on {FormatTb(info.TotalCapacityMB)} across " +
-                          $"{plan.Cameras.Count} camera(s) → {plan.UniformKbps} kbps per camera.");
+            $"{plan.Cameras.Count} camera(s)" +
+            (plan.AllPinned
+                ? " — every camera is pinned, so the plan is exactly what the pins ask for."
+                : plan.PinnedCount > 0
+                    ? $" → {plan.UniformKbps} kbps for the {plan.FreeCount} unpinned camera(s); " +
+                      $"{plan.PinnedCount} pinned camera(s) keep their own rate."
+                    : $" → {plan.UniformKbps} kbps per camera."));
+        if (ignorePins)
+            Console.WriteLine("(--ignore-pins: planned as if nothing were pinned.)");
         Console.WriteLine();
         Console.WriteLine($"{"CH",3}  {"NAME",-22}  {"CURRENT",8}  {"PLANNED",8}  NOTE");
         foreach (var cam in plan.Cameras)
         {
-            string note = cam.Clamped
-                ? "clamped to the camera's writable range"
-                : cam.Changes ? "" : "already there";
+            // A pinned camera's note leads with the pin: it is the reason the number is what
+            // it is, and the reason the rest of the table looks tighter than it otherwise would.
+            string note = (cam.Pinned, cam.Clamped, cam.Changes) switch
+            {
+                (true, true, _) => "PINNED — clamped to the camera's writable range",
+                (true, false, true) => "PINNED — the pin moves it there",
+                (true, false, false) => "PINNED — held where it is",
+                (false, true, _) => "clamped to the camera's writable range",
+                (false, false, false) => "already there",
+                _ => "",
+            };
             Console.WriteLine($"{cam.Channel,3}  {Fit(cam.Name, 22),-22}  " +
                 $"{cam.CurrentKbps,8}  {cam.PlannedKbps,8}  {note}");
         }
         Console.WriteLine();
         Console.WriteLine($"Planned total: {plan.PlannedTotalKbps:N0} kbps → estimated " +
-                          $"{plan.EstimatedDays:F1} days (worst-case).");
-        if (!plan.MeetsTarget)
-            Console.Error.WriteLine(
-                $"warning: the plan does NOT reach {days:F1} days — camera minimums keep the " +
-                "total above the budget. More disk, fewer cameras, or a lower target.");
+                          $"{plan.EstimatedDays:F1} days (worst-case)" +
+                          (plan.PinnedCount > 0
+                              ? $", of which {plan.PinnedTotalKbps:N0} kbps is pinned."
+                              : "."));
+        if (plan.MissReason is { } missed)
+            Console.Error.WriteLine($"warning: the plan does NOT reach {days:F1} days — {missed}");
 
         var toWrite = plan.Cameras.Where(c => c.Changes).ToList();
         if (toWrite.Count == 0)
@@ -446,7 +504,7 @@ internal static class StorageCommands
 
     // ----- set -----
 
-    private static async Task<int> SetAsync(IStorageClient storage,
+    private static async Task<int> SetAsync(INvrClient client, IStorageClient storage,
         Dictionary<string, string> opts, CancellationToken ct)
     {
         if (!opts.TryGetValue("channel", out var chText) ||
@@ -457,6 +515,7 @@ internal static class StorageCommands
             throw new ArgumentException("missing or invalid --kbps");
 
         bool force = opts.ContainsKey("force") && !opts.ContainsKey("dry-run");
+        bool movePin = opts.ContainsKey("pin");
 
         var current = (await storage.GetMainStreamsAsync(ct))
             .FirstOrDefault(s => s.Channel == channel);
@@ -471,7 +530,18 @@ internal static class StorageCommands
                 $"writable range {range.MinKbps}–{range.MaxKbps}; the device may clamp or " +
                 "refuse it.");
 
-        Console.WriteLine($"ch{channel}: {current.CurrentDescription()} → {kbps} kbps");
+        // A hand-set rate on a pinned camera is not refused — it is the operator's own
+        // channel — but a pin that still names the old number will put it back at the next
+        // plan, and finding that out months later is the whole failure this warning exists for.
+        var pins = PinsFor(client);
+        var pin = pins.For(channel);
+        if (pin is not null && !movePin && pin.Kbps != kbps)
+            Console.Error.WriteLine($"warning: ch{channel} is pinned ({pin.Describe()}), so the " +
+                $"next `storage plan` will put it back. Add --pin to move the pin to {kbps} kbps, " +
+                $"or `storage pin --channel {channel} --unpin` to stop holding it.");
+
+        Console.WriteLine($"ch{channel}: {current.CurrentDescription()} → {kbps} kbps" +
+            (movePin ? " (and the pin moves with it)" : ""));
         if (!force)
         {
             Console.WriteLine("\nDRY RUN — nothing was written. Re-run with --force to apply.");
@@ -482,7 +552,154 @@ internal static class StorageCommands
         Console.WriteLine(actual == kbps
             ? $"written and verified by read-back: {actual} kbps."
             : $"written; the device kept {actual} kbps (asked {kbps}).");
+
+        if (movePin)
+        {
+            // The read-back value is what gets pinned, not what was asked for: pinning a rate
+            // the camera refuses would make every later plan report a change it cannot make.
+            var (address, serial) = PinKey(client);
+            string name = pin?.CameraName ?? await CameraNameAsync(client, channel, ct);
+            ChannelPinStore.Default.Pin(address, serial, new ChannelPin(channel, actual, name,
+                pin?.Reason ?? opts.GetValueOrDefault("reason"), DateTimeOffset.Now));
+            Console.WriteLine($"pinned ch{channel} at {actual} kbps — the planner will hold it there.");
+        }
         return 0;
+    }
+
+    // ----- pin -----
+
+    /// <summary>
+    /// <c>dvrtool storage pin</c>: the cameras the planner may not decide for. Local
+    /// preference only — nothing here talks to the recorder except to read a camera's name and
+    /// its current rate, which is what a "keep what it is now" pin has to be resolved against.
+    /// </summary>
+    private static async Task<int> PinAsync(INvrClient client, IStorageClient storage,
+        Dictionary<string, string> opts, CancellationToken ct)
+    {
+        var (address, serial) = PinKey(client);
+        var store = ChannelPinStore.Default;
+
+        if (opts.ContainsKey("clear"))
+        {
+            int cleared = store.Clear(address);
+            Console.WriteLine(cleared == 0
+                ? $"{address} had no pins."
+                : $"cleared {cleared} pin(s) for {address}; the planner may now decide for every camera.");
+            return 0;
+        }
+
+        int? channel = ChannelFilter(opts);
+        if (opts.ContainsKey("unpin"))
+        {
+            if (channel is not int toRemove)
+                throw new ArgumentException("--unpin needs --channel (or use --clear for all of them)");
+            Console.WriteLine(store.Unpin(address, toRemove)
+                ? $"unpinned ch{toRemove} — the planner may decide for it again."
+                : $"ch{toRemove} was not pinned; nothing changed.");
+            return 0;
+        }
+
+        if (channel is int ch)
+        {
+            var stream = (await storage.GetMainStreamsAsync(ct))
+                .FirstOrDefault(s => s.Channel == ch);
+            if (stream is null)
+            {
+                Console.Error.WriteLine($"error: channel {ch} has no main stream configured — " +
+                    "there is nothing to pin.");
+                return 1;
+            }
+
+            int? kbps = null;
+            if (opts.TryGetValue("kbps", out var kbpsText))
+            {
+                if (!int.TryParse(kbpsText, out int parsed) || parsed <= 0)
+                    throw new ArgumentException("invalid --kbps");
+                kbps = parsed;
+                var range = await storage.GetBitrateRangeAsync(ch, ct);
+                if (range is not null && (parsed < range.MinKbps || parsed > range.MaxKbps))
+                    Console.Error.WriteLine($"warning: {parsed} kbps is outside ch{ch}'s stated " +
+                        $"writable range {range.MinKbps}–{range.MaxKbps}; a plan will clamp the " +
+                        "pin to what the camera accepts.");
+            }
+            else if (stream.MaxBitrateKbps is null)
+            {
+                Console.Error.WriteLine($"error: ch{ch} does not report a current max bitrate, so " +
+                    "there is nothing to \"keep\" — pin an explicit rate with --kbps.");
+                return 1;
+            }
+
+            string name = await CameraNameAsync(client, ch, ct);
+            var pin = new ChannelPin(ch, kbps, name, opts.GetValueOrDefault("reason"),
+                DateTimeOffset.Now);
+            store.Pin(address, serial, pin);
+            Console.WriteLine($"pinned {pin.Describe()}" +
+                (kbps is null
+                    ? $" — currently {stream.MaxBitrateKbps} kbps, and the planner will hold " +
+                      "whatever it reads at plan time."
+                    : " — the planner will hold that rate and work around it."));
+            Console.WriteLine($"({store.FilePath})");
+            return 0;
+        }
+
+        // No options: list.
+        var pins = store.Get(address, serial);
+        if (pins.Count == 0)
+        {
+            Console.WriteLine($"{address} has no pinned cameras — the planner may decide for all " +
+                "of them. Pin one with `storage pin --channel <n> [--kbps <k>]`.");
+            return 0;
+        }
+        Console.WriteLine($"{pins.Count} pinned camera(s) on {address}:");
+        foreach (var p in pins.Pins)
+            Console.WriteLine($"  {p.Describe()}   pinned {p.PinnedAt:yyyy-MM-dd}");
+        Console.WriteLine($"({store.FilePath})");
+        if (pins.ForeignHardware)
+        {
+            Console.Error.WriteLine($"warning: these pins were recorded against serial " +
+                $"{pins.Serial}, which is not the device answering on {address} now. They will " +
+                "NOT be applied — clear them if the recorder was replaced.");
+            return 1;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// This device's pins, keyed the way every other per-device file is: <c>host:port</c>, with
+    /// the serial the identity check already pinned for that address as the corroboration that
+    /// the pins belong to the hardware now answering.
+    /// </summary>
+    private static ChannelPinSet PinsFor(INvrClient client)
+    {
+        var (address, serial) = PinKey(client);
+        return ChannelPinStore.Default.Get(address, serial);
+    }
+
+    private static (string Address, string? Serial) PinKey(INvrClient client)
+    {
+        string address = DeviceIdentityGuard.AddressOf(client.Connection);
+        // Program verified identity before any subcommand ran, so the store already holds this
+        // device's serial — no extra round trip, and nothing to get wrong locally.
+        return (address, DeviceIdentityStore.Default.Pinned(address)?.Serial);
+    }
+
+    /// <summary>
+    /// One camera's name, recorded with a pin so it can tell later whether it is still pointing
+    /// at the same camera. Names are enrichment: a recorder that will not list its channels
+    /// gets an empty name and the pin simply skips that check.
+    /// </summary>
+    private static async Task<string> CameraNameAsync(INvrClient client, int channel,
+        CancellationToken ct)
+    {
+        try
+        {
+            return (await client.GetChannelsAsync(ct))
+                .FirstOrDefault(c => c.Id == channel)?.Name ?? "";
+        }
+        catch (NvrException)
+        {
+            return "";
+        }
     }
 
     private static string CurrentDescription(this CameraStream s) =>

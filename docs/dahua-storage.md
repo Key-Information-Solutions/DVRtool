@@ -113,6 +113,10 @@ table is 375 KB for 128 channels.
   (the schedule is not consulted), 2 stop → "Off" (already excluded from the totals).
   `ModeExtra1` / `ModeExtra2` are the sub streams' modes (2 = stop on Site B) and are
   ignored, like the sub streams themselves.
+- How the summary is written — `|` for triggers sharing a span, `+` for modes splitting the
+  week, `*` for a mode that does not run the whole week — is the cross-vendor notation in
+  `hikvision-storage.md`. Site B's every-camera-all-week mask earns no star; a schedule with
+  a hole in it would read `Continuous | Motion | Alarm | MD&Alarm*`.
 
 ## The write path (`SetMaxBitrateAsync`)
 

@@ -136,8 +136,9 @@ shows a tiled floor through the calibration with no camera. Still missing: per-d
 persistence, circle detection, Quad in the GUI, hardware decode.
 
 **Storage / retention:** the GUI Storage tab (`MainWindow.Storage.cs`) and `dvrtool storage
-disks | retention | plan | set` cover disk inventory, per-camera oldest-footage/days-held, the
-worst-case retention estimate, and the "we need X days" bitrate planner — Hikvision and Dahua,
+disks | retention | schedule | plan | set | pin` cover disk inventory, per-camera
+oldest-footage/days-held, the worst-case retention estimate, and the "we need X days" bitrate
+planner with its pinned cameras — Hikvision and Dahua,
 via `IStorageClient` (`Storage.cs` in Core, `HikvisionClient.Storage.cs`,
 `DahuaClient.Storage.cs`; the estimator math is pure and in Core). Read
 `docs/hikvision-storage.md` before touching any of it — notably: capacity is
@@ -165,7 +166,26 @@ holiday][n]="mask hh:mm:ss-hh:mm:ss"`, bits 1 regular / 2 motion / 4 alarm / 8 c
 Nx from the schedule cells (`always` / `metadataOnly` / `metadataAndLowQuality` + `metadataTypes`,
 `dayOfWeek` 1 = Monday). A camera whose schedule is off or empty leaves the retention total;
 `IsEventOnly` cameras earn the "will hold more than the estimate says" caveat in both front ends
-(Site E: 13 of 14 on motion; Site D: 48 of 64).
+(Site E: 13 of 14 on motion; Site D: 48 of 64). **Notation** (2026-09-03, one scheme for
+every vendor, legend in `RecordingSchedule.Notation`): `|` joins triggers sharing one span, `+`
+joins modes splitting the week, and **`*` marks a mode that does not run the whole week** — so
+`Continuous` is 24/7, `Continuous*` has a gap, and `Continuous* + Motion*` is a mix (a mark, not
+words, because "Continuous + Motion" is itself a plausible mode name). Starring is **per mode
+off the union** of its spans, so overlapping vendor entries cannot inflate past 168 h; every
+mode in a mix is therefore starred, which makes "hours when *nothing* records" a separate
+question (`HasDeadTime`/`DeadTime`, reported by both front ends). The hours moved to
+`HoursText` (GUI Recording tooltip, a line per camera in `storage schedule`); Nx's combined
+cell is **"Motion & low-res always"** because a mode name may not carry a `+`. **Pinned
+cameras** (2026-09-03, live on the lab recorder): `ChannelPinStore` (`ChannelPins.cs`,
+`%APPDATA%\DVRTool\channel-pins.json`, keyed `host:port` like the cert/identity pins) holds the
+cameras the planner may not decide for — Pin/Unpin/Clear in the Storage tab, `storage pin` in
+the CLI (`plan --ignore-pins` refuses `--force`; `set --pin` moves a pin). A pin names a rate or
+says "keep current" (resolved at plan time); pinned rates come off the budget **before** the
+split, like Nx secondary streams. A pin records the camera's **name** and the device's
+**serial**, and a channel that now answers to a different name (Nx channel numbers are
+positional) or a different serial is **reported, not applied**. `BitratePlan.MissReason` blames
+the pins before "camera minimums", and an unreadable/corrupt pin file or a failed save is
+**loud** — planning refuses rather than treating "no pins" as a fact.
 
 **Dahua storage** (`docs/dahua-storage.md`, verified 2026-09-02 on Site B, a
 DH-NVR608H-128-4KS3/I): disks come from `storageDevice.cgi?action=getDeviceAllInfo` as

@@ -28,19 +28,24 @@ public class RecordingScheduleTests
     }
 
     [Fact]
-    public void Summary_OneModePartOfTheWeek_ShowsTheHours()
+    public void Summary_OneModePartOfTheWeek_IsStarred_AndTheHoursAreOneCallAway()
     {
         var schedule = new RecordingSchedule(RecordingState.Scheduled,
             Week.Take(5).Select(d => Span(d, 8, 18, "Continuous", RecordingTrigger.Continuous)).ToList());
 
-        Assert.Equal("Continuous (50 h/wk)", schedule.Summary);
+        // The whole point of the star: this recorder is set to continuous, like the rest of
+        // the fleet, but it is not recording 24/7 — and nothing else in the cell says so.
+        Assert.Equal("Continuous*", schedule.Summary);
+        Assert.Equal("Continuous 50 h/wk; nothing records for 118 h/wk", schedule.HoursText);
+        Assert.True(schedule.HasDeadTime);
+        Assert.Equal(TimeSpan.FromHours(50), schedule.CoveredTime);
         Assert.False(schedule.IsMixed);
         Assert.False(schedule.IsEventOnly);
         Assert.Equal("not recording", schedule.DescribeNow(new DateTime(2026, 9, 5, 12, 0, 0))); // Saturday
     }
 
     [Fact]
-    public void Summary_MixedWeek_ListsModesMostTimeFirst_HalfHoursKeepADecimal()
+    public void Summary_MixedWeek_JoinsModesWithPlus_EachStarred_MostTimeFirst()
     {
         var spans = new List<RecordingSpan>();
         foreach (var d in Week.Take(5))
@@ -55,10 +60,50 @@ public class RecordingScheduleTests
         spans.Add(Span(DayOfWeek.Sunday, 0, 24, "Motion | Alarm", RecordingTrigger.Motion | RecordingTrigger.Alarm));
         var schedule = new RecordingSchedule(RecordingState.Scheduled, spans);
 
-        Assert.Equal("Motion 72.5h, Motion | Alarm 48h, Continuous 47.5h", schedule.Summary);
+        Assert.Equal("Motion* + Motion | Alarm* + Continuous*", schedule.Summary);
+        // The week is fully covered even though no single mode covers it — that is exactly the
+        // difference the stars make readable, and why dead air is a separate question.
+        Assert.Equal(RecordingSchedule.FullWeek, schedule.CoveredTime);
+        Assert.False(schedule.HasDeadTime);
+        Assert.Equal("Motion 72.5 h/wk, Motion | Alarm 48 h/wk, Continuous 47.5 h/wk",
+            schedule.HoursText);
         Assert.True(schedule.IsMixed);
         Assert.Equal(3, schedule.TimePerMode.Count);
         Assert.Equal("Motion", schedule.TimePerMode[0].Mode);
+    }
+
+    [Fact]
+    public void Summary_ModeSplitAcrossTheWeekButCoveringAllOfIt_IsNotStarred()
+    {
+        // Two entries for the same mode that together are the whole week: it IS 24/7
+        // continuous, however the recorder chose to write it down.
+        var schedule = new RecordingSchedule(RecordingState.Scheduled,
+            Week.SelectMany(d => new[]
+            {
+                Span(d, 0, 9, "Continuous", RecordingTrigger.Continuous),
+                Span(d, 9, 24, "Continuous", RecordingTrigger.Continuous),
+            }).ToList());
+
+        Assert.Equal("Continuous", schedule.Summary);
+        Assert.False(schedule.HasDeadTime);
+    }
+
+    [Fact]
+    public void CoveredTime_CountsOverlappingSpansOnce()
+    {
+        // A recorder that answers with two entries over the same hours must not read as more
+        // than a week of coverage — summing would have said 240 hours and dropped the star.
+        var schedule = new RecordingSchedule(RecordingState.Scheduled,
+            Week.SelectMany(d => new[]
+            {
+                Span(d, 0, 10, "Motion", RecordingTrigger.Motion),
+                Span(d, 5, 20, "Motion", RecordingTrigger.Motion),
+            }).ToList());
+
+        Assert.Equal(TimeSpan.FromHours(140), schedule.CoveredTime);
+        Assert.Equal("Motion*", schedule.Summary);
+        Assert.True(schedule.HasDeadTime);
+        Assert.Equal(TimeSpan.FromHours(28), schedule.DeadTime);
     }
 
     [Fact]
@@ -72,7 +117,7 @@ public class RecordingScheduleTests
             Span(DayOfWeek.Thursday, 0, 12, "D", RecordingTrigger.Pos),
         ]);
 
-        Assert.Equal("A 24h, B 24h, C 24h, …", schedule.Summary);
+        Assert.Equal("A* + B* + C* + …", schedule.Summary);
     }
 
     [Fact]
@@ -81,6 +126,13 @@ public class RecordingScheduleTests
         Assert.Equal("Off", RecordingSchedule.Off.Summary);
         Assert.Equal("Continuous (manual)", RecordingSchedule.Manual.Summary);
         Assert.Equal("Off (nothing scheduled)", new RecordingSchedule(RecordingState.Scheduled, []).Summary);
+
+        // Manual recording is the whole week by definition, and "off" has no week to have a
+        // gap in — neither may ever earn a star or a dead-air warning.
+        Assert.Equal(RecordingSchedule.FullWeek, RecordingSchedule.Manual.CoveredTime);
+        Assert.False(RecordingSchedule.Manual.HasDeadTime);
+        Assert.False(RecordingSchedule.Off.HasDeadTime);
+        Assert.False(new RecordingSchedule(RecordingState.Scheduled, []).HasDeadTime);
 
         // Off wins over whatever the cells say.
         var off = new RecordingSchedule(RecordingState.Off, AllWeek("Continuous", RecordingTrigger.Continuous).Spans);
@@ -96,7 +148,7 @@ public class RecordingScheduleTests
     public void IsEventOnly_TrueWithoutAnyContinuousSpan_LowResContinuousStillCounts()
     {
         Assert.True(AllWeek("Motion", RecordingTrigger.Motion).IsEventOnly);
-        Assert.True(AllWeek("Motion + low-res always",
+        Assert.True(AllWeek("Motion & low-res always",
             RecordingTrigger.Motion | RecordingTrigger.LowResContinuous).IsEventOnly);
         Assert.False(AllWeek("Continuous | Motion", RecordingTrigger.Continuous | RecordingTrigger.Motion).IsEventOnly);
         Assert.False(RecordingSchedule.Off.IsEventOnly);
@@ -116,7 +168,7 @@ public class RecordingScheduleTests
 
         var only = Assert.Single(schedule.RecordingSpans);
         Assert.Equal(TimeSpan.FromHours(12), only.Start);
-        Assert.Equal("Motion (6 h/wk)", schedule.Summary);
+        Assert.Equal("Motion*", schedule.Summary);
     }
 
     // ----- now -----

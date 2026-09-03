@@ -277,6 +277,12 @@ public sealed partial class NxWitnessClient : IStorageClient
     /// One cell's recording type as the DW / Nx client shows it. A metadata cell that names no
     /// metadata type is an Nx 4.x cell and means motion.
     /// </summary>
+    /// <remarks>
+    /// Nx's own UI calls the combined cell "Motion + Lo-Res"; this says "&amp; low-res always"
+    /// because <see cref="RecordingSchedule.Summary"/> reserves "+" for joining the modes that
+    /// split a week ("Continuous* + Motion*"), and a mode name carrying its own "+" would make
+    /// that unreadable. See <see cref="RecordingSchedule.Notation"/>.
+    /// </remarks>
     internal static (string Mode, RecordingTrigger Triggers) DescribeTask(NxScheduleTask task)
     {
         bool objects = task.MetadataTypes.Contains("objects", StringComparison.Ordinal);
@@ -293,7 +299,7 @@ public sealed partial class NxWitnessClient : IStorageClient
         {
             "always" => ("Continuous", RecordingTrigger.Continuous),
             "metadataonly" => (what, whatTriggers),
-            "metadataandlowquality" => ($"{what} + low-res always",
+            "metadataandlowquality" => ($"{what} & low-res always",
                 whatTriggers | RecordingTrigger.LowResContinuous),
             var other => (other, RecordingTrigger.Other),
         };

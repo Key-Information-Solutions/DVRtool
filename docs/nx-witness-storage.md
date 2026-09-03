@@ -227,10 +227,13 @@ shared `RecordingSchedule` (Core) behind the Storage tab's **Recording** column,
 - `recordingType` is the DW client's cell type: `always` → **Continuous**; `metadataOnly` →
   **Motion**, **Objects** or **Motion | Objects** by `metadataTypes` (`motion`, `objects`,
   `motion|objects`; absent or `none` means motion — an Nx 4.x cell); `metadataAndLowQuality` →
-  the same **+ low-res always**, because the secondary stream then records around the clock
+  the same **& low-res always**, because the secondary stream then records around the clock
   while the primary waits for the trigger (`RecordingTrigger.LowResContinuous`). The legacy
-  `RT_*` spellings are accepted.
-- Site D, live: 64 cameras — 16 continuous, 45 "Motion + low-res always", 3 "Motion", none
+  `RT_*` spellings are accepted. The label says "&" and not "+" deliberately: `+` joins the
+  modes that split a week in `RecordingSchedule.Summary`, and a mode name carrying its own `+`
+  would make the mix unreadable — see the notation table in `hikvision-storage.md`, which also
+  covers the `*` that marks a mode not running the whole week.
+- Site D, live: 64 cameras — 16 continuous, 45 "Motion & low-res always", 3 "Motion", none
   mixed, none off — so the retention report's "48 of 64 enabled camera(s) record on events
   only" caveat is exactly why the worst-case estimate sits so far under the 68 days held.
 

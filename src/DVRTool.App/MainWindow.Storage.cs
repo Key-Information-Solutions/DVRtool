@@ -40,6 +40,12 @@ public partial class MainWindow
     private IReadOnlyList<StorageCamera>? _storageCameras;
     private BitratePlan? _storagePlan;
 
+    // The cameras the planner may not decide for, as read from this system's pin file, and
+    // the reason it could not be read — planning refuses while that is set rather than
+    // treating an unreadable pin file as "nothing is pinned".
+    private ChannelPinSet? _storagePins;
+    private string? _storagePinError;
+
     /// <summary>One camera as loaded: its stream config plus the planner's inputs.</summary>
     private sealed record StorageCamera(
         CameraStream Stream, string Name, BitrateRange Range, DateTime? Oldest, string? OldestError);
@@ -48,12 +54,16 @@ public partial class MainWindow
         string Bay, string Status, string Capacity, string Free, string Type, string Model,
         string Serial);
 
-    /// <param name="Recording">The schedule's summary — "Continuous", "Motion", the weekly mix — or "?".</param>
-    /// <param name="RecordingDetail">Tooltip: what is in effect now and the week laid out.</param>
+    /// <param name="Recording">
+    /// The schedule's summary — "Continuous", "Continuous*" for one with a gap in it,
+    /// "Continuous* + Motion*" for a week that mixes modes — or "?" when the recorder did not say.
+    /// </param>
+    /// <param name="RecordingDetail">Tooltip: what is in effect now, the hours, and the week laid out.</param>
+    /// <param name="Pin">"4096", "as-is", or empty for a camera the planner may decide for.</param>
     private sealed record StorageCameraRow(
         int Ch, string Name, string Codec, string Resolution, string Fps, string Mode,
         string Recording, string RecordingDetail,
-        string MaxKbps, string Planned, string Oldest, string Days);
+        string MaxKbps, string Pin, string PinDetail, string Planned, string Oldest, string Days);
 
     private void InitializeStorageTab()
     {
@@ -118,6 +128,9 @@ public partial class MainWindow
         _storageDevice = null;
         _storageInfo = null;
         _storageCameras = null;
+        _storagePins = null;
+        _storagePinError = null;
+        ShowStoragePinSummary();
 
         INvrClient? client = null;
         try
@@ -205,6 +218,7 @@ public partial class MainWindow
             _storageDevice = device;
             _storageInfo = info;
             _storageCameras = cameras;
+            LoadStoragePins(device);
             ShowStorage(device, info, cameras);
         }
         catch (OperationCanceledException)
@@ -219,6 +233,27 @@ public partial class MainWindow
         finally
         {
             client?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Reads this system's pins. A failure is recorded rather than thrown: the disk and camera
+    /// report is still worth having, but the planner refuses while
+    /// <see cref="_storagePinError"/> is set, because planning as if nothing were pinned is the
+    /// one outcome a pin exists to prevent.
+    /// </summary>
+    private void LoadStoragePins(SavedDevice device)
+    {
+        try
+        {
+            _storagePins = ChannelPinStore.Default.Get(device.Address,
+                device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null);
+            _storagePinError = null;
+        }
+        catch (Exception ex)
+        {
+            _storagePins = null;
+            _storagePinError = ex.Message;
         }
     }
 
@@ -270,10 +305,17 @@ public partial class MainWindow
         if (eventOnly > 0)
             summary += $" {eventOnly} camera(s) record on events only (see Recording) — the estimate " +
                        "assumes continuous recording, so they will hold more than it says.";
+        int deadAir = cameras.Count(c => c.Stream.Enabled && c.Stream.Schedule?.HasDeadTime == true);
+        if (deadAir > 0)
+            summary += $" {deadAir} camera(s) have hours when nothing records at all (hover " +
+                       "Recording for the week).";
         if (systemOldest is DateTime so)
             summary += $" Oldest footage on the system: {so:yyyy-MM-dd HH:mm} — " +
                        $"{(now - so).TotalDays:F1} days held.";
+        if (cameras.Any(c => c.Stream.Schedule is { } sc && sc.RecordsAnything))
+            summary += " " + RecordingSchedule.Notation;
         StorageCameraSummary.Text = summary;
+        ShowStoragePinSummary();
 
         var problems = new List<string>();
         foreach (var bad in info.UnhealthyHdds)
@@ -315,16 +357,29 @@ public partial class MainWindow
             // one (Nx): the cap the plan can change, plus the part it cannot.
             string maxKbps = (s.MaxBitrateKbps?.ToString() ?? "?") +
                              (s.SecondaryRecordedKbps is int sec ? $" (+{sec})" : "");
-            // The recording mode: the schedule's summary in the cell, the week in the tooltip.
+            // The recording mode: the schedule's summary in the cell, the hours behind its
+            // stars and the week itself in the tooltip.
             string recordingDetail = s.Schedule is { } schedule
-                ? $"Now: {schedule.DescribeNow(now)}\n" + string.Join("\n", schedule.DescribeWeek())
+                ? $"Now: {schedule.DescribeNow(now)}\n{schedule.HoursText}\n" +
+                  string.Join("\n", schedule.DescribeWeek())
                 : "The recorder did not answer its schedule endpoint.";
+            // The pin: "4096" for a held rate, "as-is" for "whatever it reads", blank for a
+            // camera the planner may decide for.
+            var pin = _storagePins?.For(s.Channel);
+            string pinText = pin is null ? "" : pin.Kbps?.ToString() ?? "as-is";
+            string pinDetail = pin is null
+                ? "Not pinned — the planner may change this camera's bitrate.\n" +
+                  "Select the row and press Pin to hold it."
+                : $"Pinned {pin.PinnedAt:yyyy-MM-dd}: {pin.Describe()}.\n" +
+                  (pin.Kbps is null
+                      ? "The planner holds whatever this camera is set to at plan time."
+                      : "The planner holds this rate, and puts the camera back to it if it drifts.");
             return new StorageCameraRow(
                 s.Channel, c.Name, s.CodecType, s.Resolution,
                 s.FrameRateText,
                 s.Enabled ? s.QualityControlType : $"{s.QualityControlType} (off)",
                 s.RecordingText, recordingDetail,
-                maxKbps,
+                maxKbps, pinText, pinDetail,
                 planned, oldest, days);
         }).ToList();
     }
@@ -349,6 +404,13 @@ public partial class MainWindow
             SetStatus("Enter the target days (e.g. 30).");
             return;
         }
+        if (_storagePinError is { } pinError)
+        {
+            ShowStorageWarning($"Pinned cameras could not be read, so nothing can be planned: " +
+                $"{pinError}");
+            SetStatus("Planning refused — the pin file is unreadable.");
+            return;
+        }
 
         // A second stream the recorder archives alongside the main one (Nx) is a fixed cost
         // the plan spends before splitting the rest; it is never written.
@@ -363,7 +425,15 @@ public partial class MainWindow
             return;
         }
 
-        var plan = StorageEstimator.PlanUniform(info.TotalCapacityMB, days, planCameras);
+        // Pins come off the budget before anything is split, and a pin that could not be
+        // honoured is said out loud rather than quietly dropped.
+        var input = (_storagePins ?? ChannelPinSet.Empty(device.Address)).Apply(planCameras);
+        if (input.Problems.Count > 0)
+            ShowStorageWarning(string.Join(" ", input.Problems));
+        else
+            HideStorageWarning();
+
+        var plan = StorageEstimator.PlanUniform(info.TotalCapacityMB, days, input.Cameras);
         _storagePlan = plan;
 
         StorageCameraGrid.ItemsSource = BuildCameraRows(cameras,
@@ -371,14 +441,19 @@ public partial class MainWindow
 
         int changes = plan.Cameras.Count(c => c.Changes);
         int clamped = plan.Cameras.Count(c => c.Clamped);
+        string perCamera = plan.AllPinned
+            ? "every camera is pinned, so the plan is exactly what the pins ask for"
+            : plan.PinnedCount > 0
+                ? $"{plan.UniformKbps} kbps for the {plan.FreeCount} unpinned camera(s), " +
+                  $"{plan.PinnedCount} pinned camera(s) held at {plan.PinnedTotalKbps:N0} kbps"
+                : $"{plan.UniformKbps} kbps per camera";
         string text =
-            $"{days:F1} days on {FormatTb(info.TotalCapacityMB)} → {plan.UniformKbps} kbps per " +
-            $"camera; planned total {plan.PlannedTotalKbps:N0} kbps → estimated " +
-            $"{plan.EstimatedDays:F1} days (worst-case). {changes} camera(s) would change" +
+            $"{days:F1} days on {FormatTb(info.TotalCapacityMB)} → {perCamera}; planned total " +
+            $"{plan.PlannedTotalKbps:N0} kbps → estimated {plan.EstimatedDays:F1} days " +
+            $"(worst-case). {changes} camera(s) would change" +
             (clamped > 0 ? $", {clamped} clamped to their writable range" : "") + ".";
-        if (!plan.MeetsTarget)
-            text += " ⚠ The target is NOT reached — camera minimums keep the total above " +
-                    "the budget (more disk, fewer cameras, or a lower target).";
+        if (plan.MissReason is { } missed)
+            text += $" ⚠ The target is NOT reached — {missed}";
         StoragePlanSummary.Text = text;
         StorageApplyButton.IsEnabled = changes > 0;
         SetStatus(changes > 0
@@ -391,6 +466,174 @@ public partial class MainWindow
         _storagePlan = null;
         StorageApplyButton.IsEnabled = false;
         StoragePlanSummary.Text = "";
+    }
+
+    // ----- pins -----
+
+    /// <summary>
+    /// Pins every selected camera: at the rate in the box, or — with the box empty — at
+    /// whatever each one is set to now. Pinning writes nothing to the recorder; it only tells
+    /// the planner to work around these cameras.
+    /// </summary>
+    private void OnPinStorageCameras(object sender, RoutedEventArgs e)
+    {
+        if (SelectedStorageCameras() is not { Count: > 0 } selected)
+            return;
+
+        int? kbps = null;
+        string boxed = StoragePinKbpsBox.Text.Trim();
+        if (boxed.Length > 0)
+        {
+            if (!int.TryParse(boxed, out int parsed) || parsed <= 0)
+            {
+                SetStatus("Pin rate must be a positive number of kbps — or blank to hold each " +
+                    "camera where it is.");
+                return;
+            }
+            kbps = parsed;
+        }
+
+        var device = _storageDevice!;
+        var store = ChannelPinStore.Default;
+        var skipped = new List<int>();
+        int pinned = 0;
+        try
+        {
+            foreach (var cam in selected)
+            {
+                // "Hold what it reads" needs something to read; a camera whose rate the
+                // recorder will not report cannot be pinned that way, and saying so beats
+                // saving a pin that resolves to nothing later.
+                if (kbps is null && cam.Stream.MaxBitrateKbps is null)
+                {
+                    skipped.Add(cam.Stream.Channel);
+                    continue;
+                }
+                store.Pin(device.Address, device.ExpectedSerial,
+                    new ChannelPin(cam.Stream.Channel, kbps, cam.Name, null, DateTimeOffset.Now));
+                pinned++;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowStorageWarning($"Pins could not be saved: {Shorten(ex.Message)}");
+            SetStatus("Pinning failed — nothing was saved.");
+            return;
+        }
+
+        AfterStoragePinChange(pinned == 0
+            ? "No camera could be pinned."
+            : $"Pinned {pinned} camera(s)" +
+              (kbps is int k ? $" at {k} kbps." : " where they are.") +
+              (skipped.Count > 0
+                  ? $" Channel(s) {string.Join(", ", skipped)} report no current rate — pin an " +
+                    "explicit number for those."
+                  : ""));
+    }
+
+    private void OnUnpinStorageCameras(object sender, RoutedEventArgs e)
+    {
+        if (SelectedStorageCameras() is not { Count: > 0 } selected)
+            return;
+        try
+        {
+            int removed = selected.Count(c =>
+                ChannelPinStore.Default.Unpin(_storageDevice!.Address, c.Stream.Channel));
+            AfterStoragePinChange(removed == 0
+                ? "None of the selected cameras were pinned."
+                : $"Unpinned {removed} camera(s) — the planner may decide for them again.");
+        }
+        catch (Exception ex)
+        {
+            ShowStorageWarning($"Pins could not be saved: {Shorten(ex.Message)}");
+            SetStatus("Unpinning failed — nothing was saved.");
+        }
+    }
+
+    private void OnClearStoragePins(object sender, RoutedEventArgs e)
+    {
+        if (_storageDevice is not { } device)
+        {
+            SetStatus("Load a system first.");
+            return;
+        }
+        int count = _storagePins?.Count ?? 0;
+        if (count == 0)
+        {
+            SetStatus($"{device.Name} has no pinned cameras.");
+            return;
+        }
+        if (MessageBox.Show(this,
+                $"Remove all {count} pin(s) on {device.Name}?\n\n" +
+                "The planner will then be free to change every camera's bitrate.",
+                "DVRTool — clear pins", MessageBoxButton.YesNo,
+                MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        try
+        {
+            int cleared = ChannelPinStore.Default.Clear(device.Address);
+            AfterStoragePinChange($"Cleared {cleared} pin(s) on {device.Name}.");
+        }
+        catch (Exception ex)
+        {
+            ShowStorageWarning($"Pins could not be saved: {Shorten(ex.Message)}");
+            SetStatus("Clearing pins failed — nothing was saved.");
+        }
+    }
+
+    /// <summary>
+    /// The cameras the grid has selected, or an empty list (with a status line) when the
+    /// operator has not picked any — or when nothing has been loaded to pick from.
+    /// </summary>
+    private List<StorageCamera> SelectedStorageCameras()
+    {
+        if (_storageDevice is null || _storageCameras is not { } cameras)
+        {
+            SetStatus("Load a system first — pins are saved against the system that was read.");
+            return [];
+        }
+        var channels = StorageCameraGrid.SelectedItems.OfType<StorageCameraRow>()
+            .Select(r => r.Ch)
+            .ToHashSet();
+        if (channels.Count == 0)
+        {
+            SetStatus("Select one or more camera rows first.");
+            return [];
+        }
+        return cameras.Where(c => channels.Contains(c.Stream.Channel)).ToList();
+    }
+
+    /// <summary>
+    /// Re-reads the pins and repaints. Any previewed plan is discarded on purpose: it was
+    /// computed against the old pins, and applying it would write the numbers the operator
+    /// just changed their mind about.
+    /// </summary>
+    private void AfterStoragePinChange(string status)
+    {
+        LoadStoragePins(_storageDevice!);
+        ClearStoragePlan();
+        if (_storageCameras is { } cameras)
+            StorageCameraGrid.ItemsSource = BuildCameraRows(cameras, plannedByChannel: null);
+        ShowStoragePinSummary();
+        SetStatus(status + " Preview the plan again to see what it costs.");
+    }
+
+    private void ShowStoragePinSummary()
+    {
+        if (_storagePinError is { } error)
+        {
+            StoragePinSummary.Text = $"⚠ Pins could not be read, so planning is refused: {error}";
+            return;
+        }
+        var pins = _storagePins;
+        StoragePinSummary.Text = pins is null || pins.Count == 0
+            ? "No pinned cameras — the planner may change every camera. Pin the ones whose " +
+              "bitrate must not move (a licence-plate camera, a rate a customer was promised)."
+            : pins.Summary + " — the planner spends these first and splits the rest." +
+              (pins.ForeignHardware
+                  ? " ⚠ They were recorded against another serial at this address and will NOT " +
+                    "be applied; clear them if the recorder was replaced."
+                  : "");
     }
 
     private async Task ApplyStoragePlanAsync(CancellationToken ct)
@@ -413,7 +656,8 @@ public partial class MainWindow
         if (_cleanupStarted)
             return;
         var preview = string.Join("\n", toWrite.Take(8).Select(c =>
-            $"  ch{c.Channel} {c.Name}: {c.CurrentKbps?.ToString() ?? "?"} → {c.PlannedKbps} kbps"));
+            $"  ch{c.Channel} {c.Name}: {c.CurrentKbps?.ToString() ?? "?"} → {c.PlannedKbps} kbps" +
+            (c.Pinned ? "  (pinned — the pin moves it there)" : "")));
         if (toWrite.Count > 8)
             preview += $"\n  … and {toWrite.Count - 8} more";
         if (MessageBox.Show(this,

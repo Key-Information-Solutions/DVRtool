@@ -486,6 +486,38 @@
                                         </Button.ToolTip>
                                     </Button>
                                 </StackPanel>
+
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal"
+                                            Margin="0,8,0,0">
+                                    <TextBlock Text="Pin selected camera(s) at " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="StoragePinKbpsBox" Width="60">
+                                        <TextBox.ToolTip>
+                                            <TextBlock>
+                                                The rate to hold, in kbps. Leave it blank to hold whatever<LineBreak/>
+                                                the camera is set to now — the planner re-reads that each<LineBreak/>
+                                                time, so a number here is the stronger promise.
+                                            </TextBlock>
+                                        </TextBox.ToolTip>
+                                    </TextBox>
+                                    <TextBlock Text=" kbps (blank = as-is) " VerticalAlignment="Center"/>
+                                    <Button Content="Pin" Click="OnPinStorageCameras"
+                                            Margin="4,0,0,0" Padding="10,2">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Pinned cameras are the ones the planner may not decide for:<LineBreak/>
+                                                their bitrate is spent from the budget first and the rest is<LineBreak/>
+                                                split across the others. Pins are saved per system and shared<LineBreak/>
+                                                with the dvrtool CLI; pinning writes nothing to the recorder.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
+                                    <Button Content="Unpin" Click="OnUnpinStorageCameras"
+                                            Margin="8,0,0,0" Padding="10,2"/>
+                                    <Button Content="Clear all pins" Click="OnClearStoragePins"
+                                            Margin="8,0,0,0" Padding="10,2"/>
+                                </StackPanel>
+                                <TextBlock x:Name="StoragePinSummary" DockPanel.Dock="Top"
+                                           Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#333"/>
                                 <TextBlock x:Name="StoragePlanSummary" Margin="0,6,0,0"
                                            TextWrapping="Wrap"/>
                             </DockPanel>
@@ -554,6 +586,15 @@
                                             </DataGridTextColumn>
                                             <DataGridTextColumn Header="Max kbps" Width="70"
                                                                 Binding="{Binding MaxKbps}"/>
+                                            <DataGridTextColumn Header="Pin" Width="70"
+                                                                Binding="{Binding Pin}">
+                                                <DataGridTextColumn.CellStyle>
+                                                    <Style TargetType="DataGridCell">
+                                                        <Setter Property="ToolTip" Value="{Binding PinDetail}"/>
+                                                        <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                    </Style>
+                                                </DataGridTextColumn.CellStyle>
+                                            </DataGridTextColumn>
                                             <DataGridTextColumn Header="Planned" Width="70"
                                                                 Binding="{Binding Planned}"/>
                                             <DataGridTextColumn Header="Oldest footage" Width="135"
