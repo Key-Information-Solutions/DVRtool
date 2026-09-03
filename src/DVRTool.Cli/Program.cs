@@ -19,7 +19,8 @@ const string Usage = """
       channels        List channels
       users           List the accounts configured on the device
       access          Door-access panels (see: dvrtool access --help)
-      storage         Disks, retention and bitrate planning (see: dvrtool storage --help)
+      storage         Disks, retention, recording schedules and bitrate planning
+                      (see: dvrtool storage --help)
       search          List recordings for a channel in a window
       download        Export footage for a time span to a file
       live            Record live video over the SDK port (Hikvision) — the transport

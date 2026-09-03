@@ -21,15 +21,20 @@ internal static class StorageCommands
         Usage:
           dvrtool storage disks       [connection options]
           dvrtool storage retention   [--channel <n>] [connection options]
+          dvrtool storage schedule    [--channel <n>] [connection options]
           dvrtool storage plan --days <n> [--force] [connection options]
           dvrtool storage set --channel <n> --kbps <k> [--force] [connection options]
 
         Subcommands:
           disks       Disk inventory: per-bay model/serial/status/capacity, work mode,
                       and how many disks the firmware supports.
-          retention   Per-camera recording settings and the oldest footage still on
-                      disk — the "how many days are we actually holding" report.
-                      --channel limits it to one camera.
+          retention   Per-camera recording settings, recording mode and the oldest
+                      footage still on disk — the "how many days are we actually
+                      holding" report. --channel limits it to one camera.
+          schedule    Each camera's recording mode — continuous, motion, alarm, "motion +
+                      low-res always" and the rest of the vendor's vocabulary — with the
+                      week laid out day by day and what is in effect right now. Quick:
+                      no footage searches. --channel limits it to one camera.
           plan        "We need X days": compute the uniform per-camera max bitrate that
                       fits --days into the installed disks. DRY RUN by default — prints
                       the per-camera before → after and what the plan actually achieves.
@@ -77,6 +82,7 @@ internal static class StorageCommands
         {
             "disks" => await DisksAsync(storage, ct),
             "retention" => await RetentionAsync(client, storage, opts, ct),
+            "schedule" => await ScheduleAsync(client, storage, opts, ct),
             "plan" => await PlanAsync(client, storage, opts, ct),
             "set" => await SetAsync(storage, opts, ct),
             _ => UnknownSubcommand(subcommand),
@@ -139,13 +145,7 @@ internal static class StorageCommands
     private static async Task<int> RetentionAsync(INvrClient client, IStorageClient storage,
         Dictionary<string, string> opts, CancellationToken ct)
     {
-        int? only = null;
-        if (opts.TryGetValue("channel", out var chText))
-        {
-            if (!int.TryParse(chText, out int ch) || ch < 1)
-                throw new ArgumentException("invalid --channel");
-            only = ch;
-        }
+        int? only = ChannelFilter(opts);
 
         var info = await storage.GetStorageInfoAsync(ct);
         var streams = await storage.GetMainStreamsAsync(ct);
@@ -161,7 +161,8 @@ internal static class StorageCommands
         }
 
         Console.WriteLine($"{"CH",3}  {"NAME",-22}  {"CODEC",-7}  {"RESOLUTION",-11}  " +
-                          $"{"FPS",5}  {"MODE",-4}  {"MAX KBPS",8}  {"OLDEST FOOTAGE",-19}  DAYS");
+                          $"{"FPS",5}  {"MODE",-4}  {"MAX KBPS",8}  {"RECORDING",-22}  " +
+                          $"{"OLDEST FOOTAGE",-19}  DAYS");
         var now = DateTime.Now;
         DateTime? systemOldest = null;
         long totalKbps = 0;
@@ -211,7 +212,7 @@ internal static class StorageCommands
                              (s.SecondaryRecordedKbps is not null ? "+" : "");
             Console.WriteLine($"{s.Channel,3}  {Fit(name, 22),-22}  {s.CodecType,-7}  " +
                 $"{s.Resolution,-11}  {FpsColumn(s),5}  {s.QualityControlType,-4}  " +
-                $"{maxKbps,8}  {oldestText,-19}  {daysText}");
+                $"{maxKbps,8}  {Fit(s.RecordingText, 22),-22}  {oldestText,-19}  {daysText}");
         }
 
         if (streams.Any(s => s.FrameRateIsFull))
@@ -219,6 +220,11 @@ internal static class StorageCommands
         if (streams.Any(s => s.SecondaryRecordedKbps is not null))
             Console.WriteLine("+ a secondary (low-quality) stream is archived alongside the main " +
                 "one; the totals below include it");
+        if (streams.Any(s => s.Schedule is null))
+            Console.WriteLine("? in RECORDING: the recorder did not answer its schedule endpoint");
+        if (streams.Any(s => s.Schedule?.IsMixed == true))
+            Console.WriteLine("RECORDING sums a schedule that mixes modes across the week; " +
+                "`dvrtool storage schedule` lays the week out");
 
         Console.WriteLine();
         Console.WriteLine($"Disks: {FormatTb(info.TotalCapacityMB)} across " +
@@ -231,12 +237,90 @@ internal static class StorageCommands
         if (StorageEstimator.EstimateRetentionDays(info.TotalCapacityMB, totalKbps) is double est)
             Console.WriteLine($"Worst-case retention estimate: {est:F1} days " +
                 "(every camera at its configured max, around the clock).");
+        int eventOnly = streams.Count(s => s.Enabled && s.Schedule?.IsEventOnly == true);
+        if (eventOnly > 0)
+            Console.WriteLine($"{eventOnly} of {enabledCount} enabled camera(s) record on events only " +
+                "(motion / alarm / analytics): the estimate assumes they record around the clock, " +
+                "so they will hold more than it says.");
         if (systemOldest is DateTime so)
             Console.WriteLine($"Oldest footage on the system: {so:yyyy-MM-dd HH:mm:ss} — " +
                 $"{(now - so).TotalDays:F1} days held (device-local clock).");
         foreach (string f in failures)
             Console.Error.WriteLine($"warning: {f}");
         return failures.Count == 0 ? 0 : 1;
+    }
+
+    // ----- schedule -----
+
+    /// <summary>
+    /// <c>dvrtool storage schedule</c>: each camera's recording mode and its week laid out —
+    /// the answer to "is this camera on motion or continuous?", which the retention table only
+    /// summarizes. No footage searches, so it is quick even on a big system.
+    /// </summary>
+    private static async Task<int> ScheduleAsync(INvrClient client, IStorageClient storage,
+        Dictionary<string, string> opts, CancellationToken ct)
+    {
+        int? only = ChannelFilter(opts);
+        var streams = await storage.GetMainStreamsAsync(ct);
+        var names = (await client.GetChannelsAsync(ct)).ToDictionary(c => c.Id, c => c.Name);
+        if (only is int filter)
+            streams = streams.Where(s => s.Channel == filter).ToList();
+        if (streams.Count == 0)
+        {
+            Console.WriteLine(only is null
+                ? "The device reports no camera streams."
+                : $"No main stream configured for channel {only}.");
+            return 0;
+        }
+
+        var now = DateTime.Now;
+        int continuous = 0, eventOnly = 0, mixed = 0, off = 0, unknown = 0;
+        foreach (var s in streams)
+        {
+            string name = Fit(names.GetValueOrDefault(s.Channel, ""), 22);
+            if (s.Schedule is not { } schedule)
+            {
+                unknown++;
+                Console.WriteLine($"ch{s.Channel,-3} {name,-22}  ?  (the recorder did not answer " +
+                                  "its schedule endpoint)");
+                continue;
+            }
+            if (!schedule.RecordsAnything)
+                off++;
+            else if (schedule.IsMixed)
+                mixed++;
+            else if (schedule.IsEventOnly)
+                eventOnly++;
+            else
+                continuous++;
+
+            // A stream switched off elsewhere (video disabled) records nothing whatever the
+            // schedule says; the schedule's own "off" already reads as such.
+            string streamNote = !s.Enabled && schedule.RecordsAnything ? "   [stream disabled]" : "";
+            Console.WriteLine($"ch{s.Channel,-3} {name,-22}  {schedule.Summary}   — now: " +
+                              $"{schedule.DescribeNow(now)}{streamNote}");
+            foreach (string line in schedule.DescribeWeek())
+                Console.WriteLine($"       {line}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{streams.Count} camera(s): {continuous} continuous all week, {eventOnly} on " +
+                          $"events only, {mixed} mixed across the week, {off} off" +
+                          (unknown > 0 ? $", {unknown} unknown" : "") + ".");
+        if (eventOnly + mixed > 0)
+            Console.WriteLine("Retention estimates assume every camera records around the clock; " +
+                              "cameras on events hold more than the estimate says.");
+        return 0;
+    }
+
+    /// <summary><c>--channel</c> as a 1-based display channel, or null when the whole system is meant.</summary>
+    private static int? ChannelFilter(Dictionary<string, string> opts)
+    {
+        if (!opts.TryGetValue("channel", out var text))
+            return null;
+        if (!int.TryParse(text, out int channel) || channel < 1)
+            throw new ArgumentException("invalid --channel");
+        return channel;
     }
 
     // ----- plan -----

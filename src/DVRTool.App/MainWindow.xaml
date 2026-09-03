@@ -467,6 +467,15 @@
                                                                 Binding="{Binding Fps}"/>
                                             <DataGridTextColumn Header="Mode" Width="55"
                                                                 Binding="{Binding Mode}"/>
+                                            <DataGridTextColumn Header="Recording" Width="150"
+                                                                Binding="{Binding Recording}">
+                                                <DataGridTextColumn.CellStyle>
+                                                    <Style TargetType="DataGridCell">
+                                                        <Setter Property="ToolTip" Value="{Binding RecordingDetail}"/>
+                                                        <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                    </Style>
+                                                </DataGridTextColumn.CellStyle>
+                                            </DataGridTextColumn>
                                             <DataGridTextColumn Header="Max kbps" Width="70"
                                                                 Binding="{Binding MaxKbps}"/>
                                             <DataGridTextColumn Header="Planned" Width="70"

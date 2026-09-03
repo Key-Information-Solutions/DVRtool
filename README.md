@@ -13,10 +13,10 @@ door-access writes.
 | Vendor | Protocol | Status |
 |---|---|---|
 | Hikvision (incl. LT Security OEM) | ISAPI over HTTP (digest) + RTSP | In progress — first target |
-| Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Device info, channels, recording search and the Storage tab live-verified on a DH-NVR608H; download and bitrate writes not yet |
+| Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Device info, channels, recording search, the Storage tab and recording schedules live-verified on a DH-NVR608H; download and bitrate writes not yet |
 | Hikvision live video without RTSP | HCNetSDK `RealPlay_V40` over the SDK port (P/Invoke) | Live-verified on a DS-7716NI |
 | Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over the SDK port (P/Invoke) | Reads and writes live-verified |
-| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001; or the DW Cloud relay with no port forward | Storage tab and `dvrtool storage` (`--vendor nx`) live-verified on the Site D E-Rack through the DW Cloud relay (info, channels, disks, retention, dry-run plan); the schedule-bitrate write is not yet fired; no live view through the relay (HTTPS only) |
+| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001; or the DW Cloud relay with no port forward | Storage tab and `dvrtool storage` (`--vendor nx`) live-verified on the Site D E-Rack through the DW Cloud relay (info, channels, disks, retention, recording schedules, dry-run plan); the schedule-bitrate write is not yet fired; no live view through the relay (HTTPS only) |
 | UniFi Protect | Private `/api/video/export` | Planned |
 
 ## Layout
@@ -277,6 +277,16 @@ by name — `dvrtool channels` shows the numbering — because Nx addresses came
 Storage tab and `dvrtool storage` work the same as on the recorders, with one difference the
 report spells out: Nx archives each camera's secondary (low-quality) stream alongside the
 main one, and the retention totals include it.
+
+Every vendor's Storage report also shows each camera's **recording mode** — the Storage tab's
+Recording column (hover for the week laid out and what is in effect now), the RECORDING column
+of `dvrtool storage retention`, and `dvrtool storage schedule` for the whole week per camera.
+The words are the recorder's own: Hikvision's Continuous / Motion / Alarm / "Motion | Alarm" and
+the rest of its event vocabulary, Dahua's General (shown as Continuous) / Motion / Alarm /
+MD&Alarm / Intel / POS checkboxes, and DW Spectrum's Always (Continuous) / Motion / "Motion +
+low-res always". A camera that only records on events is called out under the retention
+estimate, because the worst-case estimate assumes it records around the clock and it will
+therefore hold more than the estimate says.
 
 A site that never forwarded 7001 is still reachable if it is enrolled in DW Cloud: give the
 **cloud relay** as the host — `--host <cloud system id>.relay.vmsproxy.com` (the id is the

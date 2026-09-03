@@ -63,6 +63,12 @@ public sealed partial class HikvisionClient : IStorageClient
         if (doc.Root is null)
             return streams;
 
+        // The recording schedules ride in the RaCM track list — one document for every
+        // track — so one optional GET tells the recording mode of every camera at once. A
+        // recorder that will not answer it just reports its modes as unknown.
+        var schedules = ParseTrackSchedules(
+            await TryGetXmlAsync("/ISAPI/ContentMgmt/record/tracks", ct, null));
+
         foreach (var sc in ElementsNamed(doc.Root, "StreamingChannel"))
         {
             if (!int.TryParse(Child(sc, "id"), out int trackId))
@@ -96,10 +102,16 @@ public sealed partial class HikvisionClient : IStorageClient
                 }
             }
 
+            // A track whose schedule is switched off, or holds no span that records, writes
+            // nothing whatever the stream settings say — so it must not count toward retention.
+            RecordingSchedule? schedule = schedules is not null &&
+                                          schedules.TryGetValue(trackId, out var found)
+                ? found
+                : null;
             streams.Add(new CameraStream(
                 Channel: trackId / 100,
                 TrackId: trackId,
-                Enabled: channelEnabled && videoEnabled,
+                Enabled: channelEnabled && videoEnabled && (schedule?.RecordsAnything ?? true),
                 CodecType: video is null ? "" : Child(video, "videoCodecType") ?? "",
                 Width: ParseInt(video is null ? null : Child(video, "videoResolutionWidth")),
                 Height: ParseInt(video is null ? null : Child(video, "videoResolutionHeight")),
@@ -110,7 +122,8 @@ public sealed partial class HikvisionClient : IStorageClient
                 VbrUpperCapKbps: TryParseInt(video, "vbrUpperCap"),
                 ConstantBitrateKbps: TryParseInt(video, "constantBitRate"),
                 FixedQuality: TryParseInt(video, "fixedQuality"),
-                FrameRateIsFull: fullRate));
+                FrameRateIsFull: fullRate,
+                Schedule: schedule));
         }
 
         return streams.OrderBy(s => s.Channel).ToList();
@@ -136,6 +149,110 @@ public sealed partial class HikvisionClient : IStorageClient
             if (int.TryParse(part, out int value) && value > max)
                 max = value;
         return max > 0 ? max / 100.0 : null;
+    }
+
+    /// <summary>
+    /// The recording schedule of every track in the RaCM track list
+    /// (<c>GET /ISAPI/ContentMgmt/record/tracks</c>), keyed by track id. Null when the document
+    /// is unavailable, so callers can tell "unknown" from "records nothing".
+    /// </summary>
+    /// <remarks>
+    /// Verified live on the lab recorder, Site C, Site F and Site E (2026-09-02). Each
+    /// <c>ScheduleAction</c> runs from a start day/time to an end day/time, and the recorders
+    /// write a whole day as "Monday 00:00:00 → Tuesday 00:00:00" (Sunday ends on "Monday
+    /// 00:00:00" — the wrap <see cref="RecordingSchedule.SpansBetween"/> handles). The on/off
+    /// switch is <c>enableSchedule</c> in the vendor extension; the track's own <c>Enable</c>
+    /// element reads false on every recording track probed and means nothing here. A main
+    /// track with an empty schedule block and <c>enableSchedule</c> true records nothing and
+    /// says so. Holiday schedules (also in the extension) are not read.
+    /// </remarks>
+    internal static Dictionary<int, RecordingSchedule>? ParseTrackSchedules(XDocument? tracks)
+    {
+        if (tracks?.Root is null)
+            return null;
+        var result = new Dictionary<int, RecordingSchedule>();
+        foreach (var track in ElementsNamed(tracks.Root, "Track"))
+        {
+            if (!int.TryParse(Child(track, "id"), out int trackId))
+                continue;
+            var weekly = track.Elements().FirstOrDefault(e => e.Name.LocalName == "TrackSchedule");
+            if (weekly is null)
+                continue; // a shape this parser does not know: leave the track unknown
+            bool enabled = !ElementsNamed(track, "enableSchedule").Any(e =>
+                string.Equals(e.Value.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+            string fallbackMode = Child(track, "DefaultRecordingMode") ?? "CMR";
+
+            var spans = new List<RecordingSpan>();
+            foreach (var action in ElementsNamed(weekly, "ScheduleAction"))
+            {
+                var actions = action.Elements().FirstOrDefault(e => e.Name.LocalName == "Actions");
+                if (actions is not null && string.Equals(Child(actions, "Record"), "false",
+                        StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var (mode, triggers) = MapRecordingMode(
+                    (actions is null ? null : Child(actions, "ActionRecordingMode")) ?? fallbackMode);
+                if (!TryParseWeekPoint(action, "ScheduleActionStartTime", out var startDay, out var start) ||
+                    !TryParseWeekPoint(action, "ScheduleActionEndTime", out var endDay, out var end))
+                    continue;
+                spans.AddRange(RecordingSchedule.SpansBetween(startDay, start, endDay, end, mode, triggers));
+            }
+            result[trackId] = new RecordingSchedule(
+                enabled ? RecordingState.Scheduled : RecordingState.Off, spans);
+        }
+        return result;
+    }
+
+    private static bool TryParseWeekPoint(XElement action, string name, out DayOfWeek day,
+        out TimeSpan time)
+    {
+        day = default;
+        time = default;
+        var point = action.Elements().FirstOrDefault(e => e.Name.LocalName == name);
+        return point is not null &&
+               Enum.TryParse(Child(point, "DayOfWeek")?.Trim(), ignoreCase: true, out day) &&
+               RecordingSchedule.TryParseTimeOfDay(Child(point, "TimeOfDay"), out time);
+    }
+
+    /// <summary>
+    /// An <c>ActionRecordingMode</c> word as the web UI names it, classified. The RaCM spec
+    /// defines CMR (continuous), MOTION, ALARM, EDR (alarm or motion) and ALARMANDMOTION; the
+    /// rest is the event vocabulary newer firmware adds (the search capabilities list them:
+    /// AllEvent, pir, wlsensor, callhelp, facedetection, FieldDetection, LineDetection, …).
+    /// Anything unknown keeps the device's own word so it is still visible.
+    /// </summary>
+    internal static (string Mode, RecordingTrigger Triggers) MapRecordingMode(string raw)
+    {
+        string word = raw.Trim();
+        return word.ToUpperInvariant() switch
+        {
+            "CMR" => ("Continuous", RecordingTrigger.Continuous),
+            "MOTION" => ("Motion", RecordingTrigger.Motion),
+            "ALARM" => ("Alarm", RecordingTrigger.Alarm),
+            "EDR" or "ALARMORMOTION" => ("Motion | Alarm", RecordingTrigger.Motion | RecordingTrigger.Alarm),
+            "ALARMANDMOTION" => ("Motion & Alarm", RecordingTrigger.Motion | RecordingTrigger.Alarm),
+            "EVENT" or "ALLEVENT" => ("Event",
+                RecordingTrigger.Motion | RecordingTrigger.Alarm | RecordingTrigger.Analytics),
+            "INTELLIGENT" or "VCA" => ("Intelligent", RecordingTrigger.Analytics),
+            "POS" => ("POS", RecordingTrigger.Pos),
+            "PIR" => ("PIR", RecordingTrigger.Alarm),
+            "WLSENSOR" or "WIRELESS" => ("Wireless sensor", RecordingTrigger.Alarm),
+            "CALLHELP" => ("Panic button", RecordingTrigger.Alarm),
+            "FACEDETECTION" => ("Face detection", RecordingTrigger.Analytics),
+            "FIELDDETECTION" => ("Intrusion", RecordingTrigger.Analytics),
+            "LINEDETECTION" => ("Line crossing", RecordingTrigger.Analytics),
+            "REGIONENTRANCE" => ("Region entrance", RecordingTrigger.Analytics),
+            "REGIONEXITING" => ("Region exiting", RecordingTrigger.Analytics),
+            "LOITERING" => ("Loitering", RecordingTrigger.Analytics),
+            "SCENECHANGEDETECTION" => ("Scene change", RecordingTrigger.Analytics),
+            "VEHICLEDETECTION" or "ANPR" => ("Vehicle detection", RecordingTrigger.Analytics),
+            "AUDIODETECTION" => ("Audio exception", RecordingTrigger.Analytics),
+            "UNATTENDEDBAGGAGE" => ("Unattended baggage", RecordingTrigger.Analytics),
+            "ATTENDEDBAGGAGE" => ("Object removal", RecordingTrigger.Analytics),
+            "RAPIDMOVE" => ("Fast moving", RecordingTrigger.Analytics),
+            "PARKING" => ("Parking", RecordingTrigger.Analytics),
+            "GROUP" => ("People gathering", RecordingTrigger.Analytics),
+            _ => (word, RecordingTrigger.Other),
+        };
     }
 
     /// <summary>Test seam: "now" for the calendar fallback's month walk.</summary>

@@ -18,6 +18,7 @@ namespace DVRTool.Vendors.Dahua;
 public sealed partial class DahuaClient : IStorageClient
 {
     private const string EncodeConfigPath = "/cgi-bin/configManager.cgi?action=getConfig&name=Encode";
+    private const string RecordConfigPath = "/cgi-bin/configManager.cgi?action=getConfig&name=Record";
 
     /// <summary>MainFormat record types: 0 General (schedule), 1 Motion, 2 Alarm.</summary>
     private static readonly int[] RecordTypes = [0, 1, 2];
@@ -76,8 +77,16 @@ public sealed partial class DahuaClient : IStorageClient
         return new StorageInfo(hdds, WorkMode: null, MaxSupportedHdds: null);
     }
 
-    public async Task<IReadOnlyList<CameraStream>> GetMainStreamsAsync(
-        CancellationToken ct = default)
+    public Task<IReadOnlyList<CameraStream>> GetMainStreamsAsync(
+        CancellationToken ct = default) => ReadMainStreamsAsync(withSchedules: true, ct);
+
+    /// <summary>
+    /// The streams, with or without the Record table that says when each channel records.
+    /// The write path's read-back only wants the bitrate and skips the table — 375 KB on a
+    /// 128-channel unit.
+    /// </summary>
+    private async Task<IReadOnlyList<CameraStream>> ReadMainStreamsAsync(bool withSchedules,
+        CancellationToken ct)
     {
         // table.Encode[0].MainFormat[0].Video.BitRate=4096
         // table.Encode[0].MainFormat[0].Video.BitRateControl=VBR
@@ -105,6 +114,20 @@ public sealed partial class DahuaClient : IStorageClient
         {
         }
 
+        // The weekly schedule: table.Record[ch].TimeSection[day][n]="mask hh:mm:ss-hh:mm:ss",
+        // day 0–6 Sunday–Saturday plus a holiday row at 7. Optional, like RecordMode.
+        Dictionary<string, string>? record = null;
+        if (withSchedules)
+        {
+            try
+            {
+                record = ParseKeyValues(await GetTextAsync(RecordConfigPath, ct));
+            }
+            catch (NvrException)
+            {
+            }
+        }
+
         var streams = new List<CameraStream>();
         foreach (int index in IndexesInOrder(kv.Keys, "table.Encode["))
         {
@@ -115,8 +138,10 @@ public sealed partial class DahuaClient : IStorageClient
 
             bool enabled = !string.Equals(kv.GetValueOrDefault($"{prefix}.VideoEnable", "true"),
                 "false", StringComparison.OrdinalIgnoreCase);
-            if (recordMode.GetValueOrDefault($"table.RecordMode[{index}].Mode") == "2")
+            string? mode = recordMode.GetValueOrDefault($"table.RecordMode[{index}].Mode");
+            if (mode == "2")
                 enabled = false;
+            var schedule = record is null ? null : ParseRecordSchedule(record, index, mode);
             string control = V("BitRateControl");
             int? bitrate = TryParseInt(V("BitRate"));
             foreach (int recType in RecordTypes.Skip(1))
@@ -140,9 +165,108 @@ public sealed partial class DahuaClient : IStorageClient
                 QualityControlType: control.ToUpperInvariant(),
                 VbrUpperCapKbps: isVbr ? bitrate : null,
                 ConstantBitrateKbps: isVbr ? null : bitrate,
-                FixedQuality: TryParseInt(V("Quality"))));
+                FixedQuality: TryParseInt(V("Quality")),
+                Schedule: schedule));
         }
         return streams.OrderBy(s => s.Channel).ToList();
+    }
+
+    /// <summary>
+    /// One channel's weekly schedule from the Record table, or null when the table has no row
+    /// for it. Verified on Site B (2026-09-02): <c>table.Record[ch].TimeSection[day][n]=
+    /// "mask hh:mm:ss-hh:mm:ss"</c>, day 0–6 Sunday–Saturday and a holiday row at 7 (not read),
+    /// a whole day written as 00:00:00-23:59:59, six sections per day of which the unused ones
+    /// carry mask 0. The mask's bits are the record types that apply
+    /// (<see cref="DescribeRecordMask"/>). <c>table.Record[ch].Enable</c> reads false on every
+    /// recording channel and means nothing here; the switch is RecordMode — 1 (manual) forces
+    /// continuous recording over the schedule, 2 (stop) switches the channel off.
+    /// </summary>
+    internal static RecordingSchedule? ParseRecordSchedule(Dictionary<string, string> record,
+        int index, string? recordMode)
+    {
+        string prefix = $"table.Record[{index}].TimeSection[";
+        var rows = record.Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal)).ToList();
+        if (rows.Count == 0)
+            return null;
+        switch (recordMode)
+        {
+            case "2":
+                return RecordingSchedule.Off;
+            case "1":
+                return RecordingSchedule.Manual;
+        }
+
+        var spans = new List<RecordingSpan>();
+        foreach (var (key, value) in rows)
+        {
+            // key: table.Record[0].TimeSection[3][1]
+            string rest = key[prefix.Length..];
+            int close = rest.IndexOf(']');
+            if (close <= 0 || !int.TryParse(rest[..close], out int day) || day is < 0 or > 6)
+                continue;
+            if (!TryParseTimeSection(value, out int mask, out var start, out var end) ||
+                mask == 0 || end <= start)
+                continue;
+            var (mode, triggers) = DescribeRecordMask(mask);
+            spans.Add(new RecordingSpan((DayOfWeek)day, start, end, mode, triggers));
+        }
+        return new RecordingSchedule(RecordingState.Scheduled,
+            spans.OrderBy(s => ((int)s.Day + 6) % 7).ThenBy(s => s.Start).ToList());
+    }
+
+    /// <summary>"39 00:00:00-23:59:59" → mask 39, 00:00–24:00 (Dahua writes a whole day as 23:59:59).</summary>
+    internal static bool TryParseTimeSection(string? value, out int mask, out TimeSpan start,
+        out TimeSpan end)
+    {
+        mask = 0;
+        start = end = TimeSpan.Zero;
+        var parts = (value ?? "").Trim().Split(' ', 2,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 ||
+            !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out mask))
+            return false;
+        var range = parts[1].Split('-', 2);
+        if (range.Length != 2 ||
+            !RecordingSchedule.TryParseTimeOfDay(range[0], out start) ||
+            !RecordingSchedule.TryParseTimeOfDay(range[1], out end))
+            return false;
+        if (end == new TimeSpan(23, 59, 59))
+            end = RecordingSchedule.EndOfDay;
+        return true;
+    }
+
+    /// <summary>
+    /// The record types in a schedule mask, joined "|" the way the recorder means them: any of
+    /// them starts a recording. Bits 0–4 and 6 are documented — regular (continuous), motion,
+    /// alarm, card, intelligent (IVS), POS; bit 5 is the remaining type the web UI offers,
+    /// "MD&amp;Alarm", inferred from Site B's mask 39 = the four classic types. The
+    /// words are the web UI's own checkbox labels ("Intel", "MD&amp;Alarm") except for General,
+    /// which reads "Continuous" like every other vendor's. Bits the firmware adds later stay
+    /// visible as "bit N".
+    /// </summary>
+    internal static (string Mode, RecordingTrigger Triggers) DescribeRecordMask(int mask)
+    {
+        var names = new List<string>();
+        var triggers = RecordingTrigger.None;
+        for (int bit = 0; bit < 31; bit++)
+        {
+            if ((mask & (1 << bit)) == 0)
+                continue;
+            var (name, trigger) = bit switch
+            {
+                0 => ("Continuous", RecordingTrigger.Continuous),
+                1 => ("Motion", RecordingTrigger.Motion),
+                2 => ("Alarm", RecordingTrigger.Alarm),
+                3 => ("Card", RecordingTrigger.Other),
+                4 => ("Intel", RecordingTrigger.Analytics),
+                5 => ("MD&Alarm", RecordingTrigger.Motion | RecordingTrigger.Alarm),
+                6 => ("POS", RecordingTrigger.Pos),
+                _ => ($"bit {bit}", RecordingTrigger.Other),
+            };
+            names.Add(name);
+            triggers |= trigger;
+        }
+        return (string.Join(" | ", names), triggers);
     }
 
     public async Task<DateTime?> FindOldestRecordingAsync(int channel,
@@ -324,7 +448,8 @@ public sealed partial class DahuaClient : IStorageClient
             throw new NvrException(
                 $"channel {channel}: the device rejected the bitrate write", reply);
 
-        var readBack = (await GetMainStreamsAsync(ct)).FirstOrDefault(s => s.Channel == channel);
+        var readBack = (await ReadMainStreamsAsync(withSchedules: false, ct))
+            .FirstOrDefault(s => s.Channel == channel);
         return readBack?.MaxBitrateKbps
             ?? throw new NvrException(
                 $"channel {channel}: the write was accepted but the read-back shows no " +

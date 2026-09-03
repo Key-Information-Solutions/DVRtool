@@ -20,6 +20,7 @@ Authority!" and was not read.
 | Recording streams | `GET /cgi-bin/configManager.cgi?action=getConfig&name=Encode` | 0-based `table.Encode[ch].MainFormat[t]` |
 | Record on/off | `GET /cgi-bin/configManager.cgi?action=getConfig&name=RecordMode` | `Mode` 0 auto, 1 manual, **2 stop** |
 | Bitrate bounds | `GET /cgi-bin/encode.cgi?action=getConfigCaps&channel=N` | `caps[ch].MainFormat[0].Video.BitRateOptions=min,max` |
+| Recording schedule | `GET /cgi-bin/configManager.cgi?action=getConfig&name=Record` | optional; `table.Record[ch].TimeSection[day][n]`; 375 KB on 128 channels |
 | Oldest recording | `mediaFileFind.cgi` create → findFile → findNextFile count=1 → close/destroy | 1-based `condition.Channel` |
 | Bitrate write | `GET /cgi-bin/configManager.cgi?action=setConfig&Encode[ch].MainFormat[t].Video.BitRate=N…` | several keys per call, answers `OK` |
 
@@ -84,6 +85,34 @@ channels that have a camera bound.
   passwords DPAPI-protected (`ProtectedPassword`), so a probe script must decrypt them —
   reading the JSON naively sends a blank password and locks the customer out for half an
   hour (this is how 2026-09-02 started). Never retry a 401.
+
+## Recording mode (the schedule)
+
+**Established 2026-09-02** on Site B. `configManager.cgi?action=getConfig&name=Record`
+answers, per channel, `table.Record[ch].TimeSection[day][n]="mask hh:mm:ss-hh:mm:ss"` plus
+`Enable`, `Format`, `HolidayEnable`, `MaxRecordTime`, `PreRecord`, `Redundancy` and `Stream`.
+`DahuaClient.ParseRecordSchedule` turns it into the shared `RecordingSchedule` (Core), which the
+Storage tab's **Recording** column, `dvrtool storage retention` and `dvrtool storage schedule`
+show. The read is optional (a refusal shows `?`), and the write path's read-back skips it — the
+table is 375 KB for 128 channels.
+
+- **`day` 0–6 is Sunday–Saturday** (the spec's words) and **row 7 is the holiday schedule**,
+  which is not read. Six sections per day on this firmware (the spec allows 24); unused
+  sections carry mask 0 and `00:00:00-24:00:00`; a whole day is written `00:00:00-23:59:59`,
+  which the parser reads as 24:00.
+- **The mask's bits are the record types** the web UI's checkboxes set, and any of them starts
+  a recording: bit 0 regular → "Continuous", 1 motion, 2 alarm, 3 card, 4 intelligent →
+  "Intel", 6 POS (all documented), and **bit 5 "MD&Alarm"** — the one type the UI offers that
+  the doc leaves out, inferred from Site B's mask **39** = 1+2+4+32 being exactly the four
+  classic checkboxes (General, Motion, Alarm, MD&Alarm) with Intel and POS unchecked. An
+  unknown bit shows as "bit N" rather than disappearing. Site B reads
+  `Continuous | Motion | Alarm | MD&Alarm` on every camera all week, which is why its estimate
+  matches its real retention so closely (below).
+- **`table.Record[ch].Enable` is false on every recording channel** and means nothing here. The
+  switch is `RecordMode[ch].Mode`: 0 the schedule decides, **1 manual → "Continuous (manual)"**
+  (the schedule is not consulted), 2 stop → "Off" (already excluded from the totals).
+  `ModeExtra1` / `ModeExtra2` are the sub streams' modes (2 = stop on Site B) and are
+  ignored, like the sub streams themselves.
 
 ## The write path (`SetMaxBitrateAsync`)
 

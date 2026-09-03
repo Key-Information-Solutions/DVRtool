@@ -92,6 +92,11 @@ public sealed record StorageInfo(
 /// days"), when one is set. Days held on such a camera can never exceed it, however generous
 /// the capacity estimate — so the report says so next to the number.
 /// </param>
+/// <param name="Schedule">
+/// When the recorder records this camera — the weekly schedule and its modes (continuous,
+/// motion, alarm, Nx's "motion + low-res always", …). Null when the recorder did not answer
+/// its schedule endpoint, which the report shows as "?" rather than as "records nothing".
+/// </param>
 public sealed record CameraStream(
     int Channel,
     int TrackId,
@@ -106,7 +111,8 @@ public sealed record CameraStream(
     int? FixedQuality,
     bool FrameRateIsFull = false,
     int? SecondaryRecordedKbps = null,
-    int? ArchiveCapDays = null)
+    int? ArchiveCapDays = null,
+    RecordingSchedule? Schedule = null)
 {
     public bool IsVbr => string.Equals(QualityControlType, "VBR", StringComparison.OrdinalIgnoreCase);
 
@@ -137,6 +143,9 @@ public sealed record CameraStream(
     };
 
     public string Resolution => Width > 0 || Height > 0 ? $"{Width}x{Height}" : "";
+
+    /// <summary>The "Recording" column: the schedule's summary, or "?" when the recorder did not say.</summary>
+    public string RecordingText => Schedule?.Summary ?? "?";
 }
 
 /// <summary>Writable bitrate bounds for one channel, from its capabilities document.</summary>

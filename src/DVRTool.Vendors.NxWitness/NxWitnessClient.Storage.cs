@@ -242,7 +242,61 @@ public sealed partial class NxWitnessClient : IStorageClient
             FixedQuality: worst is null || worst.IsPreset ? null : NxBitrate.QualityLevel(worst.StreamQuality),
             FrameRateIsFull: false,
             SecondaryRecordedKbps: secondaryKbps,
-            ArchiveCapDays: c.MaxArchiveDays);
+            ArchiveCapDays: c.MaxArchiveDays,
+            Schedule: BuildSchedule(c));
+    }
+
+    /// <summary>
+    /// The camera's weekly schedule as the shared model: one span per recording cell, labelled
+    /// the way the DW / Nx client names the cell types — Always ("Continuous"), Motion, Objects,
+    /// and the "+ Lo-Res" variants where the secondary stream records around the clock. A
+    /// disabled schedule is Off whatever its cells say.
+    /// </summary>
+    internal static RecordingSchedule BuildSchedule(NxCamera c)
+    {
+        if (!c.ScheduleEnabled)
+            return RecordingSchedule.Off;
+        var spans = new List<RecordingSpan>();
+        foreach (var task in c.Tasks)
+        {
+            if (!task.Records)
+                continue;
+            var (mode, triggers) = DescribeTask(task);
+            var start = TimeSpan.FromSeconds(Math.Clamp(task.StartTime, 0, 86_400));
+            var end = TimeSpan.FromSeconds(Math.Clamp(task.EndTime, 0, 86_400));
+            spans.Add(new RecordingSpan(NxDay(task.DayOfWeek), start, end, mode, triggers));
+        }
+        return new RecordingSchedule(RecordingState.Scheduled, spans);
+    }
+
+    /// <summary>Nx numbers weekdays 1–7 Monday–Sunday (Qt's convention).</summary>
+    internal static DayOfWeek NxDay(int dayOfWeek) =>
+        dayOfWeek is >= 1 and <= 7 ? (DayOfWeek)(dayOfWeek % 7) : DayOfWeek.Monday;
+
+    /// <summary>
+    /// One cell's recording type as the DW / Nx client shows it. A metadata cell that names no
+    /// metadata type is an Nx 4.x cell and means motion.
+    /// </summary>
+    internal static (string Mode, RecordingTrigger Triggers) DescribeTask(NxScheduleTask task)
+    {
+        bool objects = task.MetadataTypes.Contains("objects", StringComparison.Ordinal);
+        bool motion = task.MetadataTypes.Contains("motion", StringComparison.Ordinal) || !objects;
+        string what = (motion, objects) switch
+        {
+            (true, true) => "Motion | Objects",
+            (false, true) => "Objects",
+            _ => "Motion",
+        };
+        var whatTriggers = (motion ? RecordingTrigger.Motion : RecordingTrigger.None) |
+                           (objects ? RecordingTrigger.Analytics : RecordingTrigger.None);
+        return task.RecordingType switch
+        {
+            "always" => ("Continuous", RecordingTrigger.Continuous),
+            "metadataonly" => (what, whatTriggers),
+            "metadataandlowquality" => ($"{what} + low-res always",
+                whatTriggers | RecordingTrigger.LowResContinuous),
+            var other => (other, RecordingTrigger.Other),
+        };
     }
 
     /// <summary>What one schedule cell costs: its preset, or Nx's rate for its quality at the primary stream's resolution.</summary>

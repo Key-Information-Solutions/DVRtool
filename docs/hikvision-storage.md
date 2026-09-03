@@ -15,6 +15,7 @@ the lab recorder (DS-7716NI-I4/16P, where the write path was canary-tested and r
 | Recording streams | `GET /ISAPI/Streaming/channels` | all tracks; main = id `x01` |
 | Bitrate bounds | `GET /ISAPI/Streaming/channels/{track}/capabilities` | optional; `min`/`max` attrs |
 | Oldest recording | `POST /ISAPI/ContentMgmt/search` | `maxResults=1`, everything window |
+| Recording schedule | `GET /ISAPI/ContentMgmt/record/tracks` | optional; the RaCM `TrackList`, one `Track` per stream, main = id `x01` |
 | Bitrate write | `PUT /ISAPI/Streaming/channels/{track}` | full-document round trip |
 
 All answered 200 on every recorder probed. Both XML namespaces
@@ -98,6 +99,46 @@ Also noted on this recorder: `workMode` is **quota**, not group. The retention
 estimate here assumes one shared overwrite pool; under quota mode each camera is capped
 at its own slice, so the per-camera oldest column is the honest number on such a unit
 and the system-wide estimate is optimistic.
+
+## Recording mode (the schedule)
+
+**Established 2026-09-02** on the lab recorder, Site C, Site F and Site E. The Storage tab's
+**Recording** column (tooltip: the week laid out and what is in effect now), the RECORDING
+column of `dvrtool storage retention` and the whole of `dvrtool storage schedule` come from
+`GET /ISAPI/ContentMgmt/record/tracks` — the RaCM `TrackList`, one `<Track>` per stream (x01
+main, x02 sub, x03 third; only x01 is read), fetched once per `GetMainStreamsAsync` (145 KB for
+16 channels) and parsed by `HikvisionClient.ParseTrackSchedules` into the shared
+`RecordingSchedule` model (`RecordingSchedule.cs` in Core, carried as `CameraStream.Schedule`).
+
+- Each `ScheduleAction` has a start and an end **day + time of day**, and the recorders write a
+  whole day as `Monday 00:00:00 → Tuesday 00:00:00`; Sunday ends on `Monday 00:00:00`, which
+  `RecordingSchedule.SpansBetween` reads as the end of the week, not as seven days. The RaCM
+  spec's own example splits a day (`Monday 00:00 → Monday 08:00` EDR, then CMR), so both shapes
+  are handled and a range that crosses midnight is split per day.
+- `Actions/ActionRecordingMode` is the type: `CMR` (Continuous), `MOTION`, `ALARM`, `EDR` or
+  `ALARMORMOTION` ("Motion | Alarm"), `ALARMANDMOTION` ("Motion & Alarm"), plus the event
+  words newer firmware adds (`AllEvent`, `FieldDetection`, `LineDetection`, `facedetection`,
+  `pir`, `POS`, …) — `MapRecordingMode` labels the ones we know and passes an unknown word
+  through verbatim rather than dropping it. Across the four recorders only `CMR` and `MOTION`
+  occur. An action with `Actions/Record=false` is not a recording span.
+- **The on/off switch is `enableSchedule`** in `CustomExtensionList/CustomExtension`
+  (`www.hikvision.com/RaCM/trackExt/ver10`), not the track's `<Enable>` — that element reads
+  `false` on every recording track of all four units and means nothing here. A main track with
+  `enableSchedule=false`, or with an enabled but **empty** `ScheduleBlock`, records nothing: it
+  reads "Off" / "Off (nothing scheduled)", its `CameraStream.Enabled` is false and it leaves
+  the retention total. Third-stream tracks show both shapes routinely (Site F:
+  `enableSchedule=false`; Site E: enabled and empty).
+- `HolidaySchedule` (in the same extension; an empty block everywhere probed) is not read;
+  `ScheduleDSTEnable` and `DefaultRecordingMode` (always `CMR`) are ignored — the latter is
+  only the fallback for an action that names no mode.
+- When the endpoint is refused the schedule is **unknown**: the column shows `?` and
+  `Enabled` stays what the stream settings say — never "records nothing".
+
+What the fleet looks like: the lab recorder 9/9 continuous; Site C 48 tracks all CMR; Site F all
+CMR with its unused third streams switched off; **Site E records 13 of 14 cameras on
+motion** (BDC alone is continuous) — which is why its worst-case estimate sits far under the
+days it actually holds, and why the retention report now says so: "13 of 14 enabled camera(s)
+record on events only … they will hold more than it says."
 
 ## The write path (`SetMaxBitrateAsync`)
 

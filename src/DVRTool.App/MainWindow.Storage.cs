@@ -48,8 +48,11 @@ public partial class MainWindow
         string Bay, string Status, string Capacity, string Free, string Type, string Model,
         string Serial);
 
+    /// <param name="Recording">The schedule's summary — "Continuous", "Motion", the weekly mix — or "?".</param>
+    /// <param name="RecordingDetail">Tooltip: what is in effect now and the week laid out.</param>
     private sealed record StorageCameraRow(
         int Ch, string Name, string Codec, string Resolution, string Fps, string Mode,
+        string Recording, string RecordingDetail,
         string MaxKbps, string Planned, string Oldest, string Days);
 
     private void InitializeStorageTab()
@@ -263,6 +266,10 @@ public partial class MainWindow
                 : ".");
         if (StorageEstimator.EstimateRetentionDays(info.TotalCapacityMB, totalKbps) is double est)
             summary += $" Worst-case retention: {est:F1} days.";
+        int eventOnly = cameras.Count(c => c.Stream.Enabled && c.Stream.Schedule?.IsEventOnly == true);
+        if (eventOnly > 0)
+            summary += $" {eventOnly} camera(s) record on events only (see Recording) — the estimate " +
+                       "assumes continuous recording, so they will hold more than it says.";
         if (systemOldest is DateTime so)
             summary += $" Oldest footage on the system: {so:yyyy-MM-dd HH:mm} — " +
                        $"{(now - so).TotalDays:F1} days held.";
@@ -308,10 +315,15 @@ public partial class MainWindow
             // one (Nx): the cap the plan can change, plus the part it cannot.
             string maxKbps = (s.MaxBitrateKbps?.ToString() ?? "?") +
                              (s.SecondaryRecordedKbps is int sec ? $" (+{sec})" : "");
+            // The recording mode: the schedule's summary in the cell, the week in the tooltip.
+            string recordingDetail = s.Schedule is { } schedule
+                ? $"Now: {schedule.DescribeNow(now)}\n" + string.Join("\n", schedule.DescribeWeek())
+                : "The recorder did not answer its schedule endpoint.";
             return new StorageCameraRow(
                 s.Channel, c.Name, s.CodecType, s.Resolution,
                 s.FrameRateText,
                 s.Enabled ? s.QualityControlType : $"{s.QualityControlType} (off)",
+                s.RecordingText, recordingDetail,
                 maxKbps,
                 planned, oldest, days);
         }).ToList();

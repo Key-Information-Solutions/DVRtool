@@ -117,7 +117,20 @@ to the earliest recorded day and searches only that day. Writes
 (`plan --force`, `set --force`, the GUI Apply button — the deliberate exception to
 "GUI writes stay in the CLI", since a bitrate change is reversible from the same tab) do a
 full-document PUT, then read back and report what the device kept. Estimates are worst-case on
-purpose (validated on Site C: estimated 16.5 days, held 24.1).
+purpose (validated on Site C: estimated 16.5 days, held 24.1). **Recording mode** (2026-09-02):
+`CameraStream.Schedule` (`RecordingSchedule` in Core — spans per weekday with a vendor label and
+`RecordingTrigger` flags; `Summary`, `IsEventOnly`, `DescribeNow`, `DescribeWeek`) is the
+Storage tab's **Recording** column (tooltip: the week), `retention`'s RECORDING column and
+`dvrtool storage schedule`. Hikvision reads it from `GET /ISAPI/ContentMgmt/record/tracks` — a
+whole day is written `Monday 00:00 → Tuesday 00:00`, the on/off switch is `enableSchedule` in
+the vendor extension and **never the track's `Enable`** (false everywhere); Dahua from
+`configManager.cgi?action=getConfig&name=Record` — `TimeSection[day 0–6 Sun–Sat, row 7 =
+holiday][n]="mask hh:mm:ss-hh:mm:ss"`, bits 1 regular / 2 motion / 4 alarm / 8 card / 16 Intel /
+32 MD&Alarm (inferred from Site B's 39) / 64 POS, `RecordMode` 1 = "Continuous (manual)";
+Nx from the schedule cells (`always` / `metadataOnly` / `metadataAndLowQuality` + `metadataTypes`,
+`dayOfWeek` 1 = Monday). A camera whose schedule is off or empty leaves the retention total;
+`IsEventOnly` cameras earn the "will hold more than the estimate says" caveat in both front ends
+(Site E: 13 of 14 on motion; Site D: 48 of 64).
 
 **Dahua storage** (`docs/dahua-storage.md`, verified 2026-09-02 on Site B, a
 DH-NVR608H-128-4KS3/I): disks come from `storageDevice.cgi?action=getDeviceAllInfo` as

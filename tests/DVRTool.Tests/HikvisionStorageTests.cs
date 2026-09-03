@@ -213,6 +213,7 @@ public class HikvisionStorageTests
         var handler = new MockHttpHandler((req, _) => req.RequestUri!.AbsolutePath switch
         {
             "/ISAPI/Streaming/channels" => MockHttpHandler.Xml(FullRateChannelsXml(ns)),
+            "/ISAPI/ContentMgmt/record/tracks" => new HttpResponseMessage(HttpStatusCode.NotFound),
             // The opt list is resolution-aware: 2688-wide offers 30 fps, 4096-wide tops at 20.
             "/ISAPI/Streaming/channels/101/capabilities" => MockHttpHandler.Xml($"""
                 <StreamingChannel version="2.0" xmlns="{ns}"><Video>
@@ -241,7 +242,7 @@ public class HikvisionStorageTests
         // An explicit rate never costs a capabilities round trip.
         Assert.Equal(25.0, streams[2].FrameRateFps);
         Assert.False(streams[2].FrameRateIsFull);
-        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal(4, handler.Requests.Count); // channels, tracks, two capabilities
         Assert.DoesNotContain(handler.Requests,
             r => r.Request.RequestUri!.AbsolutePath == "/ISAPI/Streaming/channels/601/capabilities");
     }
@@ -252,6 +253,7 @@ public class HikvisionStorageTests
         var handler = new MockHttpHandler((req, _) => req.RequestUri!.AbsolutePath switch
         {
             "/ISAPI/Streaming/channels" => MockHttpHandler.Xml(FullRateChannelsXml(IsapiNs)),
+            "/ISAPI/ContentMgmt/record/tracks" => new HttpResponseMessage(HttpStatusCode.NotFound),
             "/ISAPI/Streaming/channels/101/capabilities" => new HttpResponseMessage(
                 HttpStatusCode.NotFound),
             // Capabilities without an opt list resolve nothing either.

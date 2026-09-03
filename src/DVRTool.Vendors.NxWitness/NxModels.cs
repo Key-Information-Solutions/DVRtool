@@ -118,8 +118,13 @@ internal static class NxJson
 internal sealed record NxMediaStream(int EncoderIndex, string Codec, int Width, int Height);
 
 /// <summary>One cell of the weekly recording schedule — a day-of-week hour range and what it records.</summary>
+/// <param name="DayOfWeek">1–7, Monday–Sunday (Qt's numbering).</param>
 /// <param name="RecordingType">Normalized: always | metadataonly | never | metadataandlowquality.</param>
 /// <param name="StreamQuality">Normalized: lowest | low | normal | high | highest | preset.</param>
+/// <param name="MetadataTypes">
+/// What "metadata" means for a metadata cell, normalized and lower-case: "motion", "objects",
+/// "motion|objects" — or "" when the cell names none (Nx 4.x cells, which mean motion).
+/// </param>
 internal sealed record NxScheduleTask(
     int DayOfWeek,
     int StartTime,
@@ -127,7 +132,8 @@ internal sealed record NxScheduleTask(
     string RecordingType,
     string StreamQuality,
     double Fps,
-    int BitrateKbps)
+    int BitrateKbps,
+    string MetadataTypes = "")
 {
     /// <summary>The cell records something; a "never" cell is schedule white space.</summary>
     public bool Records => RecordingType != "never";
@@ -146,7 +152,15 @@ internal sealed record NxScheduleTask(
             NormalizeRecordingType(NxJson.Str(t, "recordingType")),
             NxBitrate.NormalizeQuality(NxJson.Str(t, "streamQuality")),
             NxJson.Double(t, "fps") ?? 0,
-            NxJson.Int32(t, "bitrateKbps") ?? 0);
+            NxJson.Int32(t, "bitrateKbps") ?? 0,
+            NormalizeMetadataTypes(NxJson.Str(t, "metadataTypes")));
+    }
+
+    /// <summary>"motion|objects" as Nx spells it, lower-cased; "none" and absent both read as "".</summary>
+    internal static string NormalizeMetadataTypes(string? raw)
+    {
+        string r = (raw ?? "").Trim().ToLowerInvariant();
+        return r == "none" ? "" : r;
     }
 
     /// <summary>

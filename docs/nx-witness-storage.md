@@ -214,6 +214,26 @@ Device ids are used without their braces in every path; the server accepts eithe
 - **Not implemented for Nx:** the Users tab (no `IUserManagementClient`; the tab shows "does
   not expose a user list"), SDK live view (there is no SDK), and `dvrtool live`.
 
+## Recording mode (the schedule cells)
+
+**Established 2026-09-02** on Site D. The same `schedule.tasks[]` that gives the bitrate also
+says *when* and *how* a camera records, and `NxWitnessClient.BuildSchedule` turns it into the
+shared `RecordingSchedule` (Core) behind the Storage tab's **Recording** column,
+`dvrtool storage retention` and `dvrtool storage schedule`:
+
+- `dayOfWeek` is **1–7 Monday–Sunday** (Qt's numbering), `startTime` / `endTime` seconds from
+  midnight (86400 = 24:00); `isEnabled: false` is "Off" whatever the cells say; a `never` cell
+  is white space, and a week of nothing but `never` reads "Off (nothing scheduled)".
+- `recordingType` is the DW client's cell type: `always` → **Continuous**; `metadataOnly` →
+  **Motion**, **Objects** or **Motion | Objects** by `metadataTypes` (`motion`, `objects`,
+  `motion|objects`; absent or `none` means motion — an Nx 4.x cell); `metadataAndLowQuality` →
+  the same **+ low-res always**, because the secondary stream then records around the clock
+  while the primary waits for the trigger (`RecordingTrigger.LowResContinuous`). The legacy
+  `RT_*` spellings are accepted.
+- Site D, live: 64 cameras — 16 continuous, 45 "Motion + low-res always", 3 "Motion", none
+  mixed, none off — so the retention report's "48 of 64 enabled camera(s) record on events
+  only" caveat is exactly why the worst-case estimate sits so far under the 68 days held.
+
 ## The write path (`SetMaxBitrateAsync`)
 
 Resolve the channel (and refuse if the camera list moved), refuse if the camera keeps its own
