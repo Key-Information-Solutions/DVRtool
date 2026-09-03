@@ -368,6 +368,90 @@ public class FisheyeProjectionTests
             $"narrow span {Span(narrow)} is not meaningfully smaller than wide {Span(wide)}");
     }
 
+    // ---- The point of the whole exercise ------------------------------------------------
+
+    /// <summary>
+    /// A straight line in the room comes out straight in a rectilinear view. This is what
+    /// "dewarp" means, and it is the one property no amount of self-consistent arithmetic can
+    /// fake: the round-trip tests would all still pass with a wrong perspective projection.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Set up as a ceiling camera one unit above a floor. A line drawn on that floor is a set of
+    /// collinear 3D points; each is turned into a ray, projected through the lens onto the
+    /// source image (where it is emphatically <i>not</i> straight — that is the fisheye
+    /// distortion), and then dewarped back into the pane. The pane points must be collinear
+    /// again, to well under a pixel.
+    /// </para>
+    /// <para>
+    /// The lens curvature is asserted too, so the test cannot pass by accident on a projection
+    /// that never bent anything in the first place.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(LensProjection.Equidistant)]
+    [InlineData(LensProjection.Stereographic)]
+    [InlineData(LensProjection.EquisolidAngle)]
+    [InlineData(LensProjection.Orthographic)]
+    public void StraightLinesInTheRoomComeOutStraight(LensProjection projection)
+    {
+        var cal = Kia with { Projection = projection };
+        // Aimed off-axis so the line lands where the lens bends hardest, not through the middle.
+        var view = new DewarpView(DewarpViewMode.Rectilinear,
+            new ViewOrientation(0, 35, 0), 70);
+        var geometry = Geometry(cal, view, 800, 600);
+
+        // A line on the floor, one unit below a ceiling camera: the floor is the plane z = 1 in
+        // the lens frame, and this line runs across it well off to one side.
+        var sourcePoints = new List<(double X, double Y)>();
+        var panePoints = new List<(double X, double Y)>();
+        for (double s = -0.45; s <= 0.45; s += 0.05)
+        {
+            // Held at a constant y so it is a straight line, swept in x.
+            var ray = (X: s, Y: 0.62, Z: 1.0);
+            var source = geometry.SourceForRay(ray.X, ray.Y, ray.Z);
+            Assert.NotNull(source);
+            var pane = geometry.OutputFor(source!.Value.X, source.Value.Y);
+            Assert.NotNull(pane);
+            sourcePoints.Add(source.Value);
+            panePoints.Add(pane!.Value);
+        }
+        Assert.True(panePoints.Count >= 15);
+
+        // The fisheye really did bend it: the line is measurably curved in the source image.
+        double sourceBow = MaxDeviationFromLine(sourcePoints);
+        Assert.True(sourceBow > 5,
+            $"{projection}: the source line bowed only {sourceBow:F2} px, so this test is not " +
+            "exercising any distortion");
+
+        // ...and the dewarp straightened it.
+        double paneBow = MaxDeviationFromLine(panePoints);
+        Assert.True(paneBow < 0.02,
+            $"{projection}: dewarped line still bows {paneBow:F4} px (source bowed " +
+            $"{sourceBow:F1} px)");
+    }
+
+    /// <summary>
+    /// Largest perpendicular distance from any point to the best-fit line through the first and
+    /// last of them. Zero when the points are collinear.
+    /// </summary>
+    private static double MaxDeviationFromLine(List<(double X, double Y)> points)
+    {
+        var (x0, y0) = points[0];
+        var (x1, y1) = points[^1];
+        double dx = x1 - x0, dy = y1 - y0;
+        double length = Math.Sqrt(dx * dx + dy * dy);
+        Assert.True(length > 1, "the line is too short to measure straightness against");
+        double worst = 0;
+        foreach (var (x, y) in points)
+        {
+            // Perpendicular distance via the 2D cross product.
+            double distance = Math.Abs((x - x0) * dy - (y - y0) * dx) / length;
+            worst = Math.Max(worst, distance);
+        }
+        return worst;
+    }
+
     // ---- Site H: the 4:3 frame iVMS will not dewarp at all ---------------------------
 
     [Fact]
