@@ -100,6 +100,26 @@ iVMS-pulled `access-control-policy.json` (kept under gitignored `artifacts/`, ne
 CLI: `access reconcile | onboard | offboard`, `--dry-run` default and `--force` required for any write. **No
 live write has been fired** — the `.223`/ocb2 canary is gated on operator go-ahead (handoff §10).
 
+**Fisheye dewarp:** two renderers, and **hardware is the default** — an operator at a
+workstation is the ordinary case and headless/RDP is the exception. `DewarpBackendPolicy`
+(`FisheyeBackend.cs` in Core) picks; every rule that declines hardware is about whether the pane
+can be **presented** (remote session, software compositing, a WARP adapter), not about speed, so
+an explicit GPU preference overrides all of them. The accelerated path
+(`src/DVRTool.Render.D3D11`, Vortice + a runtime-compiled `Dewarp.hlsl`) has **no
+`DewarpMap`**: the projection is evaluated per pixel from 176 bytes of constants, the mip level is
+chosen per pixel, and the draw measures **0.02–0.04 ms** — the entire per-frame cost is the 9.8 MB
+plane upload, which is why `Upload` is split from `RenderPane` (sixteen panes of one fisheye: 0.62
+ms with one upload, 7.1 ms with sixteen). The GUI surface is `DewarpSurface` (`src/DVRTool.App`),
+a DXGI swap chain on a hosted child window — so it paints **over** WPF content, like `VideoView` —
+that falls back to `CpuDewarpRenderer` live on a device loss. Read
+`docs/fisheye-dewarp-acceleration.md` before touching any of it — notably: the HLSL and
+`DewarpShaderConstants` are twins that must be edited together (the tests hold the C#
+transcription against `DewarpGeometry`, so the HLSL is a transcription of something proven);
+`LensProjection`'s **enum ordinals are load-bearing** because the shader switches on them; an
+integer source coordinate is a pixel *centre*; a wide rectilinear pane minifies hardest in the
+**middle**, not the corners; and `Bilinear = false` does **not** disable mipmapping. **Nothing has
+been seen on screen yet** — there is still no frame source (LibVLC `vmem`) and no dewarp tab.
+
 **Storage / retention:** the GUI Storage tab (`MainWindow.Storage.cs`) and `dvrtool storage
 disks | retention | plan | set` cover disk inventory, per-camera oldest-footage/days-held, the
 worst-case retention estimate, and the "we need X days" bitrate planner — Hikvision and Dahua,
