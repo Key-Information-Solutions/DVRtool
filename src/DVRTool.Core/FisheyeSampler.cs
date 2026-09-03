@@ -20,6 +20,41 @@ public enum YuvRange
 }
 
 /// <summary>
+/// The six coefficients of one YUV-to-RGB conversion, in floating point.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Extracted from <see cref="DewarpSampler"/>'s inner fixed-point matrix so that the GPU shader
+/// and the CPU converter read the <i>same</i> numbers rather than two hand-copied tables. A
+/// dewarped pane is shown next to a LibVLC view of the same camera, and the accelerated pane is
+/// shown next to the CPU one when a fallback happens — a colour difference between any two of
+/// those three reads as a bug, and the cheapest way to not have one is to only write the
+/// coefficients down once.
+/// </para>
+/// <para>
+/// <c>R = Y' + Rv·Cr</c>, <c>G = Y' + Gu·Cb + Gv·Cr</c>, <c>B = Y' + Bu·Cb</c>, where
+/// <c>Y' = (Y − YOffset)·YScale</c> and Cb/Cr are the chroma bytes less 128.
+/// </para>
+/// </remarks>
+public readonly record struct YuvMatrix(
+    double YScale, double YOffset, double Rv, double Gu, double Gv, double Bu)
+{
+    /// <summary>The coefficients for a range and primaries.</summary>
+    public static YuvMatrix For(YuvRange range) => range switch
+    {
+        // Limited range stretches luma 16-235 to 0-255, hence the 255/219 = 1.164383 scale.
+        YuvRange.Bt601Limited =>
+            new YuvMatrix(1.164383, 16, 1.596027, -0.391762, -0.812968, 2.017232),
+        YuvRange.Bt601Full =>
+            new YuvMatrix(1.0, 0, 1.402000, -0.344136, -0.714136, 1.772000),
+        YuvRange.Bt709Limited =>
+            new YuvMatrix(1.164383, 16, 1.792741, -0.213249, -0.532909, 2.112402),
+        _ =>
+            new YuvMatrix(1.0, 0, 1.574800, -0.187324, -0.468124, 1.855600),
+    };
+}
+
+/// <summary>
 /// The per-frame pixel work: colour conversion over a sub-rect, box-halving for minification,
 /// and the gather through a <see cref="DewarpMap"/>.
 /// </summary>
@@ -363,28 +398,17 @@ public static class DewarpSampler
         private readonly int _gv;
         private readonly int _bu;
 
-        private Matrix(double yScale, int yOffset, double rv, double gu, double gv, double bu)
+        private Matrix(in YuvMatrix m)
         {
-            _yScale = (int)Math.Round(yScale * (1 << Shift));
-            _yOffset = yOffset;
-            _rv = (int)Math.Round(rv * (1 << Shift));
-            _gu = (int)Math.Round(gu * (1 << Shift));
-            _gv = (int)Math.Round(gv * (1 << Shift));
-            _bu = (int)Math.Round(bu * (1 << Shift));
+            _yScale = (int)Math.Round(m.YScale * (1 << Shift));
+            _yOffset = (int)Math.Round(m.YOffset);
+            _rv = (int)Math.Round(m.Rv * (1 << Shift));
+            _gu = (int)Math.Round(m.Gu * (1 << Shift));
+            _gv = (int)Math.Round(m.Gv * (1 << Shift));
+            _bu = (int)Math.Round(m.Bu * (1 << Shift));
         }
 
-        public static Matrix For(YuvRange range) => range switch
-        {
-            // Limited range stretches luma 16-235 to 0-255, hence the 255/219 = 1.164383 scale.
-            YuvRange.Bt601Limited =>
-                new Matrix(1.164383, 16, 1.596027, -0.391762, -0.812968, 2.017232),
-            YuvRange.Bt601Full =>
-                new Matrix(1.0, 0, 1.402000, -0.344136, -0.714136, 1.772000),
-            YuvRange.Bt709Limited =>
-                new Matrix(1.164383, 16, 1.792741, -0.213249, -0.532909, 2.112402),
-            _ =>
-                new Matrix(1.0, 0, 1.574800, -0.187324, -0.468124, 1.855600),
-        };
+        public static Matrix For(YuvRange range) => new(YuvMatrix.For(range));
 
         public uint ToBgra(byte y, byte u, byte v)
         {

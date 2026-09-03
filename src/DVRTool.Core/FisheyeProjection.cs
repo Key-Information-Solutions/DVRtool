@@ -135,6 +135,24 @@ public readonly struct DewarpGeometry
     }
 
     /// <summary>
+    /// This same geometry as the constant block the GPU shader reads.
+    /// </summary>
+    /// <remarks>
+    /// The constants are handed over from the fields above rather than derived a second time,
+    /// which is what makes <see cref="DewarpShaderConstants"/>'s parity test worth anything: the
+    /// rotation, the focal length and the tangents the shader gets are literally the ones this
+    /// type computed, so the only thing left that could differ between CPU and GPU is the
+    /// per-pixel arithmetic — and that is exactly what the test compares.
+    /// </remarks>
+    public DewarpShaderConstants ShaderConstants(
+        YuvRange range = YuvRange.Bt709Limited,
+        uint outsideColor = DewarpSampler.OpaqueBlack,
+        double lodBias = 0) =>
+        new(OutputWidth, OutputHeight, _cal, _view, _rotation, _focal, _thetaMax,
+            _tanHalfW, _tanHalfH, _cosRoll, _sinRoll, _mirrored,
+            range, outsideColor, lodBias);
+
+    /// <summary>
     /// The direction in the lens frame that an output pixel looks along. Never null: every pixel
     /// of a pane looks somewhere, even if the lens cannot see that far.
     /// </summary>
