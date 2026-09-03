@@ -358,15 +358,27 @@ public static class DewarpSampler
             | Channel(p00, p10, p01, p11, 24, wx, wy);
     }
 
+    /// <summary>
+    /// One channel of a bilinear blend, in 8-bit weights.
+    /// </summary>
+    /// <remarks>
+    /// The <c>+ 128</c> before each shift rounds to nearest instead of truncating. Without it
+    /// this floors every interpolated channel, which is a systematic half-LSB bias downward
+    /// wherever the source is brighter to the right or below — invisible on its own, and
+    /// measurable the moment there is a second renderer to compare against: it accounted for
+    /// almost all of a 0.97-per-channel mean difference between this and the Direct3D path, with
+    /// two thirds of all samples off by exactly one. An identity table is unaffected, since a
+    /// zero weight still contributes nothing.
+    /// </remarks>
     private static uint Channel(uint p00, uint p10, uint p01, uint p11, int shift, int wx, int wy)
     {
         int a = (int)(p00 >> shift) & 0xFF;
         int b = (int)(p10 >> shift) & 0xFF;
         int c = (int)(p01 >> shift) & 0xFF;
         int d = (int)(p11 >> shift) & 0xFF;
-        int top = a + ((b - a) * wx >> 8);
-        int bottom = c + ((d - c) * wx >> 8);
-        return (uint)(top + ((bottom - top) * wy >> 8)) << shift;
+        int top = a + ((b - a) * wx + 128 >> 8);
+        int bottom = c + ((d - c) * wx + 128 >> 8);
+        return (uint)(top + ((bottom - top) * wy + 128 >> 8)) << shift;
     }
 
     private static uint Average(uint a, uint b, uint c, uint d) =>

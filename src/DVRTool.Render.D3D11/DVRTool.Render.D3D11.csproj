@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DVRTool.Render.D3D11</RootNamespace>
+    <!--
+      Deliberately false, matching the two P/Invoke vendor projects: everything that crosses to
+      native here is marshalled explicitly. See Direct3DDewarpRenderer for the one place that
+      costs anything (a pinned GCHandle per plane upload) and why it is still the right trade.
+      No WPF either - this project renders, and the App owns presentation.
+    -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DVRTool.Core\DVRTool.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Compiled at run time rather than by fxc at build time, so the build needs no DirectX
+      toolchain and a compile failure is just another reason to fall back to the CPU renderer
+      instead of a broken binary. d3dcompiler_47.dll ships with Windows 10 and later.
+    -->
+    <EmbeddedResource Include="Dewarp.hlsl" />
+  </ItemGroup>
+
+</Project>

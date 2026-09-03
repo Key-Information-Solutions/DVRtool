@@ -3,6 +3,7 @@
     <Project Path="src/DVRTool.App/DVRTool.App.csproj" />
     <Project Path="src/DVRTool.Cli/DVRTool.Cli.csproj" />
     <Project Path="src/DVRTool.Core/DVRTool.Core.csproj" />
+    <Project Path="src/DVRTool.Render.D3D11/DVRTool.Render.D3D11.csproj" />
     <Project Path="src/DVRTool.Vendors.Dahua/DVRTool.Vendors.Dahua.csproj" />
     <Project Path="src/DVRTool.Vendors.Hikvision/DVRTool.Vendors.Hikvision.csproj" />
     <Project Path="src/DVRTool.Vendors.HikvisionAccess/DVRTool.Vendors.HikvisionAccess.csproj" />

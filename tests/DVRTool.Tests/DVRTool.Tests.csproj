@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionAccess\DVRTool.Vendors.HikvisionAccess.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionSdk\DVRTool.Vendors.HikvisionSdk.csproj" />
     <ProjectReference Include="..\..\src\DVRTool.Vendors.HikvisionIvms\DVRTool.Vendors.HikvisionIvms.csproj" />
+    <ProjectReference Include="..\..\src\DVRTool.Render.D3D11\DVRTool.Render.D3D11.csproj" />
   </ItemGroup>
 
 
