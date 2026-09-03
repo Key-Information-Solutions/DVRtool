@@ -86,6 +86,7 @@ public partial class MainWindow : Window
         InitializeAccessTab();
         InitializeStorageTab();
         InitializeLiveStats();
+        InitializeDewarpTab();
 
         if (_devices.Count > 0)
             DeviceList.SelectedIndex = 0;
@@ -144,6 +145,8 @@ public partial class MainWindow : Window
         // sixteen of them on one session.
         await DisposeLiveGridAsync();
         await DisposeSdkLiveAsync();
+        // The fisheye tab's decoder is a player of its own, fed by an SDK session of its own.
+        await DisposeDewarpAsync();
 
         // Detach the views first so VideoView never renders against a disposed
         // player, then run the blocking Stop/Dispose chain off the UI thread —
@@ -236,6 +239,7 @@ public partial class MainWindow : Window
         QueuePlayerStop(_livePlayer);
         StopSdkLive();
         StopLiveGrid();
+        StopDewarp();
         UpdateGridPageControls();
         UpdateLiveTransportLabels(DeviceList.SelectedItem as SavedDevice);
 

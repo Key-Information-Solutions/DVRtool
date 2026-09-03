@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -46,6 +47,23 @@ namespace DVRTool.App;
 /// the decode buffers, and inventing a queue here before there is a frame source would be
 /// guessing at its requirements.
 /// </para>
+/// <para>
+/// <b>The last frame is kept, so the view can change without the camera.</b> <see cref="Redraw"/>
+/// draws it again through the current <see cref="View"/> and <see cref="Calibration"/>: on the
+/// accelerated path that is a draw with no upload, because the planes are still on the adapter,
+/// and on the CPU path it is a re-render from the same buffers. The frame source guarantees those
+/// buffers are untouched until it presents the next frame — see <see cref="DewarpFrameRing"/> —
+/// which is what makes a drag on a paused or stalled stream still move the picture.
+/// </para>
+/// <para>
+/// <b>Pointer input comes through this control on both paths, in pane pixels.</b> The child window
+/// the swap chain paints into takes the mouse messages for its area — WPF never sees them — so the
+/// host translates <c>WM_LBUTTONDOWN</c>, <c>WM_MOUSEMOVE</c>, <c>WM_LBUTTONUP</c> and
+/// <c>WM_MOUSEWHEEL</c> into <see cref="PointerPressed"/>, <see cref="PointerMoved"/>,
+/// <see cref="PointerReleased"/> and <see cref="Wheel"/>; the CPU path raises the same four from
+/// WPF's mouse events, converted from device-independent units. Consumers see one set of events
+/// whose coordinates are the pixels the geometry uses, whichever renderer is drawing.
+/// </para>
 /// </remarks>
 public sealed class DewarpSurface : ContentControl, IDisposable
 {
@@ -63,6 +81,9 @@ public sealed class DewarpSurface : ContentControl, IDisposable
     private DewarpGpuCapability? _capability;
     private DewarpBackendPreference _preference = DewarpBackendPreference.Auto;
     private bool _disposed;
+    private DewarpFrame _last;
+    private bool _hasLast;
+    private bool _cpuDragging;
 
     public DewarpSurface()
     {
@@ -72,6 +93,24 @@ public sealed class DewarpSurface : ContentControl, IDisposable
 
     /// <summary>Raised when the renderer in use changes, including on a fallback mid-session.</summary>
     public event EventHandler? BackendChanged;
+
+    /// <summary>The left button went down over the pane. Coordinates are pane pixels.</summary>
+    public event EventHandler<DewarpPointerEventArgs>? PointerPressed;
+
+    /// <summary>The pointer moved over the pane, or anywhere while the button is held.</summary>
+    public event EventHandler<DewarpPointerEventArgs>? PointerMoved;
+
+    /// <summary>The left button was released, or the capture was lost.</summary>
+    public event EventHandler<DewarpPointerEventArgs>? PointerReleased;
+
+    /// <summary>The wheel turned over the pane. <see cref="DewarpPointerEventArgs.WheelDelta"/> is in WHEEL_DELTA units.</summary>
+    public event EventHandler<DewarpPointerEventArgs>? Wheel;
+
+    /// <summary>True once a frame has been presented and <see cref="Redraw"/> has something to draw.</summary>
+    public bool HasFrame => _hasLast;
+
+    /// <summary>The pane's current size in device pixels — the coordinate space of the pointer events.</summary>
+    public (int Width, int Height) PanePixelSize => PaneSizeInPixels();
 
     /// <summary>The renderer currently drawing, or null until the first frame.</summary>
     public DewarpBackend? Backend => _renderer?.Backend;
@@ -126,6 +165,8 @@ public sealed class DewarpSurface : ContentControl, IDisposable
     {
         if (_disposed)
             return;
+        _last = frame;
+        _hasLast = true;
         // The renderer first, because choosing it is what puts the hosted element in place, and
         // the pane's size is measured off that element rather than off this control.
         var renderer = EnsureRenderer();
@@ -165,6 +206,45 @@ public sealed class DewarpSurface : ContentControl, IDisposable
 
         renderer.Render(frame, request);
         BlitToBitmap(renderer, width, height);
+    }
+
+    /// <summary>
+    /// Draws the last presented frame again through the current view and calibration. On the
+    /// accelerated path the frame is already on the adapter, so this is a draw and a present with
+    /// no upload. Nothing happens before the first frame.
+    /// </summary>
+    public void Redraw()
+    {
+        if (_disposed || !_hasLast)
+            return;
+        if (_renderer is Direct3DDewarpRenderer gpu && gpu.HasFrame && gpu.AttachedToWindow)
+        {
+            var (width, height) = PaneSizeInPixels();
+            if (width <= 0 || height <= 0)
+                return;
+            try
+            {
+                gpu.RenderPane(new DewarpRenderRequest(Calibration, View, width, height,
+                    Bilinear: true, OutsideColor, LodBias));
+                gpu.Present();
+                return;
+            }
+            catch (Exception ex)
+            {
+                DemoteToCpu(ex);
+            }
+        }
+        Present(_last);
+    }
+
+    /// <summary>
+    /// Forgets the last frame, so a <see cref="Redraw"/> before the next <see cref="Present"/>
+    /// does nothing. For when the buffers behind it are about to be reused by a new stream.
+    /// </summary>
+    public void ClearFrame()
+    {
+        _hasLast = false;
+        _last = default;
     }
 
     /// <summary>Releases the renderer and, on the accelerated path, the child window.</summary>
@@ -233,7 +313,7 @@ public sealed class DewarpSurface : ContentControl, IDisposable
 
     private void ShowGpuHost()
     {
-        _gpuHost ??= new SwapChainHost();
+        _gpuHost ??= new SwapChainHost(this);
         if (ReferenceEquals(Content, _gpuHost))
             return;
         Content = _gpuHost;
@@ -297,6 +377,84 @@ public sealed class DewarpSurface : ContentControl, IDisposable
         return (Math.Clamp(width, 0, 7680), Math.Clamp(height, 0, 4320));
     }
 
+    // ----- pointer input, CPU path: WPF's events, converted to pane pixels -----
+    // These fire only while the WPF Image is the content; the child window on the accelerated
+    // path takes its own mouse messages, which SwapChainHost translates below.
+
+    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonDown(e);
+        if (ReferenceEquals(Content, _gpuHost))
+            return;
+        _cpuDragging = CaptureMouse();
+        var (x, y) = ToPanePixels(e.GetPosition(this));
+        RaisePressed(x, y);
+        e.Handled = true;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (ReferenceEquals(Content, _gpuHost))
+            return;
+        var (x, y) = ToPanePixels(e.GetPosition(this));
+        RaiseMoved(x, y);
+    }
+
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonUp(e);
+        if (ReferenceEquals(Content, _gpuHost))
+            return;
+        if (_cpuDragging)
+        {
+            _cpuDragging = false;
+            ReleaseMouseCapture();
+        }
+        var (x, y) = ToPanePixels(e.GetPosition(this));
+        RaiseReleased(x, y);
+        e.Handled = true;
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        if (_cpuDragging)
+        {
+            _cpuDragging = false;
+            var (x, y) = ToPanePixels(e.GetPosition(this));
+            RaiseReleased(x, y);
+        }
+    }
+
+    protected override void OnMouseWheel(MouseWheelEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        // Reached on either path when Windows delivers the wheel to the WPF window rather than
+        // to the child: the child never sees that message, so this is not a duplicate.
+        var (x, y) = ToPanePixels(e.GetPosition(this));
+        RaiseWheel(e.Delta, x, y);
+        e.Handled = true;
+    }
+
+    private (double X, double Y) ToPanePixels(Point dip)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        return (dip.X * dpi.DpiScaleX, dip.Y * dpi.DpiScaleY);
+    }
+
+    private void RaisePressed(double x, double y) =>
+        PointerPressed?.Invoke(this, new DewarpPointerEventArgs(x, y, 0));
+
+    private void RaiseMoved(double x, double y) =>
+        PointerMoved?.Invoke(this, new DewarpPointerEventArgs(x, y, 0));
+
+    private void RaiseReleased(double x, double y) =>
+        PointerReleased?.Invoke(this, new DewarpPointerEventArgs(x, y, 0));
+
+    private void RaiseWheel(int delta, double x, double y) =>
+        Wheel?.Invoke(this, new DewarpPointerEventArgs(x, y, delta));
+
     private void SetReason(string reason)
     {
         BackendReason = reason;
@@ -318,10 +476,20 @@ public sealed class DewarpSurface : ContentControl, IDisposable
     /// The child window the swap chain presents into.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The predefined <c>static</c> window class rather than a registered one of our own: it needs
     /// no window procedure, no class registration to unwind, and it will not paint over the pane
     /// between presents. <c>WS_CLIPCHILDREN</c> and <c>WS_CLIPSIBLINGS</c> keep the compositor from
     /// touching the area DXGI owns.
+    /// </para>
+    /// <para>
+    /// A static control answers <c>WM_NCHITTEST</c> with <c>HTTRANSPARENT</c>, which would send the
+    /// mouse on to the WPF window behind it — where WPF would hit-test against a tree that has
+    /// nothing drawn in this rectangle. So the hook <see cref="HwndHost"/> installs on the child
+    /// answers <c>HTCLIENT</c> instead and translates the button, move and wheel messages that then
+    /// arrive into the owner's pointer events, with coordinates already in the pane's pixels. The
+    /// button is captured for the drag so a fast pointer leaving the pane still finishes it.
+    /// </para>
     /// </remarks>
     private sealed class SwapChainHost : HwndHost
     {
@@ -329,6 +497,94 @@ public sealed class DewarpSurface : ContentControl, IDisposable
         private const int WsVisible = 0x10000000;
         private const int WsClipChildren = 0x02000000;
         private const int WsClipSiblings = 0x04000000;
+
+        private const int WmMouseMove = 0x0200;
+        private const int WmLButtonDown = 0x0201;
+        private const int WmLButtonUp = 0x0202;
+        private const int WmMouseWheel = 0x020A;
+        private const int WmCaptureChanged = 0x0215;
+        private const int WmNcHitTest = 0x0084;
+        private const int HtClient = 1;
+
+        private readonly DewarpSurface _owner;
+        private bool _dragging;
+
+        public SwapChainHost(DewarpSurface owner)
+        {
+            _owner = owner;
+        }
+
+        protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam,
+            ref bool handled)
+        {
+            switch (msg)
+            {
+                case WmNcHitTest:
+                    handled = true;
+                    return HtClient;
+
+                case WmLButtonDown:
+                {
+                    var (x, y) = Unpack(lParam);
+                    SetCapture(hwnd);
+                    _dragging = true;
+                    _owner.RaisePressed(x, y);
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+
+                case WmMouseMove:
+                {
+                    var (x, y) = Unpack(lParam);
+                    _owner.RaiseMoved(x, y);
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+
+                case WmLButtonUp:
+                {
+                    var (x, y) = Unpack(lParam);
+                    if (_dragging)
+                    {
+                        _dragging = false;
+                        ReleaseCapture();
+                    }
+                    _owner.RaiseReleased(x, y);
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+
+                case WmCaptureChanged:
+                    if (_dragging)
+                    {
+                        // Capture taken away (a dialog, another window): end the drag rather than
+                        // leaving the button logically stuck down.
+                        _dragging = false;
+                        _owner.RaiseReleased(double.NaN, double.NaN);
+                    }
+                    handled = true;
+                    return IntPtr.Zero;
+
+                case WmMouseWheel:
+                {
+                    // Wheel coordinates are screen coordinates, unlike the button messages.
+                    int delta = (short)(((long)wParam >> 16) & 0xFFFF);
+                    var (sx, sy) = Unpack(lParam);
+                    var point = new NativePoint { X = sx, Y = sy };
+                    ScreenToClient(hwnd, ref point);
+                    _owner.RaiseWheel(delta, point.X, point.Y);
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+            }
+            return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
+        }
+
+        private static (int X, int Y) Unpack(IntPtr lParam)
+        {
+            long value = (long)lParam;
+            return ((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
+        }
 
         protected override HandleRef BuildWindowCore(HandleRef hwndParent)
         {
@@ -355,5 +611,38 @@ public sealed class DewarpSurface : ContentControl, IDisposable
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool DestroyWindow(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetCapture(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        private static extern bool ScreenToClient(IntPtr hwnd, ref NativePoint point);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
     }
+}
+
+/// <summary>
+/// A pointer event on a <see cref="DewarpSurface"/>, in pane pixels. <see cref="X"/> and
+/// <see cref="Y"/> are NaN when a drag ended because the capture was lost rather than because the
+/// button came up.
+/// </summary>
+public sealed class DewarpPointerEventArgs(double x, double y, int wheelDelta) : EventArgs
+{
+    /// <summary>Pointer X in pane pixels.</summary>
+    public double X { get; } = x;
+
+    /// <summary>Pointer Y in pane pixels.</summary>
+    public double Y { get; } = y;
+
+    /// <summary>Wheel movement in WHEEL_DELTA units (120 per notch), positive away from the user; 0 for button events.</summary>
+    public int WheelDelta { get; } = wheelDelta;
 }

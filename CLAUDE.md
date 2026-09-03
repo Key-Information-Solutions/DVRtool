@@ -117,8 +117,23 @@ that falls back to `CpuDewarpRenderer` live on a device loss. Read
 transcription against `DewarpGeometry`, so the HLSL is a transcription of something proven);
 `LensProjection`'s **enum ordinals are load-bearing** because the shader switches on them; an
 integer source coordinate is a pixel *centre*; a wide rectilinear pane minifies hardest in the
-**middle**, not the corners; and `Bilinear = false` does **not** disable mipmapping. **Nothing has
-been seen on screen yet** — there is still no frame source (LibVLC `vmem`) and no dewarp tab.
+**middle**, not the corners; and `Bilinear = false` does **not** disable mipmapping. The **Fisheye
+tab** (`MainWindow.Dewarp.cs`) feeds it from `VlcFrameSource` — LibVLC 3's video callbacks
+(`vmem`) into `DewarpFrameRing` (Core: three pinned I420 slots, newest frame wins, the presented
+frame stays valid until the next so a drag redraws with no upload) — and was **verified live on
+2026-09-03 on Site C channel 21 (2560×2560 H.265 over SDK 8000): 30 fps decoded, 30 shown, 0
+skipped on the GPU, and 30/30 on the CPU renderer too**; the plane upload is ~5 % of a frame
+period, not a blocker, and the next performance step is hardware decode (a frame-source change),
+never DX12/Vulkan. `vmem` is strictly sequential (lock → copy → unlock → display, one buffer at a
+time), which is why three slots suffice; never throw out of a callback. Mouse input reaches the
+tab from the swap chain's **child window** (`SwapChainHost.WndProc` answers `HTCLIENT` and
+translates the WM_ messages into pane-pixel events; WPF never sees them). Drag is `DewarpDrag`
+(Core), a **damped least-squares re-aim**: on a ceiling mount the roll rule pins the nadir to the
+pane's vertical centre line, so the exact-centre grab has no sideways solution and plain Newton
+flung it; pitch 0 is a **fold** (negative pitch = opposite yaw = a different picture), so it is a
+boundary, never a point to difference across. The **Test pattern** button (`FisheyeTestPattern`)
+shows a tiled floor through the calibration with no camera. Still missing: per-device calibration
+persistence, circle detection, Quad in the GUI, hardware decode.
 
 **Storage / retention:** the GUI Storage tab (`MainWindow.Storage.cs`) and `dvrtool storage
 disks | retention | plan | set` cover disk inventory, per-camera oldest-footage/days-held, the
