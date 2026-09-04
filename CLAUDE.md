@@ -246,7 +246,12 @@ skips — `SkipTo` drops it. Dahua's `loadfile.cgi` refuses any window **over ~6
 verified, 8 h refused, midnight irrelevant) so `MaxLoadfileWindow` caps requests and the tab
 continues from where a body ends; and the shipped LibVLC has **no avformat plugin**, so DHAV
 goes through `ContainerPipe` (ffmpeg `-f dhav … -c:v copy -an -f mpegts`, back-pressured end to
-end). Nx plays `/media/{id}.mkv` and so works through the DW Cloud relay. Every face peeks the
+end). Nx plays `/media/{id}.mkv` and so works through the DW Cloud relay. **LibVLC's `Time` is the demuxer's read position, not the picture's**, and the body arrives
+faster than real time: a window spanning several motion clips is concatenated by the recorder
+and the clock jumps minutes per second across the gaps (Site E stairway) — so a body is
+requested for **one run of footage at a time** (`FootageCoverage.SpanAt`) and `EndReached`
+carries playback to the next run; never compare that clock against the footage map to decide
+to skip. Every face peeks the
 first 16 KB so "accepted, sent nothing" fails up front. `dvrtool footage --probe` opens exactly
 the body the GUI plays and reports what arrived; verified 2026-09-04 on Site C, Site B
 and Site D (relay). Hikvision SDK playback (`NET_DVR_PlayBackByTime_V40`) is approved but

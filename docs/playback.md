@@ -105,6 +105,32 @@ MPEG-TS from it. 2026-09-04: Site C → `MPEG program stream (000001BA…)` afte
 Site D via relay → `Matroska (1A45DFA3…)`; Site B → `DHAV (44484156…)` raw, and
 526 KB of MPEG-TS with the sync byte out of ffmpeg in the same 8 s.
 
+### One run of footage per body: LibVLC's clock is the demuxer's
+
+`MediaPlayer.Time` is **where the demuxer has read to, not what is on screen**. The body
+arrives far faster than real time, so the demuxer is only held back by the playback clock
+— and a timestamp discontinuity resets that clock. Ask a Hikvision recorder for a window
+spanning several motion clips and it concatenates them with the gaps removed; the
+demuxer then reads across each gap in no time while the picture is still on the first
+clip. Measured on Site E's motion-only stairway (channel 1, 2026-09-04): opened at
+12:28:41, the clock read 12:40:58 one second later and 13:33:05 a second after that. The
+first cut of the tab compared that clock with the footage map and "skipped" to the next
+clip — after a few frames of each, which is what made the tab useless on a motion camera.
+
+So a body is requested for **one run of footage** (`FootageCoverage.SpanAt`, seams under
+2 s joined), ending at the run's end, and the recorder's own end-of-stream carries
+playback to the next run (`EndReached`). Inside one run the clock is real time; the
+playhead is clamped to the requested end so read-ahead cannot show it past the run; and a
+demuxer clock more than 3 s past the requested end with no end event is treated as the
+end, so a recorder that never signals one cannot freeze the tab. When a vendor ceiling
+cut the body short of the run (Dahua's 6 h) the continuation resumes at the body's
+requested end rather than the run's, so a long continuous day plays through. Re-measured
+after the change: each clip played at 1× and handed off to the next. Note the clips are
+**shorter than the search says**: the 12:28:41→12:29:10 segment (29 s) is a 22.4 s body
+and the 12:33:45→12:34:41 one (56 s) is 51.8 s, measured with ffmpeg on the exact
+download — the search's end time carries post-record padding the file does not. The tab
+plays what the recorder holds and moves on when it ends, which is right.
+
 ### The clock against the picture
 
 The tab's clock is the requested start plus the decoder's media time, so it can run

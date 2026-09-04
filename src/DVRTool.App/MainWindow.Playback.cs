@@ -63,6 +63,9 @@ public partial class MainWindow
     private bool _playbackDirty = true;
     private bool _playbackPaused;
     private bool _playbackEnded;
+
+    /// <summary>Where the footage run being played ends; the body is asked to end there too.</summary>
+    private DateTime _playbackSpanEnd;
     private (int Year, int Month)? _playbackCalendarMonth;
 
     private static readonly float[] PlaybackRates = [1f, 2f, 4f, 8f];
@@ -309,6 +312,7 @@ public partial class MainWindow
 
         var day = PlaybackDay;
         DateTime target = requested;
+        var end = day.AddDays(1);
         if (_playbackDayLoaded)
         {
             var next = FootageCoverage.NextFootageAt(_playbackCoverage, requested);
@@ -321,10 +325,18 @@ public partial class MainWindow
                 return;
             }
             target = next.Value;
+            // One run of footage per body. Asked for a wider window, the recorder concatenates
+            // the clips and the timestamps jump across every gap — and LibVLC's clock is the
+            // demuxer's position, which reads the gaps in no time at all while the picture is
+            // still on the first clip (Site E's motion-only stairway: 12 minutes in under a
+            // second). Ending the body at the run's end keeps the clock honest and lets the
+            // recorder's own end-of-stream carry playback to the next run.
+            if (FootageCoverage.SpanAt(_playbackCoverage, target) is { } span && span.End < end)
+                end = span.End;
         }
-        var end = day.AddDays(1);
         if (target >= end)
             return;
+        _playbackSpanEnd = end;
 
         int gen = ++_playbackGen;
         int selection = _selectionGen;
@@ -526,6 +538,14 @@ public partial class MainWindow
         if (_playbackStream is not null && player is not null && !_playbackPaused)
             _playbackClock.Update(player.Time);
         var position = _playbackClock.Position;
+        // The clock is the demuxer's, which reads ahead of the picture by its buffer; it must
+        // not show the playhead past the end of what was asked for.
+        if (position is DateTime raw && _playbackStream is { } current)
+        {
+            var bodyEnd = current.RequestedEnd < _playbackSpanEnd ? current.RequestedEnd : _playbackSpanEnd;
+            if (raw > bodyEnd)
+                position = bodyEnd;
+        }
         PlaybackTimeline.Playhead = position;
 
         string state = _playbackStream is null ? "stopped"
@@ -534,28 +554,32 @@ public partial class MainWindow
             : _playbackClock.Rate == 1f ? "playing" : $"playing {_playbackClock.Rate:0}×";
         PlaybackClockText.Text = position is DateTime p ? $"{p:yyyy-MM-dd HH:mm:ss}  {state}" : "";
 
-        if (_playbackStream is null || _playbackPaused || position is not DateTime at)
+        if (_playbackStream is not { } body || _playbackPaused || position is not DateTime at)
             return;
 
-        // A run of footage ended, or the decoder ran past what we know is recorded: move on to
-        // the next run rather than sit on a frozen frame. Only when the day is loaded — without
-        // the segment list there is nothing to skip to, and the recorder's body already skips.
-        bool pastFootage = _playbackDayLoaded && !FootageCoverage.Contains(_playbackCoverage, at) &&
-            at - _playbackClock.Anchor.Value > TimeSpan.FromSeconds(2);
-        if (_playbackEnded || pastFootage)
+        // The body ended — the run of footage it was asked for is played out, or the vendor's
+        // per-request ceiling cut it short — so carry on from where it stopped: the next run
+        // when the body reached the run's end, the same run otherwise. The demuxer's clock
+        // running past the requested end with no end event is treated the same way, with a
+        // margin for its read-ahead, so a recorder that never signals the end cannot freeze
+        // the tab on the last frame.
+        bool overran = at > body.RequestedEnd + TimeSpan.FromSeconds(3);
+        if (!_playbackEnded && !overran)
+            return;
+        DateTime? next = null;
+        if (_playbackDayLoaded)
         {
-            var next = _playbackDayLoaded
-                ? FootageCoverage.NextFootageAt(_playbackCoverage, at.AddSeconds(1))
-                : null;
-            if (next is DateTime n && n < PlaybackDay.AddDays(1))
-            {
-                _ = SeekPlaybackAsync(n);
-            }
-            else if (_playbackEnded)
-            {
-                StopPlayback(clearClock: false);
-                SetStatus($"End of the footage on {PlaybackDay:yyyy-MM-dd} for this camera.");
-            }
+            var resumeAt = body.RequestedEnd < _playbackSpanEnd ? body.RequestedEnd : _playbackSpanEnd;
+            next = FootageCoverage.NextFootageAt(_playbackCoverage, resumeAt);
+        }
+        if (next is DateTime n && n < PlaybackDay.AddDays(1))
+        {
+            _ = SeekPlaybackAsync(n);
+        }
+        else
+        {
+            StopPlayback(clearClock: false);
+            SetStatus($"End of the footage on {PlaybackDay:yyyy-MM-dd} for this camera.");
         }
     }
 
