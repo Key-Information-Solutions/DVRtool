@@ -79,13 +79,10 @@ public partial class MainWindow : Window
         DeviceList.ItemsSource = _devices;
         InitializeUsersTab();
 
-        var now = DateTime.Now;
-        StartBox.Text = now.Date.ToString("yyyy-MM-dd HH:mm:ss");
-        EndBox.Text = now.ToString("yyyy-MM-dd HH:mm:ss");
-
         InitializeAccessTab();
         InitializeStorageTab();
         InitializeLiveStats();
+        InitializePlaybackTab();
         InitializeDewarpTab();
 
         if (_devices.Count > 0)
@@ -143,6 +140,9 @@ public partial class MainWindow : Window
         // Before the players: an SDK preview is the source feeding one of them, and its
         // teardown blocks on the SDK's own receive thread. The grid first — it owns up to
         // sixteen of them on one session.
+        // The playback body first: it is an HTTP response (and maybe an ffmpeg) feeding
+        // the playback player, and closing it makes that player's stop immediate.
+        await DisposePlaybackAsync();
         await DisposeLiveGridAsync();
         await DisposeSdkLiveAsync();
         // The fisheye tab's decoder is a player of its own, fed by an SDK session of its own.
@@ -240,6 +240,7 @@ public partial class MainWindow : Window
         StopSdkLive();
         StopLiveGrid();
         StopDewarp();
+        ResetPlaybackTab();
         UpdateGridPageControls();
         UpdateLiveTransportLabels(DeviceList.SelectedItem as SavedDevice);
 
@@ -397,75 +398,7 @@ public partial class MainWindow : Window
 
     // ----- live: see MainWindow.Live.cs -----
 
-    // ----- playback / export -----
-
-    private async void OnSearch(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || _clientCts is null || ChannelList.SelectedItem is not ChannelItem item)
-        {
-            SetStatus("Select a device and channel first.");
-            return;
-        }
-        if (!TryGetWindow(out var start, out var end))
-            return;
-
-        int gen = _selectionGen;
-        var client = _client;
-        var ct = _clientCts.Token;
-        var searchTask = client.SearchAsync(item.Channel.Id, start, end, ct);
-        _searchTask = searchTask; // tracked so device-switch/close defer client disposal
-        try
-        {
-            SetStatus($"Searching channel {item.Channel.Id} …");
-            var segments = await searchTask;
-            if (gen != _selectionGen)
-                return;
-            ResultsGrid.ItemsSource = segments;
-            var total = TimeSpan.FromSeconds(segments.Sum(s => s.Duration.TotalSeconds));
-            SetStatus($"{segments.Count} segment(s), {(long)total.TotalHours}:{total.Minutes:D2}:{total.Seconds:D2} of footage.");
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (gen != _selectionGen)
-                return;
-            SetStatus($"Search failed: {Shorten(ex.Message)}");
-        }
-        finally
-        {
-            if (ReferenceEquals(searchTask, _searchTask))
-                _searchTask = null;
-        }
-    }
-
-    private void OnPlaySegment(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || _currentDevice is null || _libVlc is null || _playbackPlayer is null ||
-            ResultsGrid.SelectedItem is not RecordingSegment segment)
-        {
-            SetStatus("Select a search result first.");
-            return;
-        }
-
-        Uri uri;
-        try
-        {
-            uri = _client.GetPlaybackUri(segment.Channel, segment.Start, segment.End);
-        }
-        catch (NotSupportedException ex)
-        {
-            // Nx through the DW Cloud relay carries no RTSP; export still works from here.
-            SetStatus(ex.Message);
-            return;
-        }
-        using var media = CreateRtspMedia(uri);
-        _playbackPlayer.Play(media);
-        SetStatus($"Playing {segment.Start:HH:mm:ss} → {segment.End:HH:mm:ss} (ch {segment.Channel}).");
-    }
-
-    private void OnPlaybackStop(object sender, RoutedEventArgs e) => QueuePlayerStop(_playbackPlayer);
+    // ----- playback / export: see MainWindow.Playback.cs -----
 
     private void QueuePlayerStop(MediaPlayer? player)
     {
@@ -483,35 +416,6 @@ public partial class MainWindow : Window
                 catch (ObjectDisposedException) { }
             }
         });
-    }
-
-    private async void OnDownloadSegment(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || ResultsGrid.SelectedItem is not RecordingSegment segment)
-        {
-            SetStatus("Select a search result first.");
-            return;
-        }
-        var client = _client;
-        await RunDownloadAsync($"ch{segment.Channel}_{segment.Start:yyyyMMdd_HHmmss}",
-            client.Vendor, segment.SizeBytes, (path, progress, ct) =>
-                client.DownloadSegmentAsync(segment, path, progress, ct));
-    }
-
-    private async void OnExportRange(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || ChannelList.SelectedItem is not ChannelItem item)
-        {
-            SetStatus("Select a device and channel first.");
-            return;
-        }
-        if (!TryGetWindow(out var start, out var end))
-            return;
-
-        var client = _client;
-        await RunDownloadAsync($"ch{item.Channel.Id}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}",
-            client.Vendor, null, (path, progress, ct) =>
-                client.DownloadAsync(item.Channel.Id, start, end, path, progress, ct));
     }
 
     /// <summary>
@@ -1028,22 +932,6 @@ public partial class MainWindow : Window
         media.AddOption($":rtsp-user={_currentDevice!.Username}");
         media.AddOption($":rtsp-pwd={_currentDevice.Password}");
         return media;
-    }
-
-    private bool TryGetWindow(out DateTime start, out DateTime end)
-    {
-        start = end = default;
-        string[] formats = ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd"];
-        if (!DateTime.TryParseExact(StartBox.Text.Trim(), formats, null,
-                System.Globalization.DateTimeStyles.None, out start) ||
-            !DateTime.TryParseExact(EndBox.Text.Trim(), formats, null,
-                System.Globalization.DateTimeStyles.None, out end) ||
-            end <= start)
-        {
-            SetStatus("Enter a valid time window (yyyy-MM-dd HH:mm:ss), end after start.");
-            return false;
-        }
-        return true;
     }
 
     private void SetStatus(string text) => StatusText.Text = text;

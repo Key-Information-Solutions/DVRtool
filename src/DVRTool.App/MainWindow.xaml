@@ -49,12 +49,13 @@
                          MouseDoubleClick="OnDeviceListDoubleClick"
                          Margin="0,2,0,10"/>
                 <TextBlock DockPanel.Dock="Top" Text="Channels" FontWeight="Bold"/>
-                <ListBox x:Name="ChannelList" Margin="0,2,0,0" DisplayMemberPath="Display"/>
+                <ListBox x:Name="ChannelList" Margin="0,2,0,0" DisplayMemberPath="Display"
+                         SelectionChanged="OnChannelSelected"/>
             </DockPanel>
 
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch"/>
 
-            <TabControl Grid.Column="2" Margin="8">
+            <TabControl x:Name="MainTabs" Grid.Column="2" Margin="8" SelectionChanged="OnMainTabChanged">
                 <TabItem Header="Live">
                     <DockPanel>
                         <ToolBar DockPanel.Dock="Top">
@@ -194,27 +195,89 @@
                     </DockPanel>
                 </TabItem>
 
-                <TabItem Header="Playback / Export">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="180"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-
-                        <ToolBar Grid.Row="0">
-                            <TextBlock Text="From " VerticalAlignment="Center"/>
-                            <TextBox x:Name="StartBox" Width="150"/>
-                            <TextBlock Text=" to " VerticalAlignment="Center"/>
-                            <TextBox x:Name="EndBox" Width="150"/>
-                            <Button Content="Search" Click="OnSearch" Margin="8,0,0,0"/>
+                <TabItem Header="Playback / Export" x:Name="PlaybackTab">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <Button Content="◀" Click="OnPlaybackPrevDay" ToolTip="Previous day"/>
+                            <DatePicker x:Name="PlaybackDatePicker" Width="125"
+                                        SelectedDateChanged="OnPlaybackDateChanged"/>
+                            <Button Content="▶" Click="OnPlaybackNextDay" ToolTip="Next day"/>
+                            <TextBlock x:Name="PlaybackDaysText" VerticalAlignment="Center" Margin="8,0,4,0"/>
                             <Separator/>
-                            <Button Content="Export range…" Click="OnExportRange"/>
+                            <TextBlock Text="Stream: " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="PlaybackStreamCombo" Width="70" SelectedIndex="0"
+                                      SelectionChanged="OnPlaybackStreamChanged">
+                                <ComboBoxItem Content="Main"/>
+                                <ComboBoxItem Content="Sub"/>
+                            </ComboBox>
+                            <Separator/>
+                            <Button Content="Zoom −" Click="OnPlaybackZoomOut"/>
+                            <Button Content="Zoom +" Click="OnPlaybackZoomIn"/>
+                            <Button Content="Whole day" Click="OnPlaybackZoomDay"/>
+                            <Separator/>
+                            <ToggleButton x:Name="ResultsToggle" Content="Segment list"
+                                          Checked="OnResultsToggle" Unchecked="OnResultsToggle"/>
+                            <ToolBar.ToolTip>
+                                <TextBlock>
+                                    Recorded footage for the selected camera, one day at a time.<LineBreak/>
+                                    <LineBreak/>
+                                    Video comes over the recorder's <Bold>web port</Bold> — the same port the export<LineBreak/>
+                                    uses — so it plays wherever this tool can log in; RTSP is not needed.<LineBreak/>
+                                    Dahua footage passes through ffmpeg on the way (it must be on PATH).<LineBreak/>
+                                    <LineBreak/>
+                                    On the timeline: click to play from there, drag to select a range to<LineBreak/>
+                                    export, wheel to zoom, right-drag to pan.
+                                </TextBlock>
+                            </ToolBar.ToolTip>
                         </ToolBar>
 
-                        <DataGrid x:Name="ResultsGrid" Grid.Row="1" AutoGenerateColumns="False"
-                                  IsReadOnly="True" SelectionMode="Single" Margin="0,4">
+                        <ToolBar DockPanel.Dock="Bottom">
+                            <Button x:Name="PlaybackPlayPauseButton" Content="▶ Play" Width="90"
+                                    Click="OnPlaybackPlayPause"/>
+                            <Button Content="⏹ Stop" Click="OnPlaybackStop"/>
+                            <TextBlock Text=" Speed " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="PlaybackSpeedCombo" Width="60" SelectedIndex="0"
+                                      SelectionChanged="OnPlaybackSpeedChanged">
+                                <ComboBoxItem Content="1×"/>
+                                <ComboBoxItem Content="2×"/>
+                                <ComboBoxItem Content="4×"/>
+                                <ComboBoxItem Content="8×"/>
+                            </ComboBox>
+                            <Separator/>
+                            <TextBlock x:Name="PlaybackClockText" FontFamily="Consolas, Segoe UI"
+                                       VerticalAlignment="Center" MinWidth="210" Margin="4,0"/>
+                            <Separator/>
+                            <Button Content="⬇ Export selection…" Click="OnExportSelection"/>
+                            <Button Content="⬇ Download segment…" Click="OnDownloadSegment"
+                                    ToolTip="The row selected in the segment list"/>
+                            <CheckBox x:Name="RemuxCheck" Content="Remux to a playable file"
+                                      IsChecked="True" VerticalAlignment="Center" Margin="4,0">
+                                <CheckBox.ToolTip>
+                                    <TextBlock>
+                                        Applies to both &quot;Export selection&quot; and &quot;Download segment&quot;.<LineBreak/>
+                                        <LineBreak/>
+                                        NVR exports are MPEG program streams (Hikvision) or DHAV/.dav<LineBreak/>
+                                        (Dahua) whatever they are named, and most players outside VLC<LineBreak/>
+                                        refuse them. This rebuilds the container with ffmpeg as a stream<LineBreak/>
+                                        copy — nothing is re-encoded, so the footage stays bit-identical<LineBreak/>
+                                        evidence. Requires ffmpeg on PATH.
+                                    </TextBlock>
+                                </CheckBox.ToolTip>
+                            </CheckBox>
+                            <Separator/>
+                            <ProgressBar x:Name="DownloadProgress" Width="140" Height="14"/>
+                            <TextBlock x:Name="DownloadLabel" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        </ToolBar>
+
+                        <TextBlock x:Name="PlaybackSelectionText" DockPanel.Dock="Bottom" Margin="2,0,2,2"
+                                   Foreground="Gray"/>
+                        <local:TimelineControl x:Name="PlaybackTimeline" DockPanel.Dock="Bottom"
+                                               Height="64" Margin="0,4,0,2"/>
+
+                        <DataGrid x:Name="ResultsGrid" DockPanel.Dock="Bottom" Height="150"
+                                  Visibility="Collapsed" AutoGenerateColumns="False"
+                                  IsReadOnly="True" SelectionMode="Single" Margin="0,4,0,0"
+                                  MouseDoubleClick="OnResultDoubleClick">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Ch" Width="50"
                                                     Binding="{Binding Channel}"/>
@@ -235,34 +298,10 @@
                             </DataGrid.Columns>
                         </DataGrid>
 
-                        <ToolBar Grid.Row="2">
-                            <Button Content="▶ Play selected" Click="OnPlaySegment"/>
-                            <Button Content="⬇ Download selected…" Click="OnDownloadSegment"/>
-                            <Button Content="⏹ Stop" Click="OnPlaybackStop"/>
-                            <Separator/>
-                            <CheckBox x:Name="RemuxCheck" Content="Remux to a playable file"
-                                      IsChecked="True" VerticalAlignment="Center" Margin="4,0">
-                                <CheckBox.ToolTip>
-                                    <TextBlock>
-                                        Applies to both &quot;Download selected&quot; and &quot;Export range&quot;.<LineBreak/>
-                                        <LineBreak/>
-                                        NVR exports are MPEG program streams (Hikvision) or DHAV/.dav<LineBreak/>
-                                        (Dahua) whatever they are named, and most players outside VLC<LineBreak/>
-                                        refuse them. This rebuilds the container with ffmpeg as a stream<LineBreak/>
-                                        copy — nothing is re-encoded, so the footage stays bit-identical<LineBreak/>
-                                        evidence. Requires ffmpeg on PATH.
-                                    </TextBlock>
-                                </CheckBox.ToolTip>
-                            </CheckBox>
-                            <Separator/>
-                            <ProgressBar x:Name="DownloadProgress" Width="180" Height="14"/>
-                            <TextBlock x:Name="DownloadLabel" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                        </ToolBar>
-
-                        <Border Grid.Row="3" Background="Black">
+                        <Border Background="Black">
                             <vlc:VideoView x:Name="PlaybackVideo"/>
                         </Border>
-                    </Grid>
+                    </DockPanel>
                 </TabItem>
 
                 <TabItem Header="Users">

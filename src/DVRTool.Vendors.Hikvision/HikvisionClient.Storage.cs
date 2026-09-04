@@ -352,7 +352,7 @@ public sealed partial class HikvisionClient : IStorageClient
         for (int i = 0; i < CalendarMaxMonths; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var days = await GetRecordedDaysAsync(trackId, month.Year, month.Month, ct);
+            var days = await GetRecordedDaysForTrackAsync(trackId, month.Year, month.Month, ct);
             if (days.Count > 0)
             {
                 earliestDay = month.AddDays(days.Min() - 1);
@@ -389,7 +389,7 @@ public sealed partial class HikvisionClient : IStorageClient
     /// Days of one month that hold footage for a track — the web UI's playback calendar
     /// (<c>POST /ISAPI/ContentMgmt/record/tracks/{track}/dailyDistribution</c>).
     /// </summary>
-    private async Task<IReadOnlyList<int>> GetRecordedDaysAsync(int trackId, int year,
+    private async Task<IReadOnlyList<int>> GetRecordedDaysForTrackAsync(int trackId, int year,
         int month, CancellationToken ct)
     {
         string path = $"/ISAPI/ContentMgmt/record/tracks/{trackId}/dailyDistribution";

@@ -244,6 +244,22 @@ public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
     private async Task DownloadByPlaybackUriAsync(string playbackUri, string destinationPath,
         IProgress<long>? bytesProgress, CancellationToken ct)
     {
+        var (response, body) = await OpenDownloadAsync(playbackUri, ct);
+        using (response)
+        await using (body)
+        {
+            await AtomicDownload.WriteAsync(body, destinationPath, bytesProgress, ct);
+        }
+    }
+
+    /// <summary>
+    /// Opens <c>/ISAPI/ContentMgmt/download</c> for a playbackURI and returns the media body
+    /// with its first bytes already confirmed present. Shared by the export (which writes it
+    /// to a file) and playback (which hands it to a decoder).
+    /// </summary>
+    private async Task<(HttpResponseMessage Response, PrefixedStream Body)> OpenDownloadAsync(
+        string playbackUri, CancellationToken ct)
+    {
         string body =
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
             $"<downloadRequest><playbackURI>{SecurityElement.Escape(playbackUri)}</playbackURI></downloadRequest>";
@@ -258,7 +274,7 @@ public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
                 Content = new StringContent(body, Encoding.UTF8, "application/xml"),
             };
 
-            using var resp = await _downloadHttp.SendAsync(
+            var resp = await _downloadHttp.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, ct);
 
             string mediaType = resp.Content.Headers.ContentType?.MediaType ?? "";
@@ -267,25 +283,33 @@ public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
                 // XML back means an ISAPI error payload, not video.
                 string errText = await resp.Content.ReadAsStringAsync(ct);
                 errors.Add($"{method} → {(int)resp.StatusCode} {resp.ReasonPhrase}: {Truncate(errText, 300)}");
+                resp.Dispose();
                 continue;
             }
 
-            await using var source = await resp.Content.ReadAsStreamAsync(ct);
-            long total = await AtomicDownload.WriteAsync(source, destinationPath, bytesProgress, ct);
-            if (total == 0)
+            var source = await resp.Content.ReadAsStreamAsync(ct);
+            var peeked = await PrefixedStream.PeekAsync(source, DownloadPeekBytes, ct);
+            if (peeked is null)
             {
                 // Firmware that ignores GET-with-body can answer 200 with an empty
                 // stream; treat it as a per-method failure so POST still gets tried.
                 errors.Add($"{method} → {(int)resp.StatusCode} but empty stream");
+                resp.Dispose();
                 continue;
             }
-            return;
+            return (resp, peeked);
         }
 
         throw new NvrException(
             "ISAPI download failed via both GET and POST (an empty stream usually means " +
             "no footage in that range):\n  " + string.Join("\n  ", errors));
     }
+
+    /// <summary>
+    /// How much of the body is read before it counts as video. Small: it is only there to
+    /// tell an empty answer from a real one, and a playback start waits on it.
+    /// </summary>
+    private const int DownloadPeekBytes = 16 * 1024;
 
     public async Task<IReadOnlyList<NvrUser>> GetUsersAsync(CancellationToken ct = default)
     {

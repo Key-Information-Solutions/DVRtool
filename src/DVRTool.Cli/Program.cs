@@ -22,6 +22,8 @@ const string Usage = """
       storage         Disks, retention, recording schedules and bitrate planning
                       (see: dvrtool storage --help)
       search          List recordings for a channel in a window
+      footage         Which days of a month hold footage for a channel; --probe opens
+                      the playback body the GUI plays and says what arrived
       download        Export footage for a time span to a file
       live            Record live video over the SDK port (Hikvision) — the transport
                       that works when RTSP is closed
@@ -49,6 +51,9 @@ const string Usage = """
       --channel <n>                1-based display channel
       --start / --end              "yyyy-MM-dd HH:mm[:ss]" (NVR-local time)
       --stream <main|sub>          default: main
+      --month <yyyy-MM>            `footage`: the month to list (default: this month)
+      --probe <yyyy-MM-dd HH:mm>   `footage`: open playback from this moment over the web
+                                   port for a few seconds and report the container seen
       --seconds <n>                how long `live` records (default 10, max 3600)
       --sdk-dir <path>             folder holding HCNetSDK.dll, or DVR_SDK_DIR — only
                                    `live` needs it (default: the iVMS-4200 /
@@ -249,6 +254,17 @@ try
             TimeSpan total = TimeSpan.FromSeconds(segments.Sum(s => s.Duration.TotalSeconds));
             Console.WriteLine($"\n{segments.Count} segment(s), {FormatDuration(total)} of footage.");
             return 0;
+        }
+        case "footage":
+        {
+            if (client is not IPlaybackClient playback)
+            {
+                Console.Error.WriteLine(
+                    $"error: playback isn't implemented for {client.Vendor} devices.");
+                return 2;
+            }
+            int channel = RequireChannel(opts);
+            return await RunFootageAsync(client, playback, channel, opts, cts.Token);
         }
         case "download":
         {
@@ -992,6 +1008,96 @@ static void TryDelete(string path)
     try { File.Delete(path); }
     catch (IOException) { }
     catch (UnauthorizedAccessException) { }
+}
+
+/// <summary>
+/// The playback calendar, and on request a probe of the transport the GUI's Playback tab
+/// uses: the recorder's export body over the web port, read for a few seconds and sniffed.
+/// That is the question a tech at a new site wants answered without opening the GUI —
+/// "will playback work here?" — and it exercises exactly the code path the tab does,
+/// including the ffmpeg rewrap Dahua footage needs.
+/// </summary>
+static async Task<int> RunFootageAsync(INvrClient client, IPlaybackClient playback, int channel,
+    Dictionary<string, string> opts, CancellationToken ct)
+{
+    DateTime month = DateTime.Today;
+    if (opts.TryGetValue("month", out var monthText))
+    {
+        if (!DateTime.TryParseExact(monthText, "yyyy-MM", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out month))
+            throw new ArgumentException($"can't parse --month '{monthText}' (use yyyy-MM)");
+    }
+
+    var days = await playback.GetRecordedDaysAsync(channel, month.Year, month.Month, ct);
+    Console.WriteLine(days.Count == 0
+        ? $"Channel {channel}, {month:MMMM yyyy}: no footage."
+        : $"Channel {channel}, {month:MMMM yyyy}: footage on {days.Count} day(s): " +
+          string.Join(", ", days));
+
+    if (!opts.TryGetValue("probe", out var probeText))
+        return 0;
+
+    var at = ParseTime(probeText);
+    var stream = ParseStream(opts);
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    using var body = await playback.OpenPlaybackAsync(channel, at, at.Date.AddDays(1), stream, ct);
+    Console.WriteLine(
+        $"Opened playback from {at:yyyy-MM-dd HH:mm:ss} ({stream}) in {sw.ElapsedMilliseconds} ms — " +
+        $"container {body.Container}, over the web port {client.Connection.HttpPort}.");
+
+    var (bytes, head) = await ReadSomeAsync(body.Body, 2 * 1024 * 1024, TimeSpan.FromSeconds(8), ct);
+    Console.WriteLine(
+        $"  raw body: {bytes / 1024.0:F0} KB in {sw.Elapsed.TotalSeconds:F1} s, sniffed as " +
+        $"{ContainerSniffer.DisplayName(ContainerSniffer.Sniff(head))} " +
+        $"({Convert.ToHexString(head.AsSpan(0, Math.Min(8, head.Length)))}).");
+
+    if (body.Container == PlaybackContainer.Dhav)
+    {
+        // The GUI cannot decode DHAV; it plays what ffmpeg makes of it, so that is what gets probed.
+        using var pipe = ContainerPipe.Start(body.Body, "dhav", "mpegts");
+        var (tsBytes, tsHead) = await ReadSomeAsync(pipe.Output, 512 * 1024, TimeSpan.FromSeconds(8), ct);
+        bool sync = tsHead.Length > 0 && tsHead[0] == 0x47;
+        Console.WriteLine(
+            $"  through ffmpeg: {tsBytes / 1024.0:F0} KB of MPEG-TS, " +
+            (sync ? "sync byte present — playable." : "NO sync byte — ffmpeg did not produce a transport stream."));
+        if (tsBytes == 0)
+        {
+            pipe.Dispose();
+            string diag = pipe.Diagnostics.Trim();
+            if (diag.Length > 0)
+                Console.WriteLine($"  ffmpeg: {diag}");
+            return 1;
+        }
+    }
+    return bytes > 0 ? 0 : 1;
+}
+
+/// <summary>Reads up to a byte budget or a time budget, whichever first; returns the total and the first bytes.</summary>
+static async Task<(long Total, byte[] Head)> ReadSomeAsync(Stream source, long budget, TimeSpan window,
+    CancellationToken ct)
+{
+    using var timed = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    timed.CancelAfter(window);
+    var buffer = new byte[64 * 1024];
+    var head = new List<byte>(64);
+    long total = 0;
+    try
+    {
+        while (total < budget)
+        {
+            int n = await source.ReadAsync(buffer, timed.Token);
+            if (n == 0)
+                break;
+            for (int i = 0; i < n && head.Count < 64; i++)
+                head.Add(buffer[i]);
+            total += n;
+        }
+    }
+    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+    {
+        // The time budget: what arrived is the answer.
+    }
+    return (total, head.ToArray());
 }
 
 static string FormatDuration(TimeSpan t) =>

@@ -234,3 +234,20 @@ HTTPS 443, a 307 to a regional node that `NxRelayHandler` follows once keeping t
 header, chain validation instead of the cert pin (Let's Encrypt wildcard, rotates), the same local
 login, **no RTSP** (`GetLiveUri`/`GetPlaybackUri` throw `NotSupportedException` with a message the
 front ends show; the dialog and `dvrtool test` skip the RTSP row).
+
+**Recorded playback** (2026-09-04, `docs/playback.md`): the GUI Playback / Export tab is a
+day-per-camera **timeline** (`TimelineControl`, geometry in `TimelineWindow`/`FootageCoverage`/
+`PlaybackClock` in Core, all tested) — click seeks, drag selects an export range, wheel zooms,
+right-drag pans — and the video comes over the **web port, never RTSP**: `IPlaybackClient`
+(`*Client.Playback.cs`) hands the export body to LibVLC through a `StreamMediaInput`, a seek is
+a new request, pause pauses the download. Hikvision's download body opens with a **64-byte IMKH
+envelope** before the first pack header, which VLC's PS demuxer refuses and ffmpeg silently
+skips — `SkipTo` drops it. Dahua's `loadfile.cgi` refuses any window **over ~6 h** (400; 6 h
+verified, 8 h refused, midnight irrelevant) so `MaxLoadfileWindow` caps requests and the tab
+continues from where a body ends; and the shipped LibVLC has **no avformat plugin**, so DHAV
+goes through `ContainerPipe` (ffmpeg `-f dhav … -c:v copy -an -f mpegts`, back-pressured end to
+end). Nx plays `/media/{id}.mkv` and so works through the DW Cloud relay. Every face peeks the
+first 16 KB so "accepted, sent nothing" fails up front. `dvrtool footage --probe` opens exactly
+the body the GUI plays and reports what arrived; verified 2026-09-04 on Site C, Site B
+and Site D (relay). Hikvision SDK playback (`NET_DVR_PlayBackByTime_V40`) is approved but
+unbuilt; Dahua export does not chunk past the 6 h ceiling.
