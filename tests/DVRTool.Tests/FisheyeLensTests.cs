@@ -173,18 +173,18 @@ public class FisheyeLensTests
     public void DefaultsInscribeTheCircleInTheShorterSide()
     {
         // Site C: square.
-        var kia = FisheyeCalibration.Default(2560, 2560);
-        Assert.Equal(1280, kia.CenterX, 9);
-        Assert.Equal(1280, kia.CenterY, 9);
-        Assert.Equal(1280, kia.RadiusX, 9);
+        var siteC = FisheyeCalibration.Default(2560, 2560);
+        Assert.Equal(1280, siteC.CenterX, 9);
+        Assert.Equal(1280, siteC.CenterY, 9);
+        Assert.Equal(1280, siteC.RadiusX, 9);
 
         // Site H: 4:3, and iVMS will not dewarp it at all. The circle is inscribed in the
         // height and cropped left and right, which is an ordinary calibration here.
-        var casaMaya = FisheyeCalibration.Default(2592, 1944);
-        Assert.Equal(1296, casaMaya.CenterX, 9);
-        Assert.Equal(972, casaMaya.CenterY, 9);
-        Assert.Equal(972, casaMaya.RadiusX, 9);
-        Assert.Null(casaMaya.Validate());
+        var siteH = FisheyeCalibration.Default(2592, 1944);
+        Assert.Equal(1296, siteH.CenterX, 9);
+        Assert.Equal(972, siteH.CenterY, 9);
+        Assert.Equal(972, siteH.RadiusX, 9);
+        Assert.Null(siteH.Validate());
     }
 
     [Fact]

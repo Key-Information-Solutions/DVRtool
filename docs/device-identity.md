@@ -1,7 +1,7 @@
 # Device identity — why a successful login is not proof of anything
 
-**Established:** 2026-08-24, prompted by the live-video work: Site A runs more than
-one system behind a single IP, separated only by forwarded port, on one shared account.
+**Established:** 2026-08-24, prompted by the live-video work: a customer site (Site A) runs
+more than one system behind a single IP, separated only by forwarded port, on one shared account.
 
 The question this answers: *"we authenticated, so we're talking to the right recorder —
 right?"* No. On a fleet with shared credentials, authentication proves the password is good

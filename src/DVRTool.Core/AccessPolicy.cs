@@ -212,7 +212,7 @@ public sealed record AccessPolicy
 /// <remarks>
 /// The descriptor looks like <c>"(default) = 00:00:00;24:00:00;FFFF;FFFF"</c>: a label, then
 /// begin;end;weekMask;weekMask. 24/7 is a full day (00:00:00–24:00:00) on every day (both
-/// masks all-F). Anything else — the live "Group C" group begins 00:02:00 — is not 24/7,
+/// masks all-F). Anything else — a live group begins 00:02:00 — is not 24/7,
 /// which is all this build needs to know to warn that it is approximating the restriction.
 /// </remarks>
 public static class AccessSchedule

@@ -1,7 +1,7 @@
 # Handoff — Access-Control support for DVRTool (Hikvision/OEM "OCB" door panels)
 
-**Written:** 2026-08-19, by a session working from the Site A Seating Charts project.
-**For:** a session assigned to `E:\DVRtool` that will implement this against the **live** Site A door-access system.
+**Written:** 2026-08-19, by a session working from a related internal project.
+**For:** a session assigned to `E:\DVRtool` that will implement this against a **live** customer door-access system (referred to below as Site A).
 **Status (updated 2026-08-19):** IMPLEMENTED for reads; writes are coded but not yet fired at
 production. See **`hikvision-access-control-findings.md`** for what the hardware actually does —
 it corrects §7 (enumeration is callback-driven, not a `GetNextRemoteConfig` loop), answers the
@@ -20,7 +20,7 @@ plus the gated writes for scripting:
 - **Read (build first):** enumerate the persons and their fobs (cards) provisioned on each door panel; look a person up by name. This closes the last manual step in Site A's offboarding — verifying a departed employee's door access is actually gone.
 - **Write (build second, gated):** create a fob for a new hire, revoke/delete a person or fob for a leaver.
 
-This is a **KIS-general tool feature** (DVRTool is not customer-scoped), but the only live system to build against right now is **Site A**. Everything you need to reach it is below.
+This is a general tool feature (DVRTool is not customer-scoped), but the only live system to build against right now is **Site A**. Everything you need to reach it is below.
 
 ## 2. Why this belongs in DVRTool
 
@@ -38,18 +38,18 @@ DVRTool already talks to Hikvision gear and already has the right seams:
 | `192.0.2.222` | DS-K2604 / "OCB" | firmware V2.0.009 (2021 unit) |
 | `192.0.2.223` | DS-K2604 / "OCB" | firmware V2.0.004 (2018 unit) |
 
-- **"OCB" is the OEM brand** — it's literally the serial prefix (`OCB-K2604...`). `devType = 850`. These are the classic 4-door controllers the blue key-fobs terminate on. There is **also** an NVR at `192.0.2.17` (`admin`/`REDACTED-ROTATE-THIS-PASSWORD`) and cameras — **those are video, not access control; ignore them for this work.**
+- **"OCB" is the OEM brand** — it's literally the serial prefix (`OCB-K2604...`). `devType = 850`. These are the classic 4-door controllers the blue key-fobs terminate on. There is **also** an NVR on the same subnet and cameras — **those are video, not access control; ignore them for this work.**
 - **Transport:** SDK **port 8000 only**. The panels have **no HTTP/HTTPS** and Remote Configuration exposes no way to enable it. Confirmed closed: 80, 443, 81, 88, 8080, 8081, 8443, 7071 on all three. 8000 is open on all three.
 - **Credentials:** username `admin`, password in `.env` as `OCB_PASS` (also `OCB_USER`, `OCB_PANELS`, `OCB_SDK_PORT`). **Verified working on all three panels** via `NET_DVR_Login_V30` and `NET_DVR_Login_V40`. The panel password is **different** from the NVR/camera password — do not confuse them.
 
 ### How to reach the panels (you are not on their network)
 
-The panels live on Site A's LAN (`192.0.2.0/24`). Your repo is on **the dev workstation**, which has **no route** to that subnet. All live interaction goes through **the relay host** (`DOMAIN\svc-account`, elevated), which is on that LAN and has the Hikvision SDK installed.
+The panels live on Site A's LAN (`192.0.2.0/24`). Your repo is on a workstation with **no route** to that subnet. All live interaction goes through an on-site relay host (a domain-joined, elevated account on that LAN with the Hikvision SDK installed).
 
-- **Interactive probing / fast iteration:** the `remote-agent` MCP — `mcp__remote-agent__remote_exec` with `host="the relay host"`, `shell="powershell"`. This is how all the recon in §6 was done: PowerShell + `Add-Type` P/Invoke against the SDK DLLs already on the relay host. Iterate struct layouts here **before** writing C# — it's a seconds-long loop with no build/deploy.
+- **Interactive probing / fast iteration:** the `remote-agent` MCP — `mcp__remote-agent__remote_exec` with `host="<relay-host>"`, `shell="powershell"`. This is how all the recon in §6 was done: PowerShell + `Add-Type` P/Invoke against the SDK DLLs already on the relay host. Iterate struct layouts here **before** writing C# — it's a seconds-long loop with no build/deploy.
 - **Deploying the built CLI to run live:** `dotnet publish -r win-x64 --self-contained` (the relay host may not have your target .NET runtime), then push via the remote-agent relay:
   ```bash
-  curl.exe -sS --fail-with-body --url-query "host=the relay host" --url-query "path=C:\Temp\dvrtool\dvrtool.exe" --url-query "overwrite=1" -H "Authorization: Bearer $env:REMOTE_AGENT_MCP_TOKEN" -T ".\publish\dvrtool.exe" http://203.0.113.10:8766/api/push
+  curl.exe -sS --fail-with-body --url-query "host=<relay-host>" --url-query "path=C:\Temp\dvrtool\dvrtool.exe" --url-query "overwrite=1" -H "Authorization: Bearer $env:REMOTE_AGENT_MCP_TOKEN" -T ".\publish\dvrtool.exe" http://<relay-server>:8766/api/push
   ```
   The exe must run where HCNetSDK's dependencies resolve — see §7 on the working-directory / DLL requirement.
 
@@ -60,7 +60,7 @@ The panels live on Site A's LAN (`192.0.2.0/24`). Your repo is on **the dev work
 3. **Read before write, always.** The read path (§ enumeration) has zero side effects. Prove it fully before writing anything.
 4. **iVMS divergence — the real trap.** iVMS-4200 keeps a *central* Person roster and treats each panel as its source of truth. Its **"Get from Device"** button pulls a panel's records **into** iVMS and **overwrites** iVMS's copy (it even prompts you to export the config first). So: an SDK write you make lands on the **panel**, and iVMS won't know until someone re-syncs — and a re-sync in the wrong direction could clobber your change or resurrect a deleted one. Decide authority *before* shipping writes (see §9). For the read phase this doesn't matter.
 5. **These are physical doors.** A botched write can lock staff out or grant a stranger access. Writes must be tested on a **throwaway test person/fob first**, verified present, then verified removed — never a live employee as the first canary. Mirror the repo's `--force`-gated, verify-after-write discipline.
-6. **This is customer production infrastructure.** Even though DVRTool is KIS-general, you are operating Site A's live access-control system. Be conservative.
+6. **This is customer production infrastructure.** Even though DVRTool is general-purpose, you are operating Site A's live access-control system. Be conservative.
 
 ## 5. Course-correction: it is NOT ISAPI (don't waste time here)
 
@@ -71,7 +71,7 @@ An earlier plan assumed `NET_DVR_STDXMLConfig` would tunnel ISAPI JSON (`/ISAPI/
 All of the following was run live against the panels and confirmed:
 
 - **SDK loads and initializes** from 64-bit PowerShell using the 64-bit SDK at `C:\Program Files (x86)\HikCentral Lite\Client\HCNetSDK.dll` (v6.1.9.139). The plugin folder `HCNetSDKCom\` (incl. `HCCoreDevCfg.dll`) and `HCCore.dll`, `libcrypto-3.dll` are all present there. (There's also a 32-bit set under the iVMS-4200 install — only if you ever go 32-bit.)
-- **Login works** via both `NET_DVR_Login_V30` and `NET_DVR_Login_V40` on all three panels with `admin`/`OCB_PASS`.
+- **Login works** via both `NET_DVR_Login_V30` and `NET_DVR_Login_V40` on all three panels with `admin`/`OCB_PASS` (the real password, kept only in `.env`, never in this doc).
 - **STDXMLConfig = NOSUPPORT** (see §5).
 - **The structured device-config channel is ALIVE.** `NET_DVR_GetDeviceConfig` with `NET_DVR_GET_ACS_WORK_STATUS_V50` (command **2110**) returned error **17 = `NET_DVR_PARAMETER_ERROR`** (my input buffer was wrong), **not** 23 — i.e. the ACS config subsystem responds; only the exact struct/params need to be right. **This is the path.**
 
@@ -132,7 +132,7 @@ Writes use `NET_DVR_SetDeviceConfig` (or the corresponding remote-config SET com
 1. **Authoritative:** the **"Device Network SDK (for Access Control)" developer guide + headers** from Hikvision/the OEM. This gives you `NET_DVR_GET_USERINFO_CFG` / `NET_DVR_SET_USERINFO_CFG`, `NET_DVR_GET_CARD_CFG` / `NET_DVR_SET_CARD_CFG` (and the `_V50` variants), their search-condition and record structs, and the command numeric IDs. **Note:** the relay host has only the runtime DLLs, **not** the headers — download the SDK package. Anchor you already have: `NET_DVR_GET_ACS_WORK_STATUS_V50 = 2110`.
 2. **Empirical:** nail struct sizes/layouts the same way login was nailed — `remote_exec` P/Invoke probes, watching for err 17 (param/struct wrong) vs a clean return. `NET_DVR_GetLastError` + trial on the live panel converges fast.
 
-**Person vs card model caveat:** DS-K2604 at V2.0 firmware may use the older **card + user** model rather than the newer **"person"** model. Determine which these panels speak early — it changes the structs. Join key for offboarding is the **person name** (Site A convention is `First.Last`); a **fob = a card number** attached to a person/user.
+**Person vs card model caveat:** DS-K2604 at V2.0 firmware may use the older **card + user** model rather than the newer **"person"** model. Determine which these panels speak early — it changes the structs. Join key for offboarding is the **person name** (Site A's convention is `First.Last`); a **fob = a card number** attached to a person/user.
 
 ## 8. Architecture (match the existing repo patterns)
 
@@ -165,7 +165,7 @@ the vendor driver below.
   dvrtool access revoke     --card <no> --panel <ip>
   ```
 - **`tests/DVRTool.Tests`** — unit-test the driver against canned SDK record buffers (mirror `MockHttpHandler` approach: feed captured byte layouts, assert parsed models). The SDK itself can't be mocked, so test the parsing/marshalling layer with real captured bytes.
-- **Offboarding integration:** the Site A offboarding tool (`offboard_user.ps1`, separate repo on the relay host) currently just prints a manual "delete from iVMS" checklist line. Once `dvrtool access find --name --panel all` works, that tool can shell out to it. Coordinate with the operator; don't wire it blindly.
+- **Offboarding integration:** Site A's offboarding tool (`offboard_user.ps1`, a separate internal repo) currently just prints a manual "delete from iVMS" checklist line. Once `dvrtool access find --name --panel all` works, that tool can shell out to it. Coordinate with the operator; don't wire it blindly.
 
 ## 9. Open decisions for the operator (Josh) — surface these, don't guess
 
@@ -183,6 +183,6 @@ the vendor driver below.
 
 - SDK dir (64-bit): `C:\Program Files (x86)\HikCentral Lite\Client` — `HCNetSDK.dll` v6.1.9.139, `HCNetSDKCom\HCCoreDevCfg.dll` present.
 - SDK dir (32-bit, fallback): `C:\Program Files (x86)\iVMS-4200 Site\iVMS-4200 Client\Client`.
-- the relay host agent identity: `DOMAIN\svc-account` (elevated). remote-agent relay server: `http://203.0.113.10:8766` (token in `$env:REMOTE_AGENT_MCP_TOKEN`).
-- iVMS-4200 Site is the incumbent GUI managing these panels (on the relay host). An unpassworded iVMS **config export** exists at `a local backup file on that host` — it is a rollback artifact, **not** a credential source (its device DB is encrypted; the panel passwords are not extractable from it).
+- Relay host agent identity: a domain account, elevated. remote-agent relay server address and token are supplied out of band (`$env:REMOTE_AGENT_MCP_TOKEN`), never checked in.
+- iVMS-4200 is the incumbent GUI managing these panels (on the relay host). An unpassworded iVMS **config export** exists as a local backup file on that host — it is a rollback artifact, **not** a credential source (its device DB is encrypted; the panel passwords are not extractable from it).
 - Error codes seen: `1` = password wrong, `7` = connect failed, `17` = parameter/struct error (channel alive, keep going), `23` = NOSUPPORT (function absent — stop trying it).

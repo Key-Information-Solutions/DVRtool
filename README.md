@@ -16,7 +16,7 @@ door-access writes.
 | Dahua / Amcrest | CGI over HTTP (digest) + RTSP | Device info, channels, recording search, the Storage tab and recording schedules live-verified on a DH-NVR608H; download and bitrate writes not yet |
 | Hikvision live video without RTSP | HCNetSDK `RealPlay_V40` over the SDK port (P/Invoke) | Live-verified on a DS-7716NI |
 | Hikvision access control (DS-K / OEM "OCB") | HCNetSDK over the SDK port (P/Invoke) | Reads and writes live-verified |
-| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001; or the DW Cloud relay with no port forward | Storage tab and `dvrtool storage` (`--vendor nx`) live-verified on the Site D E-Rack through the DW Cloud relay (info, channels, disks, retention, recording schedules, dry-run plan); the schedule-bitrate write is not yet fired; no live view through the relay (HTTPS only) |
+| DW Spectrum / Nx Witness | Nx REST v3 (bearer-token sessions) + RTSP, all on 7001; or the DW Cloud relay with no port forward | Storage tab and `dvrtool storage` (`--vendor nx`) live-verified on a DW Blackjack E-Rack through the DW Cloud relay (info, channels, disks, retention, recording schedules, dry-run plan); the schedule-bitrate write is not yet fired; no live view through the relay (HTTPS only) |
 | UniFi Protect | Private `/api/video/export` | Planned |
 
 ## Layout
@@ -233,7 +233,7 @@ read-back verification (see CLI automation). Nothing here writes back toward iVM
 shell for batch jobs, remote or unattended runs, and the higher-stakes operations the app
 deliberately doesn't expose (the door-access writes below). It doubles as the project's
 test harness, and it is what gets published self-contained (win-x64) to run live against
-door panels on a machine like the relay host.
+door panels on a machine with network access to them.
 
 Credentials come from a `.env` file in the working directory (or `--env <path>`), or
 an interactive prompt when neither `--pass` nor `DVR_PASS` is set. Avoid `--pass` on

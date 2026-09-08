@@ -9,7 +9,8 @@ namespace DVRTool.Tests;
 /// <summary>
 /// The Nx Cloud relay path: host recognition, and the handler that follows the relay's 307
 /// to its regional node once and then keeps every request — Authorization header included —
-/// on that node. Shapes are the ones the Site D relay answered on 2026-09-02.
+/// on that node. Shapes are based on a real relay response from 2026-09-02, with identifiers
+/// replaced.
 /// </summary>
 [Collection("NxRelayNodes")]
 public class NxCloudRelayTests
@@ -72,7 +73,7 @@ public class NxCloudRelayTests
             if (req.Method == HttpMethod.Delete && path.StartsWith("/rest/v3/login/sessions/"))
                 return new HttpResponseMessage(HttpStatusCode.OK);
             if (path == "/api/moduleInformation")
-                return MockHttpHandler.Text("""{"reply":{"id":"{11111111-2222-3333-4444-555555555555}","name":"TESTRACK1","systemName":"Site D","brand":"dwspectrum","version":"6.1.1.42624","type":"Media Server"}}""");
+                return MockHttpHandler.Text("""{"reply":{"id":"{11111111-2222-3333-4444-555555555555}","name":"TESTRACK1","systemName":"SiteD","brand":"dwspectrum","version":"6.1.1.42624","type":"Media Server"}}""");
             return MockHttpHandler.Text("[]");
         });
         var conn = Conn();

@@ -11,16 +11,17 @@ busiest schedule cell asks for, and it archives **two** streams per camera.
 
 ## What is and is not verified
 
-The live target is Site D's DW Blackjack E-Rack `a DW Blackjack E-Rack` — "Site D" in the fleet — (DW
+The live target is Site D's DW Blackjack E-Rack (DW
 Spectrum **6.1.1.42624**, 198.51.100.10:7001 on the LAN, 64 cameras, one server; see the
 2026-09-02 field notes). Its router forwards nothing, so everything below was verified
 **through the DW Cloud relay** (next section) on 2026-09-02, with the local `admin` account:
 
 - Anonymous: `GET /api/moduleInformation` (the verbatim reply is a fixture in
-  `NxWitnessStorageTests`: `reply.id` `{11111111-…}` the server GUID, `brand` `dwspectrum`,
-  `systemName` `Site D`, `version` `6.1.1.42624`, `cloudSystemId`), `GET /rest/v3/system/info`
-  (64 device ids, one server, `restApiVersions` v1–v4); `/rest/v3/devices` without a
-  session → 401. On the LAN, RTSP shares the port: `OPTIONS rtsp://198.51.100.10:7001/` →
+  `NxWitnessStorageTests`, with all identifiers genericized: `reply.id` the server GUID,
+  `brand` `dwspectrum`, `systemName`, `version` `6.1.1.42624`, `cloudSystemId`),
+  `GET /rest/v3/system/info` (64 device ids, one server, `restApiVersions` v1–v4);
+  `/rest/v3/devices` without a session → 401. On the LAN, RTSP shares the port:
+  `OPTIONS rtsp://198.51.100.10:7001/` →
   `RTSP/1.0 307`, `Server: DW Spectrum/6.1.1.42624`. The server's own certificate is
   self-signed (`O=Digital Watchdog, CN=DW Spectrum`, to 2027-10-01) and gets the usual pin.
 - `POST /rest/v3/login/sessions` with the local account → `token` `vms-…`, `expiresInS`
@@ -31,9 +32,9 @@ Spectrum **6.1.1.42624**, 198.51.100.10:7001 on the LAN, 64 cameras, one server;
   levels 1 and 3 600 000 and with `limit=1`. What they answered is folded into the traps
   below and into the test fixtures.
 - `dvrtool info | channels | storage disks | storage retention | storage plan (dry run) |
-  storage set (dry run)` end to end: 64 cameras numbered by name (`KoV-…` then `Site D-…`),
-  69.68 TB of recording pool, per-camera oldest footage back to 2026-06-26 (68 days held),
-  the 90-day plan at 800 kbps per camera.
+  storage set (dry run)` end to end: 64 cameras numbered by name (two site-prefix naming
+  conventions), 69.68 TB of recording pool, per-camera oldest footage back to 2026-06-26
+  (68 days held), the 90-day plan at 800 kbps per camera.
 
 **Not exercised live**: the schedule PATCH. No write has been made to this server. The
 canary below stays gated on the operator's go-ahead.

@@ -75,7 +75,7 @@ the lobby" view, but polling JPEGs is not live video and would not replace what 
 The two failures are both **V4.30.090 on DS-7608NI-Q2/8P**, which answers `400
 badXmlContent` to every variant; the same model on V4.75.207 is fine, so it is that build.
 
-One probe artifact worth remembering: a recorder can have **no channel 1**. one site's
+One probe artifact worth remembering: a recorder can have **no channel 1**. One site's
 channels start at 201, so anything that assumes track 101 exists is wrong — read
 `/ISAPI/Streaming/channels` for real ids.
 
@@ -188,7 +188,7 @@ about the stream and one about LibVLC combine:
   late and drops it ("More than N late frames, dropping frame"). The keyframe that started
   the stream got through before the queue existed — hence exactly one picture.
 
-The .233 I-series recorder has the identical stream structure and only *looked* fine because
+The lab I-series recorder has the identical stream structure and only *looked* fine because
 at 30 fps ten frames is 333 ms: it was dropping 108 of 532 frames in the same probe, which
 reads as "slightly jerky" rather than "frozen".
 
@@ -235,8 +235,8 @@ stream would arrive with `Load HCPreview.dll success!` in the middle of the vide
 A successful SDK login proves the credentials, not the hardware — the same problem
 `docs/device-identity.md` exists for, and worse here, because **the SDK port is a separate
 forward from the web port and can point at a different recorder**. Two of our sites had
-exactly that collision (`203.0.113.50:8000` served two Acura records;
-`203.0.113.51:8000` served both Site H and a different customer).
+exactly that collision (one WAN address served two records for the same site; another WAN
+address served two different customers' recorders).
 
 So the SDK session verifies against `DeviceIdentityGuard.AddressOf(conn)` — the **HTTP**
 port's key, not a second key of its own. That is deliberate: a per-transport pin would mean
@@ -420,7 +420,7 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
     stops the once-a-GOP keyframe from making the bitrate jump every few seconds.
   - **The denominator is the camera's configured rate**, read off the video track's
     `FrameRateNum/Den` — the encoder's declared timing (SPS VUI), which on Hikvision is the
-    frame rate the camera is set to (Site C: 90000/4500 → 20, 12000/1000 → 12; the .233 over
+    frame rate the camera is set to (Site C: 90000/4500 → 20, 12000/1000 → 12; the lab recorder over
     RTSP 30000/1000 → 30). So "11/12 fps" is measured over configured with no extra device
     call, and a stream that omits the timing shows the measured figure alone.
 
@@ -453,7 +453,7 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
 
 The port survey that motivated this also turned up configuration errors worth keeping in
 mind when reading any per-site result: two pairs of records pointing at the *same* SDK
-endpoint, and one site (one site, two recorders behind `203.0.113.52`) with no SDK
-forward at all. The identity guard is what turns the first kind into an error instead of a
-wrong-camera feed. Site-by-site addresses and open ports are deliberately not recorded here —
+endpoint, and one site with two recorders behind a single WAN address and no SDK forward at
+all. The identity guard is what turns the first kind into an error instead of a wrong-camera
+feed. Site-by-site addresses and open ports are deliberately not recorded here —
 customer names and WAN ports do not belong in git.

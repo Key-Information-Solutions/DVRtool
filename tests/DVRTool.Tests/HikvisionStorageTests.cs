@@ -162,7 +162,7 @@ public class HikvisionStorageTests
         Assert.Equal("15.0", ch2.FrameRateText);
     }
 
-    // the lab recorder 2026-09-02: 6 of 9 cameras send maxFrameRate 0 — the web UI's "Full Frame
+    // The lab recorder, 2026-09-02: 6 of 9 cameras send maxFrameRate 0 — the web UI's "Full Frame
     // Rate" — and the channel capabilities' opt list says what that resolves to.
     private static string FullRateChannelsXml(string ns) => $"""
         <StreamingChannelList version="2.0" xmlns="{ns}">

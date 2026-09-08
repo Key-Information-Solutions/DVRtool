@@ -9,7 +9,7 @@ namespace DVRTool.Vendors.NxWitness;
 /// 7001. DW Cloud is Nx Cloud under another name, so the same domain serves DW Spectrum.
 /// </summary>
 /// <remarks>
-/// Verified on Site D (Site D) 2026-09-02: the relay answers a <c>307</c> to a regional node
+/// Verified on Site D 2026-09-02: the relay answers a <c>307</c> to a regional node
 /// (<c>…relay-us-mia-1-prod-dp.vmsproxy.com</c>) that must be followed once, with the request's
 /// own headers; it presents a Let's Encrypt wildcard certificate that rotates every 90 days
 /// (so the trust-on-first-use pin does not apply — chain validation does); it carries HTTPS

@@ -51,11 +51,11 @@ port. The media server listens on **7001** and sniffs the protocol, so HTTPS (th
 port are the same number, TLS is on by default (self-signed cert, pinned like every other
 vendor's), and there is **no vendor SDK port at all**. `VendorPorts.HasSdkPort` is false for
 it, the record carries `SdkPort` 0, the Add-NVR dialog hides the row, and `dvrtool test`
-probes two ports instead of three. Verified on the Site D E-Rack: an RTSP `OPTIONS` to
+probes two ports instead of three. Verified on a DW Blackjack E-Rack: an RTSP `OPTIONS` to
 `rtsp://198.51.100.10:7001/` answers `RTSP/1.0 307` with `Server: DW Spectrum/6.1.1.42624`.
 And a cloud-connected Nx site needs **no forwarded port at all**: the DW Cloud relay
 (`<cloudSystemId>.relay.vmsproxy.com`, HTTPS 443) proxies the API to the server — the
-route Site D is reached by, since its router forwards nothing. HTTPS only: no RTSP, so a
+route a relay-only site is reached by, since its router forwards nothing. HTTPS only: no RTSP, so a
 relay record has one port to probe and no live view. See `docs/nx-witness-storage.md`.
 
 The vendors' own labels are in the table on purpose, and the GUI dialog now uses them: an

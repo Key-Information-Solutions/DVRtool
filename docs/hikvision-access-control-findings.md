@@ -9,7 +9,7 @@ Everything below was confirmed on the wire, not read off a datasheet. The author
 struct/command reference is Hikvision's own SDK documentation, which is publicly readable
 at `https://open.hikvision.com/hardware/structures/<STRUCT_NAME>.html` and
 `.../definitions/<FUNCTION>_ACS.html` (GB2312-encoded; reachable from the relay host, not from
-the the dev workstation network).
+the dev workstation's network).
 
 ## 1. Transport
 
@@ -95,7 +95,7 @@ even that implies.
 Across **all 170 credentials on all three panels**, every single record has
 `byName` empty, `dwEmployeeNo == 0`, and `dwCardUserId == 0`. The card→name channel
 (`NET_DVR_GET_CARD_USERINFO_CFG`, 2163) answers **error 23 NOSUPPORT on all three panels** —
-including .222, which runs the newer V2.0.009 firmware. The SDK capability query
+including the second panel, which runs the newer V2.0.009 firmware. The SDK capability query
 (`NET_DVR_GetDeviceAbility` / `ACS_ABILITY` = 0x801) is refused as well.
 
 So a panel credential is exactly: **a fob number + which doors it opens + a validity window.**
@@ -124,9 +124,9 @@ in DVRTool.
 
 | Panel | Serial | Firmware | Fobs |
 |---|---|---|---|
-| 192.0.2.221 | `OCB-K260420180706V020004ENC00000001` | V2.0.4 | 149 |
-| 192.0.2.222 | `OCB-K260420211028V020009ENC00000002` | V2.0.9 | 15 |
-| 192.0.2.223 | `OCB-K260420180706V020004ENC00000003` | V2.0.4 | 6 |
+| 192.0.2.221 | `OCB-K260400000000V020004ENC00000001` | V2.0.4 | 149 |
+| 192.0.2.222 | `OCB-K260400000000V020009ENC00000002` | V2.0.9 | 15 |
+| 192.0.2.223 | `OCB-K260400000000V020004ENC00000003` | V2.0.4 | 6 |
 
 Answering handoff §9.3 ("uniform or per-door?"): **per-door.** .221 holds the full roster and
 .222/.223 are strict subsets of it — 134 fobs exist only on .221. Door patterns across the
@@ -169,7 +169,7 @@ Results:
 
 ## 6. Deployment
 
-the relay host has .NET 5/6/8 but not 10, so the CLI must be published self-contained:
+The relay host has .NET 5/6/8 but not 10, so the CLI must be published self-contained:
 
 ```bash
 dotnet publish src/DVRTool.Cli/DVRTool.Cli.csproj -c Release -r win-x64 --self-contained true -o artifacts/publish

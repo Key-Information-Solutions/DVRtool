@@ -23,8 +23,8 @@ namespace DVRTool.App;
 /// <para>
 /// <b>Calibration is per frame size until the operator says otherwise.</b> Nothing on the wire
 /// says where the image circle is, so the first frame's dimensions seed
-/// <see cref="FisheyeCalibration.Default"/> — right for Site C's square stream, close for Casa
-/// Maya's 4:3 one — and the toolbar's numbers let the operator refine it. Once edited, a
+/// <see cref="FisheyeCalibration.Default"/> — right for Site C's square stream, close for Site
+/// H's 4:3 one — and the toolbar's numbers let the operator refine it. Once edited, a
 /// calibration is kept across stream restarts and main/sub switches (the renderer rescales it to
 /// the frame). It is not yet saved with the device; that is the calibration store still to come.
 /// </para>

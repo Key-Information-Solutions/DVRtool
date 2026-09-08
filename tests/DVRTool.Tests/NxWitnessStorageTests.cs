@@ -9,9 +9,9 @@ namespace DVRTool.Tests;
 
 /// <summary>
 /// The Nx Witness / DW Spectrum client against canned REST v3 replies. The module
-/// information is the verbatim anonymous answer of the Site D server (a DW Blackjack E-Rack, DW Spectrum
-/// 6.1.1); the authenticated shapes follow the Nx REST v3 documentation and the 2026-09-02
-/// field notes.
+/// information is based on a real server's anonymous answer (DW Spectrum 6.1.1) with all
+/// identifiers replaced; the authenticated shapes follow the Nx REST v3 documentation and
+/// the 2026-09-02 field notes.
 /// </summary>
 public class NxWitnessStorageTests
 {
@@ -38,9 +38,9 @@ public class NxWitnessStorageTests
         {"ageS":0,"expiresInS":2592000,"token":"vms-0123456789abcdef","username":"admin"}
         """;
 
-    /// <summary>Verbatim from https://198.51.100.10:7001/api/moduleInformation on 2026-09-02.</summary>
+    /// <summary>Based on a real capture from a DW Spectrum server's /api/moduleInformation on 2026-09-02, with identifiers replaced.</summary>
     private const string ModuleInformation = """
-        {"error":"0","errorId":"ok","errorString":"","reply":{"brand":"dwspectrum","cloudHost":"dwspectrum.digital-watchdog.com","cloudOwnerId":"{bbbbbbbb-cccc-dddd-eeee-ffffffffffff}","cloudSystemId":"66666666-7777-8888-9999-aaaaaaaaaaaa","customization":"digitalwatchdog","ecDbReadOnly":false,"hwPlatform":"unknown","id":"{11111111-2222-3333-4444-555555555555}","localSystemId":"{12121212-3434-5656-7878-909090909090}","name":"TESTRACK1","port":7001,"protoVersion":6113,"realm":"VMS","remoteAddresses":["198.51.100.10"],"runtimeId":"{21212121-4343-6565-8787-090909090909}","saasState":"uninitialized","serverFlags":"SF_HasPublicIP|SF_SupportsTranscoding","sslAllowed":true,"synchronizedTimeMs":"1788386183191","systemName":"Site D","type":"Media Server","version":"6.1.1.42624"}}
+        {"error":"0","errorId":"ok","errorString":"","reply":{"brand":"dwspectrum","cloudHost":"dwspectrum.digital-watchdog.com","cloudOwnerId":"{bbbbbbbb-cccc-dddd-eeee-ffffffffffff}","cloudSystemId":"66666666-7777-8888-9999-aaaaaaaaaaaa","customization":"digitalwatchdog","ecDbReadOnly":false,"hwPlatform":"unknown","id":"{11111111-2222-3333-4444-555555555555}","localSystemId":"{12121212-3434-5656-7878-909090909090}","name":"TESTRACK1","port":7001,"protoVersion":6113,"realm":"VMS","remoteAddresses":["198.51.100.10"],"runtimeId":"{21212121-4343-6565-8787-090909090909}","saasState":"uninitialized","serverFlags":"SF_HasPublicIP|SF_SupportsTranscoding","sslAllowed":true,"synchronizedTimeMs":"1788386183191","systemName":"SiteD","type":"Media Server","version":"6.1.1.42624"}}
         """;
 
     private const string LobbyId = "2d2cd010-f38e-c6f7-e46b-927ce07789da";
@@ -201,7 +201,7 @@ public class NxWitnessStorageTests
         Assert.Equal(HttpMethod.Delete, close.Request.Method);
         Assert.Equal($"/rest/v3/login/sessions/{Token}", close.Request.RequestUri!.PathAndQuery);
 
-        Assert.Equal("TESTRACK1 (Site D)", info.Name);
+        Assert.Equal("TESTRACK1 (SiteD)", info.Name);
         Assert.Equal("DW Spectrum Media Server", info.Model);
         Assert.Equal(ServerId, info.SerialNumber); // the pin: server GUID without braces
         Assert.Equal("6.1.1.42624", info.FirmwareVersion);
@@ -631,7 +631,7 @@ public class NxWitnessStorageTests
         {
             string pq = req.RequestUri!.PathAndQuery;
             if (pq == "/rest/v3/system/settings")
-                return MockHttpHandler.Text("""{"cameraSettingsOptimization":true,"systemName":"Site D"}""");
+                return MockHttpHandler.Text("""{"cameraSettingsOptimization":true,"systemName":"SiteD"}""");
             if (req.Method == HttpMethod.Patch && pq == $"/rest/v3/devices/{LobbyId}")
             {
                 patchBody = body;
