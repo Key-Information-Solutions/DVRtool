@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 
 namespace DVRTool.Vendors.NxWitness;
@@ -212,6 +212,9 @@ internal sealed record NxCamera(
     bool DontRecordSecondary,
     bool DualStreamingDisabled,
     bool KeepCameraProfile,
+    bool AudioEnabled,
+    bool AudioSupported,
+    bool DontRecordAudio,
     NxMediaStream? Primary,
     NxMediaStream? Secondary,
     int? PrimaryMinKbps = null,
@@ -263,6 +266,22 @@ internal sealed record NxCamera(
             ?? (parameters is { } p ? NxJson.Bool(p, name) : null)
             ?? fallback;
 
+        // Some capability keys in `parameters` are 1/0 numbers, not booleans; null means the
+        // key is absent, which for a capability is "the server has not said", not "no".
+        bool? Flag(string name)
+        {
+            if (Opt2(name) is bool b)
+                return b;
+            foreach (var bag in new[] { options, parameters })
+                if (bag is { } g && NxJson.Int32(g, name) is int n)
+                    return n != 0;
+            return null;
+
+            bool? Opt2(string key) =>
+                (options is { } o ? NxJson.Bool(o, key) : null)
+                ?? (parameters is { } p ? NxJson.Bool(p, key) : null);
+        }
+
         var (primary, secondary) = ParseMediaStreams(NxJson.Prop(e, "mediaStreams"));
 
         // mediaCapabilities.streamCapabilities.primary: Nx's own min/max for the schedule's
@@ -298,6 +317,16 @@ internal sealed record NxCamera(
             DontRecordSecondary: Opt("dontRecordSecondaryStream", false),
             DualStreamingDisabled: Opt("isDualStreamingDisabled", false),
             KeepCameraProfile: !(Opt("controlEnabled", true) && Opt("isControlEnabled", true)),
+            // Audio has TWO switches, and they are not the same one. `options.isAudioEnabled`
+            // is the General tab's "Enable audio" — whether the server pulls audio at all.
+            // `parameters.dontRecordAudio` is the Expert tab's "Do not record audio" — a
+            // property, so absent on a default camera, which keeps audio off the disk even if
+            // somebody later enables it. `parameters.isAudioSupported` is 1/0 rather than a
+            // bool, so it is read as a number too; `forcedIsAudioSupported` is the operator's
+            // override for a camera whose ONVIF answer was wrong and wins over the probe.
+            AudioEnabled: Opt("isAudioEnabled", false),
+            AudioSupported: Flag("forcedIsAudioSupported") ?? Flag("isAudioSupported") ?? false,
+            DontRecordAudio: Flag("dontRecordAudio") ?? false,
             primary,
             secondary,
             PrimaryMinKbps: primaryMin,

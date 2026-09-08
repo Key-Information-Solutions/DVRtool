@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using DVRTool.Cli;
 using DVRTool.Core;
@@ -21,6 +21,8 @@ const string Usage = """
       access          Door-access panels (see: dvrtool access --help)
       storage         Disks, retention, recording schedules and bitrate planning
                       (see: dvrtool storage --help)
+      recording       Which tracks reach the disk: the secondary-stream and audio
+                      switches (see: dvrtool recording --help)
       search          List recordings for a channel in a window
       footage         Which days of a month hold footage for a channel; --probe opens
                       the playback body the GUI plays and says what arrived
@@ -99,11 +101,13 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 
 string command = args[0].ToLowerInvariant();
 
-// `access` and `storage` are command groups: `dvrtool <group> <subcommand> [options]`,
-// so their subcommand must be pulled off before the rest is parsed as options.
+// `access`, `storage` and `recording` are command groups:
+// `dvrtool <group> <subcommand> [options]`, so their subcommand must be pulled off before
+// the rest is parsed as options.
 bool isAccess = command == "access";
 bool isStorage = command == "storage";
-string groupSubcommand = (isAccess || isStorage) && args.Length > 1 &&
+bool isRecording = command == "recording";
+string groupSubcommand = (isAccess || isStorage || isRecording) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -139,6 +143,10 @@ try
     // to the ordinary client + identity path below.
     if (isStorage && StorageCommands.TryRunHelp(groupSubcommand, opts, out int storageHelpExit))
         return storageHelpExit;
+
+    if (isRecording &&
+        RecordingCommands.TryRunHelp(groupSubcommand, opts, out int recordingHelpExit))
+        return recordingHelpExit;
 
     // `test` probes ports instead of driving a client, and ConnectivityProbe disposes every
     // client its factory hands it — so it gets the connection plus a factory rather than the
@@ -377,6 +385,8 @@ try
         }
         case "storage":
             return await StorageCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
+        case "recording":
+            return await RecordingCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "live-url":
         {
             int channel = RequireChannel(opts);

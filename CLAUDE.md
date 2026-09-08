@@ -235,6 +235,39 @@ header, chain validation instead of the cert pin (Let's Encrypt wildcard, rotate
 login, **no RTSP** (`GetLiveUri`/`GetPlaybackUri` throw `NotSupportedException` with a message the
 front ends show; the dialog and `dvrtool test` skip the RTSP row).
 
+**Which tracks reach the disk** (2026-09-08, `IRecordingOptionsClient` in Core
+`RecordingOptions.cs`, `NxWitnessClient.RecordingOptions.cs`, `dvrtool recording show | set`;
+Nx only — the appliance vendors' sub-stream is never archived): the per-camera "record the
+secondary stream" and audio switches. **Audio is TWO independent switches**:
+`options.isAudioEnabled` (General tab "Enable audio" — whether audio is pulled at all, off
+unless somebody turned it on) and `parameters.dontRecordAudio` (Expert tab "Do not record
+audio" — a *property*, absent by default, and the **durable** one: it keeps audio off the disk
+even if capture is later enabled). `AudioReachesDisk` is the conjunction. Capability is
+separate and *numeric*, `parameters.isAudioSupported` (1/0), which
+`forcedIsAudioSupported` overrides. **On this API "the key is absent" never means "the setting
+does not exist"** — every property-bag switch is absent until set, so the audio bar was invisible
+in a read of all 64 and was found only by ticking the box in the DW client and diffing the
+device document (filter out `bitrateInfos`, `storageInfo`, `deviceAgentManifests`,
+`availableProfiles`, `status` — they churn every read, and the diff shows *other people's*
+edits too).
+`dontRecordSecondaryStream` is a **property, absent on every default camera**, so the write
+tries the `parameters` bag (the strings "1"/"0", as the DW client writes them) then `options`
+(bool), verifies by read-back,
+remembers which bag stuck, and reports **rejected** rather than success if neither did. It is
+**not** `isDualStreamingDisabled`: 63 of 64 Site D cameras run
+`parameters.motionStream = "secondary"`, so disabling dual streaming would take motion
+detection with it — "don't record" keeps the stream pulled and analysed and only off the disk.
+The load-bearing rule: a camera on `metadataAndLowQuality` ("Motion & low-res always") records
+the **secondary continuously**, so turning it off makes that camera motion-only and empties the
+quiet hours — `recording set --secondary off` holds those back unless
+`--include-lowres-always`. Fired live on Site D 2026-09-08: **28 changed, 0 failed, 36 held back** —
+`parameters` is the bag that takes the property on 6.1.1.42624 (verified by a raw read
+independent of the client), worth ~64 GB/day and 28 fewer concurrent archive files on an
+IOPS-saturated array. Then `--record-audio off --all`: **63 changed, 0 failed**, giving
+`dontRecordAudio` on all 64 (the 64th was the operator's own console tick). Schedules there
+move under you: seven cameras changed mode during an 18-minute window
+that day, edited from a remote client — re-read modes immediately before any batch.
+
 **Recorded playback** (2026-09-04, `docs/playback.md`): the GUI Playback / Export tab is a
 day-per-camera **timeline** (`TimelineControl`, geometry in `TimelineWindow`/`FootageCoverage`/
 `PlaybackClock` in Core, all tested) — click seeks, drag selects an export range, wheel zooms,

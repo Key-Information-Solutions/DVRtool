@@ -254,6 +254,101 @@ and asks. The canary, on operator go-ahead only: one Site D camera whose schedul
 preset, 3072 → 3104 → 3072, confirming the PATCH is accepted, the read-back matches, and the
 camera's actual stream (the Nx client's camera statistics) follows within a minute.
 
+## Which tracks reach the disk: the secondary-stream and audio switches
+
+`IRecordingOptionsClient` (Core `RecordingOptions.cs`, Nx side
+`NxWitnessClient.RecordingOptions.cs`, CLI `dvrtool recording show | set`) covers the two
+per-camera switches that decide *what* is written, as opposed to the schedule (when) and the
+bitrate (how much). Verified live on Site D 2026-09-08 (6.1.1.42624), reads **and** the write.
+
+- **Audio is TWO switches, in two different tabs and two different bags.**
+  `options.isAudioEnabled` is the **General** tab's "Enable audio" — a typed bool, whether the
+  server pulls audio at all, off unless somebody turned it on (all 64 Site D cameras read
+  `false`). `parameters.dontRecordAudio` is the **Expert** tab's "Do not record audio" — a
+  *property*, so absent on a default camera, exactly like `dontRecordSecondaryStream`. They are
+  independent, and the second is the **durable** one: it keeps audio off the disk even if
+  capture is later enabled, which is why it is worth setting on a camera whose capture is
+  already off today. `CameraRecordingOptions.AudioReachesDisk` is the conjunction (capture on
+  **and** bar clear); either switch alone keeps audio off. Do not assume the General switch is
+  the whole story — that mistake was made here first, and only a diff of the device document
+  before and after ticking the box in the DW client found the second property.
+  Capability is separate again and numeric — `parameters.isAudioSupported` is `1`/`0` (52 of 64
+  support audio), and `forcedIsAudioSupported` is the operator's override for a camera whose
+  ONVIF answer was wrong, so it wins. The report says `off (none)` for a camera that has no
+  audio to record, which is not the same as one that has audio switched off.
+- **`dontRecordSecondaryStream` is a property, and absent on every default camera** — all 64 on
+  Site D. Which bag a *write* has to land in is not documented and differs by build, so
+  `SetRecordingOptionsAsync` writes `parameters` first (the strings `"1"`/`"0"`, which is what
+  the DW client itself puts there), reads back, and falls back to `options` (a real bool) if the
+  property did not stick — then remembers which bag worked for the life of the client, so a
+  60-camera batch pays the discovery cost once. If neither sticks the change is reported
+  **rejected**, never as a success. **Settled live 2026-09-08: `parameters` is the bag that
+  takes it** on 6.1.1.42624 — the first attempt stuck on all 28 cameras written, and a fresh
+  raw read shows the key present in `parameters` and absent from `options` on exactly those 28.
+- **This is not `isDualStreamingDisabled`.** That one stops the server *pulling* the second
+  stream; 63 of 64 Site D cameras carry `parameters.motionStream = "secondary"`, so disabling
+  dual streaming would take motion detection with it. "Do not record the secondary stream"
+  leaves the stream pulled and analysed and only keeps it off the disk. A camera with no
+  second stream, or with dual streaming already off, reports `RecordSecondary = null` rather
+  than `false` — there is nothing to archive, which is a different fact from being told not to.
+- **The secondary stream is not spare capacity on every camera.** A camera whose schedule is
+  `metadataAndLowQuality` ("Motion & low-res always") records the primary on motion and the
+  **secondary continuously** — that low-res track is the only thing covering the gaps between
+  motion events. Turning the secondary off there does not shrink the camera's footage, it makes
+  the camera motion-only and leaves the quiet hours empty. `dvrtool recording set --secondary
+  off` therefore **holds those cameras back by default**, lists them, and changes them only
+  under `--include-lowres-always`. On an `always` or `metadataOnly` camera the secondary stream
+  is pure overhead and turning it off is free.
+- **The schedule mix moves.** Site D was read twice 18 minutes apart on 2026-09-08 and seven
+  cameras had gone from `metadataAndLowQuality` to `always` in between (18 → 25 continuous),
+  with no DW client running on the server itself — somebody was editing from a remote client
+  while the reads were happening. Re-read the modes immediately before any batch that depends
+  on them; a preview more than a few minutes old is not evidence.
+
+### The first live write (2026-09-08)
+
+`dvrtool recording set --secondary off --all --force` on Site D: **28 cameras changed, 0
+failed, 36 held back by the low-res rule.** The 28 are the `always` (25) and `metadataOnly` (3)
+cameras; every `metadataAndLowQuality` camera was left alone, which is the whole point of the
+rule. Verified afterwards by a raw `/rest/v3/devices` read independent of the client:
+`dontRecordSecondaryStream` present and true in `parameters` on exactly those 28, absent on the
+other 36, `isAudioEnabled` false on all 64.
+
+Worth about **64 GB/day** off the array (5.91 Mbps of measured secondary bitrate, summed from
+`parameters.bitrateInfos.streams[encoderIndex=secondary].actualBitrate` across the 28) against
+a total write load near 1 TB/day — so ~6% of the bytes. The **file-count** effect is the bigger
+prize: Site D's RAID5 is IOPS-saturated with roughly 134 concurrent archive files, and this
+removes 28 of them.
+
+Audio needed no write at all: Nx's audio switch was already off on all 64.
+
+### The audio bar, and how it was found (2026-09-08)
+
+The first pass here concluded Nx had no "do not record audio" — wrong. `options.isAudioEnabled`
+was the only audio key **present** on any of the 64 cameras, and the Expert-tab checkbox is a
+property that is simply absent until set, so nothing in a read of the fleet revealed it. The
+operator ticked the box on SiteD-Cashier in the DW client and a before/after diff of
+`/rest/v3/devices` showed exactly one settings change: `parameters.dontRecordAudio` added, as
+the number `1`.
+
+The lesson generalises: **on this API, "the key is not in the document" is not evidence the
+setting does not exist.** Every property-bag switch is absent by default. To discover one,
+change it in the DW client and diff the device document — filtering out `bitrateInfos`,
+`storageInfo`, `deviceAgentManifests`, `availableProfiles` and `status`, which churn on every
+read.
+
+`dvrtool recording set --record-audio off --all --force` then set it on the other 63:
+**63 changed, 0 failed**, and a raw read shows `dontRecordAudio: "1"` on all 64 — the same
+representation the DW client wrote, since the client now writes `"1"`/`"0"` rather than
+`"true"`/`"false"`. (The 28 `dontRecordSecondaryStream` values written earlier that day are
+stored as bool `true`; the server normalised the `"true"` string it was given. Both forms read
+back correctly — `NxJson.Bool` takes bools, `"true"`/`"false"`, `"1"`/`"0"` and numbers — so
+they were left alone rather than rewritten.)
+
+The same diff caught something unrelated: SiteD-Cashier's schedule had moved from
+`metadataTypes: motion` to `objects` on all seven days, from a remote client, during the same
+window. Worth knowing that a diff of this document sees *everyone's* edits, not just yours.
+
 ## Open items
 
 1. The canary write above, on explicit go-ahead. Note Site D has no preset cell today: the
