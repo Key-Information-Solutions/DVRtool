@@ -242,6 +242,12 @@ public partial class MainWindow
         {
             QueuePlayerStop(_livePlayer);
             StopSdkLive();
+            ResetLiveZoom();
+            // The plain view's overlay is a layered window that stops tracking a collapsed
+            // host: left as it is, it would sit over the dewarp pane and swallow the drag
+            // and the wheel that aim it. An empty overlay is fully transparent, and a fully
+            // transparent layered window is not hit-tested at all.
+            ClearOverlay(LiveVideo);
             LiveVideo.Visibility = Visibility.Collapsed;
             _liveLabel = "";
         }
@@ -279,6 +285,7 @@ public partial class MainWindow
 
         if (!_gridMode)
         {
+            LiveVideo.Content = LiveVideoOverlay;
             LiveVideo.Visibility = Visibility.Visible;
             if (replay && _client is not null && _currentDevice is not null &&
                 ChannelList.SelectedItem is ChannelItem)

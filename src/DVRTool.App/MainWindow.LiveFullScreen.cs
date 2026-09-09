@@ -49,6 +49,11 @@ public partial class MainWindow
     private Thickness _preFullScreenTabMargin;
     private string _preFullScreenStatus = "";
 
+    // The fisheye mode's own toolbars and hint line: shown or not depending on the mode, so
+    // what they were is remembered rather than assumed.
+    private Visibility _preFullScreenDewarpChrome;
+    private Visibility _preFullScreenDewarpHint;
+
     /// <summary>A tab header that draws nothing and takes no room.</summary>
     private static readonly ControlTemplate NoTabHeader = new(typeof(TabItem));
 
@@ -86,6 +91,8 @@ public partial class MainWindow
         _preFullScreenSplitterWidth = SidePanelSplitterColumn.Width;
         _preFullScreenTabMargin = MainTabs.Margin;
         _preFullScreenStatus = StatusText.Text;
+        _preFullScreenDewarpChrome = DewarpToolBars.Visibility;
+        _preFullScreenDewarpHint = DewarpStatusText.Visibility;
 
         // Everything but the picture. The columns go to zero as well as the panel being
         // collapsed: a collapsed child does not shrink a fixed-width column.
@@ -95,6 +102,8 @@ public partial class MainWindow
         SidePanelSplitterColumn.Width = new GridLength(0);
         MainStatusBar.Visibility = Visibility.Collapsed;
         LiveToolBar.Visibility = Visibility.Collapsed;
+        DewarpToolBars.Visibility = Visibility.Collapsed;
+        DewarpStatusText.Visibility = Visibility.Collapsed;
         MainTabs.Margin = new Thickness(0);
         foreach (var item in MainTabs.Items.OfType<TabItem>())
             item.Template = NoTabHeader;
@@ -127,6 +136,8 @@ public partial class MainWindow
         foreach (var item in MainTabs.Items.OfType<TabItem>())
             item.ClearValue(TemplateProperty);
         MainTabs.Margin = _preFullScreenTabMargin;
+        DewarpStatusText.Visibility = _preFullScreenDewarpHint;
+        DewarpToolBars.Visibility = _preFullScreenDewarpChrome;
         LiveToolBar.Visibility = Visibility.Visible;
         MainStatusBar.Visibility = Visibility.Visible;
         SidePanelColumn.Width = _preFullScreenSideWidth;

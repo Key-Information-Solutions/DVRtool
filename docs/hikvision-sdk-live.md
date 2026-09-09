@@ -536,9 +536,12 @@ the almost-transparent overlay grid in front of each pane — the tiles' and the
 already existed for their labels and the double-click; the single view got one, which also
 gave it a corner label (channel, stream, zoom factor) that is the only thing naming the camera
 once the status bar is gone. That overlay is a layered window that stops tracking a collapsed
-host, so switching to grid mode empties it: an empty overlay is fully transparent, and a fully
-transparent layered window is not hit-tested at all — otherwise it would sit over the grid and
-swallow the double-click.
+host, so anything that takes the screen from the plain view — grid mode, and the fisheye mode's
+dewarp pane — empties it first: an empty overlay is fully transparent, and a fully transparent
+layered window is not hit-tested at all. Left in place it would sit over the grid and swallow
+the double-click, or over the dewarp pane and swallow the drag and wheel that aim it. Fullscreen
+hides the fisheye toolbars and hint line with the rest of the chrome, and puts back whichever of
+them were showing.
 
 ### Keys
 
