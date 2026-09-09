@@ -73,6 +73,12 @@ public partial class MainWindow
     private LiveTile? _maxTile;
     private int _maxGen;
 
+    /// <summary>
+    /// The maximized view's corner label, kept so the zoom factor can be added to it: in
+    /// fullscreen it is the only thing on screen that says what is being looked at.
+    /// </summary>
+    private TextBlock? _maxOverlayLabel;
+
     /// <summary>One camera in the grid: its view, its player, and whatever feeds it.</summary>
     private sealed class LiveTile
     {
@@ -188,6 +194,12 @@ public partial class MainWindow
         {
             QueuePlayerStop(_livePlayer);
             StopSdkLive();
+            ResetLiveZoom();
+            // The single view's overlay is a layered window that stops tracking a collapsed
+            // host, so it would stay parked over the grid and swallow the double-click. An
+            // empty one is fully transparent, and a fully transparent layered window is not
+            // hit-tested at all.
+            ClearOverlay(LiveVideo);
             LiveVideo.Visibility = Visibility.Collapsed;
             LiveGridPanel.Visibility = Visibility.Visible;
             _gridPage = 0;
@@ -198,6 +210,7 @@ public partial class MainWindow
             StopLiveGrid();
             LiveGridPanel.Visibility = Visibility.Collapsed;
             LiveVideo.Visibility = Visibility.Visible;
+            LiveVideo.Content = LiveVideoOverlay;
             UpdateGridPageControls();
         }
         UpdateDewarpAvailability();
@@ -235,11 +248,37 @@ public partial class MainWindow
         _ = StartLiveGridAsync();
     }
 
+    /// <summary>
+    /// The Live tab's keys, on the window so they work whatever has focus.
+    /// </summary>
+    /// <remarks>
+    /// Escape unwinds one step at a time in the order the operator got here: fullscreen
+    /// first, then a maximized camera. Fullscreen hides the toolbar along with everything
+    /// else, so PgUp/PgDn stand in for the paging buttons while it is on.
+    /// </remarks>
     private void OnLivePreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && _maxTile is not null)
+        if (e.Key == Key.F11)
         {
-            RestoreGrid();
+            ToggleLiveFullScreen();
+            e.Handled = true;
+            return;
+        }
+        if (e.Key == Key.Escape)
+        {
+            if (_fullScreen)
+                ExitLiveFullScreen();
+            else if (_maxTile is not null)
+                RestoreGrid();
+            else
+                return;
+            e.Handled = true;
+            return;
+        }
+        if (_fullScreen && _gridMode && _maxTile is null &&
+            e.Key is Key.PageUp or Key.PageDown)
+        {
+            TurnGridPage(e.Key == Key.PageUp ? -1 : +1);
             e.Handled = true;
         }
     }
@@ -482,6 +521,8 @@ public partial class MainWindow
                         _ = MaximizeTileAsync(tile);
                 }
             };
+            WireLiveZoom(overlay, () =>
+                _tiles.Contains(tile) ? new ZoomTarget(tile.Player, tile.DefaultLabel, tile) : null);
             // LibVLC reports a stream it could not open on its own thread and otherwise
             // leaves the pane black. Over RTSP that is the common case — the port most
             // sites do not forward — so the tile says so instead of looking like a
@@ -513,6 +554,7 @@ public partial class MainWindow
     private void StopLiveGrid()
     {
         _gridGen++;
+        ResetLiveZoom();
         RestoreGrid();
         SelectTile(null);
 
@@ -609,6 +651,9 @@ public partial class MainWindow
 
         int gen = _gridGen;
         int maxGen = ++_maxGen;
+        // The camera about to fill the pane is a different stream from whatever was zoomed,
+        // and the crop belongs to the player rather than to the media.
+        ResetLiveZoom();
         _maxTile = tile;
         _maxPlayer ??= new MediaPlayer(_libVlc);
         LiveMaxVideo.MediaPlayer = _maxPlayer;
@@ -739,15 +784,16 @@ public partial class MainWindow
     private void ShowMainPicture(LiveTile tile)
     {
         var overlay = new Grid { Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)) };
-        overlay.Children.Add(new TextBlock
+        _maxOverlayLabel = new TextBlock
         {
-            Text = $"{tile.DefaultLabel}  —  main stream  ·  {ReturnHint}",
             Foreground = Brushes.White,
             Background = new SolidColorBrush(Color.FromArgb(0x80, 0, 0, 0)),
             Padding = new Thickness(6, 2, 6, 3),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
-        });
+        };
+        overlay.Children.Add(_maxOverlayLabel);
+        UpdateMaxOverlayLabel();
         overlay.MouseLeftButtonDown += (_, e) =>
         {
             if (e.ClickCount == 2)
@@ -756,6 +802,9 @@ public partial class MainWindow
                 RestoreGrid();
             }
         };
+        WireLiveZoom(overlay, () => _maxPlayer is { } player && _maxTile is { } max
+            ? new ZoomTarget(player, max.DefaultLabel, null)
+            : null);
 
         // The tile is about to be zero-size along with the rest of the panel, so its overlay
         // goes the way the others' did.
@@ -765,6 +814,17 @@ public partial class MainWindow
         LiveMaxVideo.Content = overlay;
         LiveMaxVideo.Visibility = Visibility.Visible;
         SetStatus($"{tile.Channel.Name}: main stream — {ReturnHint}.");
+    }
+
+    /// <summary>Names the maximized camera, its stream, the zoom if any, and the way back.</summary>
+    private void UpdateMaxOverlayLabel()
+    {
+        if (_maxOverlayLabel is null || _maxTile is not { } tile)
+            return;
+        string zoom = _maxPlayer is { } player && _zoom.IsZoomed &&
+            ReferenceEquals(_zoomPlayer, player) ? $"  ·  zoom {_zoom.Describe()}" : "";
+        _maxOverlayLabel.Text = $"{tile.DefaultLabel}  —  main stream{zoom}  ·  {ReturnHint}" +
+            (_fullScreen ? "  ·  F11 leaves fullscreen" : "");
     }
 
     /// <summary>
@@ -797,6 +857,8 @@ public partial class MainWindow
         TeardownDewarpMode();
         _maxGen++;
         var wasMax = _maxTile;
+        ResetLiveZoom();
+        _maxOverlayLabel = null;
         _maxTile = null;
 
         if (wasMax is not null || _maxSdk is not null || _maxMedia is not null)

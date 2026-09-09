@@ -83,6 +83,10 @@ public partial class MainWindow : Window
         InitializeStorageTab();
         InitializeConfigTab();
         InitializeLiveStats();
+        // The single view's zoom target is its one player, named by whatever it is playing.
+        WireLiveZoom(LiveVideoOverlay, () => !_gridMode && _livePlayer is { } player
+            ? new ZoomTarget(player, _liveLabel.Length > 0 ? _liveLabel : "live view", null)
+            : null);
         InitializePlaybackTab();
         InitializeDewarpMode();
 

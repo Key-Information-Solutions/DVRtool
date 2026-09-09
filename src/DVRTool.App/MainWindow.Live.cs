@@ -122,6 +122,9 @@ public partial class MainWindow
         using var media = CreateRtspMedia(uri);
         AddLiveDecodeOptions(media);
         StopSdkLive();
+        // A new stream in the same player: the crop is the player's, so it would otherwise
+        // carry over onto a different camera.
+        ResetLiveZoom();
         _livePlayer.Play(media);
         _liveLabel = LiveLabel(item.Channel, stream);
         UpdateLiveStats();
@@ -141,6 +144,7 @@ public partial class MainWindow
             return;
         }
         QueuePlayerStop(_livePlayer);
+        ResetLiveZoom();
         // The recorder holds a stream slot for as long as the preview runs, so Stop has to
         // release it rather than only blanking the window.
         StopSdkLive();
@@ -174,6 +178,7 @@ public partial class MainWindow
         // and leaving the old preview running to open another is how a site runs out of them.
         QueuePlayerStop(_livePlayer);
         StopSdkLive();
+        ResetLiveZoom();
 
         int gen = ++_sdkGen;
         int selection = _selectionGen;
