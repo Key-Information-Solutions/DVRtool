@@ -84,7 +84,7 @@ public partial class MainWindow : Window
         InitializeConfigTab();
         InitializeLiveStats();
         InitializePlaybackTab();
-        InitializeDewarpTab();
+        InitializeDewarpMode();
 
         if (_devices.Count > 0)
             DeviceList.SelectedIndex = 0;
@@ -252,7 +252,9 @@ public partial class MainWindow : Window
         QueuePlayerStop(_livePlayer);
         StopSdkLive();
         StopLiveGrid();
-        StopDewarp();
+        // Another recorder's picture is not this one's: the mode ends, and nothing is replayed
+        // because there is no channel selected yet to replay.
+        ExitDewarpMode();
         ResetPlaybackTab();
         UpdateGridPageControls();
         UpdateLiveTransportLabels(DeviceList.SelectedItem as SavedDevice);

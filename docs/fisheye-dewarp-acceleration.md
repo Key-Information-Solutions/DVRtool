@@ -117,7 +117,7 @@ slow-machine fallback.
   chain, so overlays go beside it, not over it — the same constraint `VideoView` already
   imposes. `RenderTargetBitmap` cannot capture it; a screenshot needs the screen.
 
-## The frame source, the Fisheye tab, and what was seen on screen
+## The frame source, the Live tab's dewarp, and what was seen on screen
 
 Added 2026-09-03, later the same day, after the question "DW Spectrum and iVMS do mainstream
 dewarping, why can't we?" The answer was that nothing was in the way: DW Spectrum's own hardware
@@ -131,7 +131,7 @@ chain has been seen working.
 | `FisheyeDrag.cs` (Core) | `DewarpDrag` — grab-and-drag and wheel zoom, solved as least squares |
 | `FisheyeTestPattern.cs` (Core) | a tiled floor through the calibration; the no-camera check |
 | `VlcFrameSource.cs` (App) | a `MediaPlayer` with LibVLC's video callbacks, feeding the ring |
-| `MainWindow.Dewarp.cs` (App) | the Fisheye tab |
+| `MainWindow.Dewarp.cs` (App) | the Live tab's dewarp mode — the ◎ Fisheye toggle |
 | `DewarpSurface.cs` (App) | now also: `Redraw`, `ClearFrame`, and pointer events in pane pixels |
 
 ### Verified live, 2026-09-03
@@ -148,6 +148,48 @@ The floor tiles come out straight in the flat view; drag and wheel work on the l
 Stop releases the stream slot and the window closes cleanly through the normal shutdown path.
 Before the recorder, the same was proven with the test pattern: GPU and CPU renderers,
 PTZ and 360° panorama, drag, wheel, and the renderer switch mid-session.
+
+### Where it lives in the GUI, and why it moved (2026-09-09)
+
+It shipped as its own **Fisheye** tab, which was the wrong shape. A tech watching a fisheye has
+already chosen the device, the channel, the stream and the transport in the Live tab; a separate
+tab made them choose all four again to see the same camera undistorted, and then choose them a
+third time to go back. Dewarping is a **way of looking at a live camera**, not a place to go.
+
+So it is now a **◎ Fisheye toggle in the Live tab's toolbar**, over whichever *single* camera is on
+screen: the single view, or a camera maximized out of the grid. The toggle is disabled on a grid
+page, and that is a property of the input rather than a policy — a dewarp resamples the
+full-resolution picture and a grid page is sixteen sub streams, so "no single camera" is the same
+condition as "nothing to dewarp". Maximizing a tile is exactly when the grid acquires a main
+stream, and exactly when the toggle lights up.
+
+Turning it on **restarts the picture**, because the two paths are different decoders: the plain
+view is LibVLC rendering into a `VideoView`'s window, and the dewarp needs the decoded planes in
+memory (`vmem`). One media cannot feed both. The toggle therefore stops one and starts the other
+on the same channel, releasing the recorder's stream slot before taking another — never holding
+two. Over a maximized grid camera it borrows the **grid's own SDK login** and starts a preview on
+it, so dewarping a grid camera costs a stream slot, not a session; that preview is stopped by this
+side, while the session stays the grid's to log out. Turning the toggle off puts the plain view
+back: ▶ Play again in the single view, or the ordinary maximize (sub stream up while the main
+stream warms) over the grid.
+
+One trap found live while moving it: `VlcFrameSource.Stop` blocks until LibVLC's threads join, so
+it runs on a worker — and a `Play` issued before that worker has finished is stopped by it a
+moment later. On the old tab the SDK login gave the stop time to land; switching cameras over RTSP
+does not, and the symptom is a stream that connects and then silently never delivers a frame. Every
+start now awaits the previous stop. The companion fix is that "has this stream shown a frame yet?"
+is its own flag, not a zero in the frame counters: the frame source outlives any one stream, so
+its counts are cumulative and never return to zero for the second camera of a session.
+
+While the dewarp is up the **footer stats block goes quiet**. A maximized camera's tile is still
+running its sub stream underneath, and reporting that beside the dewarp's own status line is two
+contradictory readings of one camera.
+
+Anything that takes that one camera off screen ends the mode rather than leaving a stale picture
+labelled as live — leaving the grid, Esc or a double-click back out of a maximize, and picking
+another device. Picking another **channel** stops the stream but keeps the mode: the last picture
+stays aimable, and ▶ Play opens the newly-selected camera, because opening a stream slot is what
+Play is for.
 
 **The upload is not the blocker it was described as.** The 1.6 ms plane upload is about 5 % of a
 33 ms frame period, and the live run above skipped nothing. Deleting it means the decoder writing

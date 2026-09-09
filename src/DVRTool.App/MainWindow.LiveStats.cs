@@ -67,6 +67,12 @@ public partial class MainWindow
     /// <summary>The player the footer should describe right now, or null for none.</summary>
     private (MediaPlayer Player, string Label, SdkMediaStream? Sdk)? ResolveLiveStatsSource()
     {
+        // The dewarp has its own status line, over its own decoder. Whatever is still running
+        // behind it — a maximized camera's tile is still on its sub stream — is not what the
+        // operator is looking at, and describing it here would be a second, contradictory
+        // reading of the same camera.
+        if (_dewarpMode)
+            return null;
         if (_maxTile is { } max)
         {
             if (LiveMaxVideo.Visibility == Visibility.Visible && _maxPlayer is { } big)

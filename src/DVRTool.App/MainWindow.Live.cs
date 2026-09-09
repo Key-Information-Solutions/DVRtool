@@ -92,6 +92,14 @@ public partial class MainWindow
             return;
         }
 
+        // With the dewarp on, Play means the same thing on the other decoder: re-open this
+        // channel through the frame source, on whatever the toolbar now says.
+        if (_dewarpMode)
+        {
+            await StartDewarpAsync();
+            return;
+        }
+
         var stream = LiveStreamCombo.SelectedIndex == 1 ? StreamType.Sub : StreamType.Main;
         if (SelectedLiveTransport == LiveTransport.Sdk)
         {
@@ -123,6 +131,15 @@ public partial class MainWindow
 
     private void OnLiveStop(object sender, RoutedEventArgs e)
     {
+        if (_dewarpMode)
+        {
+            // The dewarp keeps its last picture, which stays aimable — so this is the stream
+            // stopping, not the mode ending.
+            StopDewarp();
+            SetStatus("Fisheye stopped — the recorder's stream slot is released. The last " +
+                "picture stays and can still be aimed.");
+            return;
+        }
         QueuePlayerStop(_livePlayer);
         // The recorder holds a stream slot for as long as the preview runs, so Stop has to
         // release it rather than only blanking the window.

@@ -116,6 +116,15 @@ public partial class MainWindow
     /// <summary>The channel list moved: the tab shows a different camera now.</summary>
     private void OnChannelSelected(object sender, SelectionChangedEventArgs e)
     {
+        // The Live tab's dewarp is aimed at the channel that was selected, so a new one ends its
+        // stream. Not restarted here: opening a stream slot is what ▶ Play is for.
+        if (_dewarpMode && _dewarpFromTile is null)
+        {
+            StopDewarp();
+            DewarpPane.ClearFrame();
+            SetStatus("Fisheye: the previous camera's stream is released — press ▶ Play for the " +
+                "camera now selected.");
+        }
         StopPlayback(clearClock: true);
         _playbackDirty = true;
         if (IsPlaybackTabVisible)

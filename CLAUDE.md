@@ -117,8 +117,17 @@ that falls back to `CpuDewarpRenderer` live on a device loss. Read
 transcription against `DewarpGeometry`, so the HLSL is a transcription of something proven);
 `LensProjection`'s **enum ordinals are load-bearing** because the shader switches on them; an
 integer source coordinate is a pixel *centre*; a wide rectilinear pane minifies hardest in the
-**middle**, not the corners; and `Bilinear = false` does **not** disable mipmapping. The **Fisheye
-tab** (`MainWindow.Dewarp.cs`) feeds it from `VlcFrameSource` — LibVLC 3's video callbacks
+**middle**, not the corners; and `Bilinear = false` does **not** disable mipmapping. The GUI
+surface is the Live tab's **◎ Fisheye toggle** (`MainWindow.Dewarp.cs`, its own tab until
+2026-09-09): dewarping is a way of looking at a live camera, not a place to go, so it takes over
+whichever *single* camera is on screen — the single view, or a maximized grid camera — and
+inherits device/channel/stream/transport from the Live toolbar. It is **disabled on a grid page**
+because a dewarp wants the full-resolution picture and a page is sixteen sub streams; over a
+maximized camera it **borrows the grid's SDK login** (a stream slot, not a session). Toggling
+**restarts the picture** — `VideoView` rendering and `vmem` callbacks are different decoders and
+one media cannot feed both — and anything that takes that camera off screen (leaving the grid,
+Esc, another device) ends the mode, while another *channel* only stops the stream. It feeds from
+`VlcFrameSource` — LibVLC 3's video callbacks
 (`vmem`) into `DewarpFrameRing` (Core: three pinned I420 slots, newest frame wins, the presented
 frame stays valid until the next so a drag redraws with no upload) — and was **verified live on
 2026-09-03 on Site C channel 21 (2560×2560 H.265 over SDK 8000): 30 fps decoded, 30 shown, 0
@@ -126,7 +135,7 @@ skipped on the GPU, and 30/30 on the CPU renderer too**; the plane upload is ~5 
 period, not a blocker, and the next performance step is hardware decode (a frame-source change),
 never DX12/Vulkan. `vmem` is strictly sequential (lock → copy → unlock → display, one buffer at a
 time), which is why three slots suffice; never throw out of a callback. Mouse input reaches the
-tab from the swap chain's **child window** (`SwapChainHost.WndProc` answers `HTCLIENT` and
+pane from the swap chain's **child window** (`SwapChainHost.WndProc` answers `HTCLIENT` and
 translates the WM_ messages into pane-pixel events; WPF never sees them). Drag is `DewarpDrag`
 (Core), a **damped least-squares re-aim**: on a ceiling mount the roll rule pins the nadir to the
 pane's vertical centre line, so the exact-centre grab has no sideways solution and plain Newton

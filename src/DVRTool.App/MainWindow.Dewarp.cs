@@ -9,16 +9,31 @@ using LibVLCSharp.Shared;
 namespace DVRTool.App;
 
 /// <summary>
-/// The Fisheye tab: one channel, decoded to frames, dewarped on the GPU (or the CPU where the
-/// GPU cannot present), aimed with the mouse.
+/// Fisheye dewarping, as a mode of the Live tab: the camera already on screen, decoded to
+/// frames, dewarped on the GPU (or the CPU where the GPU cannot present), aimed with the mouse.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The chain is the Live tab's up to the decoder and the dewarp engine's after it:
-/// <see cref="VlcFrameSource"/> plays the same SDK or RTSP media the Live tab would, but through
-/// LibVLC's video callbacks, so each decoded frame arrives here as a <see cref="DewarpFrame"/>
-/// and goes into <see cref="DewarpSurface.Present"/>. Nothing about the transport changed, which
-/// is the point: the SDK route that works at fourteen sites is the one feeding the dewarp.
+/// <b>This is a way of looking at a live camera, not a separate destination.</b> A tech watching
+/// a fisheye has already picked the device, the channel, the stream and the transport in the Live
+/// tab's toolbar; making them pick all four again on another tab to see the same camera undistorted
+/// is the whole of the friction. So the ◎ Fisheye button toggles the dewarp over whichever
+/// <i>single</i> camera is on screen — the single view, or a maximized grid camera — and inherits
+/// everything else from the Live tab.
+/// </para>
+/// <para>
+/// <b>It is one camera or none, and that is a property of the renderer's input, not a policy.</b>
+/// A dewarp resamples the full-resolution picture, so it wants the main stream; a grid page is
+/// sixteen sub streams. Hence the toggle is disabled in grid mode until a camera is maximized,
+/// which is exactly when the grid has a main stream of its own.
+/// </para>
+/// <para>
+/// <b>Turning it on restarts the picture, because the two paths are different decoders.</b> The
+/// plain view is LibVLC rendering into a <c>VideoView</c>'s window; the dewarp needs the decoded
+/// planes in memory, which is LibVLC's <c>vmem</c> video callbacks through
+/// <see cref="VlcFrameSource"/>. One media cannot feed both, so the toggle stops the one and
+/// starts the other on the same channel — releasing the recorder's stream slot before taking
+/// another, never holding two.
 /// </para>
 /// <para>
 /// <b>Calibration is per frame size until the operator says otherwise.</b> Nothing on the wire
@@ -42,9 +57,33 @@ namespace DVRTool.App;
 public partial class MainWindow
 {
     private VlcFrameSource? _dewarpSource;
+
+    /// <summary>The dewarp's own SDK login, when it opened one. Null when it borrowed the grid's.</summary>
     private HikvisionSdkSession? _dewarpSdkSession;
+
+    /// <summary>A preview started on the grid's session: this side stops it, the grid logs out.</summary>
+    private HikvisionLiveStream? _dewarpBorrowedLive;
+
     private Task? _dewarpStartTask;
+
+    /// <summary>
+    /// The previous stream's stop, still running. <c>MediaPlayer.Stop</c> blocks until LibVLC's
+    /// threads join, so it goes to a worker — and a <c>Play</c> issued before that worker has
+    /// finished is stopped by it a moment later, which is a live stream that silently never
+    /// arrives. Every start waits on this first.
+    /// </summary>
+    private Task? _dewarpStopTask;
+
     private int _dewarpGen;
+
+    /// <summary>True between the toggle going down and coming back up — the mode, not the stream.</summary>
+    private bool _dewarpMode;
+
+    /// <summary>Guards the toggle's own handler against the code that sets IsChecked.</summary>
+    private bool _dewarpToggling;
+
+    /// <summary>The maximized tile the dewarp took over from, so turning it off can put it back.</summary>
+    private LiveTile? _dewarpFromTile;
 
     private FisheyeCalibration _dewarpCalibration = FisheyeCalibration.Default(2560, 2560);
     private bool _dewarpCalibrationEdited;
@@ -52,6 +91,13 @@ public partial class MainWindow
     private int _dewarpFrameWidth;
     private int _dewarpFrameHeight;
     private string _dewarpSourceLabel = "";
+
+    /// <summary>
+    /// This stream has not put a frame on screen yet. Its own flag rather than a zero in the
+    /// frame counters: the frame source outlives any one stream, so its counts are cumulative
+    /// and never come back to zero for the second camera of a session.
+    /// </summary>
+    private bool _dewarpAwaitingFirstFrame;
 
     private bool _dewarpDragging;
     private double _dewarpDragX;
@@ -71,7 +117,7 @@ public partial class MainWindow
         DewarpViewMode.Panorama360,
     ];
 
-    private void InitializeDewarpTab()
+    private void InitializeDewarpMode()
     {
         // Filling the combos raises their SelectionChanged, which would otherwise count as the
         // operator having edited the calibration before they have touched anything.
@@ -100,9 +146,13 @@ public partial class MainWindow
             // After layout has settled, so the swap chain is resized to the size WPF actually gave.
             Dispatcher.BeginInvoke(DispatcherPriority.Render, DewarpPane.Redraw);
 
-        _dewarpStatsTimer.Tick += (_, _) => UpdateDewarpStatus();
+        _dewarpStatsTimer.Tick += (_, _) =>
+        {
+            if (_dewarpMode)
+                UpdateDewarpStatus();
+        };
         _dewarpStatsTimer.Start();
-        UpdateDewarpStatus();
+        UpdateDewarpAvailability();
     }
 
     private static string DescribeMode(DewarpViewMode mode) => mode switch
@@ -126,18 +176,161 @@ public partial class MainWindow
     private DewarpViewMode SelectedDewarpMode =>
         DewarpModes[Math.Clamp(DewarpModeCombo.SelectedIndex, 0, DewarpModes.Length - 1)];
 
-    // ----- starting and stopping -----
+    // ----- the toggle -----
 
-    private async void OnDewarpPlay(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Where the dewarp can stand in for the plain view: over the single camera, or over a
+    /// maximized grid camera. A grid page is sixteen sub streams and nothing to dewarp.
+    /// </summary>
+    private bool DewarpAvailable => !_gridMode || _maxTile is not null;
+
+    private void UpdateDewarpAvailability()
     {
-        if (_client is null || _currentDevice is null || _libVlc is null)
+        LiveDewarpToggle.IsEnabled = DewarpAvailable || _dewarpMode;
+    }
+
+    private void OnLiveDewarpToggle(object sender, RoutedEventArgs e)
+    {
+        if (_dewarpToggling)
+            return;
+        bool on = LiveDewarpToggle.IsChecked == true;
+        if (on == _dewarpMode)
+            return;
+        if (on)
+            EnterDewarpMode();
+        else
+            LeaveDewarpMode(replay: true);
+    }
+
+    /// <summary>Puts the toggle back up without running the handler's teardown twice.</summary>
+    private void SetDewarpToggle(bool on)
+    {
+        _dewarpToggling = true;
+        try { LiveDewarpToggle.IsChecked = on; }
+        finally { _dewarpToggling = false; }
+    }
+
+    /// <summary>
+    /// Turns the dewarp mode off from somewhere other than the button — leaving the grid, picking
+    /// another device, closing down. <paramref name="replay"/> says whether the plain view should
+    /// be started again, which it should not be when the thing it would show is going away.
+    /// </summary>
+    private void ExitDewarpMode(bool replay = false)
+    {
+        if (!_dewarpMode)
+            return;
+        SetDewarpToggle(false);
+        LeaveDewarpMode(replay);
+    }
+
+    private void EnterDewarpMode()
+    {
+        _dewarpMode = true;
+        _dewarpFromTile = _maxTile;
+        ShowDewarpChrome(true);
+
+        // The plain view of this camera goes first: the recorder has a finite number of stream
+        // slots, and the dewarp is about to ask for one for the same picture.
+        if (_dewarpFromTile is not null)
         {
-            SetStatus("Select a device and channel first.");
+            // The maximized camera's main stream, and the grid underneath it, both give way —
+            // the tiles keep running, they are just not what is on screen.
+            ReleaseMainStream();
+            LiveGridPanel.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            QueuePlayerStop(_livePlayer);
+            StopSdkLive();
+            LiveVideo.Visibility = Visibility.Collapsed;
+            _liveLabel = "";
+        }
+        DewarpPane.Visibility = Visibility.Visible;
+        UpdateDewarpAvailability();
+        _ = StartDewarpAsync();
+    }
+
+    private void LeaveDewarpMode(bool replay)
+    {
+        var tile = TeardownDewarpMode();
+
+        if (tile is not null && _tiles.Contains(tile) && _gridMode)
+        {
+            LiveGridPanel.Visibility = Visibility.Visible;
+            if (replay)
+            {
+                // Back through the ordinary maximize: the tile's sub stream is still running, so
+                // it fills the panel again while the main stream warms up, exactly as it did the
+                // first time. Its overlay went when the main stream took over the screen, and
+                // MaximizeTileAsync needs it back — that is where the label and the double-click
+                // that returns to the grid live. MaximizeTileAsync refuses to run twice, so let
+                // go of the claim as well.
+                tile.View.Content = tile.Overlay;
+                _maxTile = null;
+                _ = MaximizeTileAsync(tile);
+            }
+            else
+            {
+                RestoreGrid();
+            }
+            UpdateDewarpAvailability();
             return;
         }
-        if (ChannelList.SelectedItem is not ChannelItem item)
+
+        if (!_gridMode)
         {
-            SetStatus("Select a channel first.");
+            LiveVideo.Visibility = Visibility.Visible;
+            if (replay && _client is not null && _currentDevice is not null &&
+                ChannelList.SelectedItem is ChannelItem)
+                OnLivePlay(this, new RoutedEventArgs());
+        }
+        UpdateDewarpAvailability();
+    }
+
+    /// <summary>
+    /// Everything the mode owns, released: the stream, the pane, the toolbars, the toggle. What
+    /// goes back on screen afterwards is the caller's business, because the two callers differ —
+    /// the button puts the plain view back, <see cref="RestoreGrid"/> is already doing that.
+    /// Returns the maximized tile the dewarp had taken over, if it was over one.
+    /// </summary>
+    private LiveTile? TeardownDewarpMode()
+    {
+        if (!_dewarpMode)
+            return null;
+        _dewarpMode = false;
+        SetDewarpToggle(false);
+        var tile = _dewarpFromTile;
+        _dewarpFromTile = null;
+        StopDewarp();
+        DewarpPane.Visibility = Visibility.Collapsed;
+        DewarpPane.ClearFrame();
+        ShowDewarpChrome(false);
+        _dewarpSourceLabel = "";
+        _dewarpFrameWidth = _dewarpFrameHeight = 0;
+        return tile;
+    }
+
+    /// <summary>The dewarp's own toolbars and status line, shown only while the mode is on.</summary>
+    private void ShowDewarpChrome(bool on)
+    {
+        var visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        DewarpToolBars.Visibility = visibility;
+        DewarpStatusText.Visibility = visibility;
+        if (on)
+            UpdateDewarpStatus();
+    }
+
+    // ----- starting and stopping -----
+
+    /// <summary>
+    /// Opens the camera the Live tab is pointed at through the frame source. Which camera, which
+    /// stream and which transport are all the Live tab's answers, never asked again here.
+    /// </summary>
+    private async Task StartDewarpAsync()
+    {
+        if (_currentDevice is null || _libVlc is null || _cleanupStarted)
+        {
+            SetStatus("Select a device and channel first.");
             return;
         }
         if (_dewarpStartTask is { IsCompleted: false })
@@ -147,18 +340,51 @@ public partial class MainWindow
         }
 
         var device = _currentDevice;
-        var stream = DewarpStreamCombo.SelectedIndex == 1 ? StreamType.Sub : StreamType.Main;
-        bool overSdk = DewarpTransportCombo.SelectedIndex == 1;
-        int channel = item.Channel.Id;
+        int channel;
+        StreamType stream;
+        bool overSdk;
+        HikvisionSdkSession? borrowed = null;
 
-        // Whatever was playing goes first — a stream slot on the recorder, and a decoder here.
+        if (_dewarpFromTile is { } tile)
+        {
+            // The maximized camera, on the main stream the maximize would have used — and on the
+            // grid's own login, so dewarping a grid camera costs a stream slot, not a session.
+            channel = tile.Channel.Id;
+            stream = StreamType.Main;
+            borrowed = _gridSession;
+            overSdk = borrowed is not null;
+        }
+        else
+        {
+            if (ChannelList.SelectedItem is not ChannelItem item)
+            {
+                SetStatus("Select a channel first — or press Test pattern to check the dewarp " +
+                    "with no camera.");
+                return;
+            }
+            channel = item.Channel.Id;
+            stream = LiveStreamCombo.SelectedIndex == 1 ? StreamType.Sub : StreamType.Main;
+            overSdk = SelectedLiveTransport == LiveTransport.Sdk;
+        }
+
+        // Whatever the dewarp itself was playing goes first — a stream slot on the recorder, and
+        // a decoder here.
         StopDewarp();
+        _dewarpAwaitingFirstFrame = true;
         int gen = _dewarpGen;
         int selection = _selectionGen;
         var source = EnsureDewarpSource();
         if (source is null)
             return;
         DewarpPane.ClearFrame();
+
+        // The old stream's Stop is on a worker and would otherwise stop the new one.
+        if (_dewarpStopTask is { } stopping)
+        {
+            await stopping;
+            if (gen != _dewarpGen || selection != _selectionGen || _cleanupStarted)
+                return;
+        }
 
         if (overSdk)
         {
@@ -171,31 +397,40 @@ public partial class MainWindow
                       "has no SDK port; its live video is RTSP on the server port — use RTSP.");
                 return;
             }
-            SetStatus($"Fisheye: connecting to {device.Name} on SDK port {device.SdkPort} …");
+            if (borrowed is null)
+                SetStatus($"Fisheye: connecting to {device.Name} on SDK port {device.SdkPort} …");
             var startTask = Task.Run(() =>
             {
-                var session = HikvisionSdkSession.Open(device.ToConnection(),
+                // A session the grid already holds is reused; otherwise this is the dewarp's own
+                // login, and it owns the disposal.
+                var session = borrowed ?? HikvisionSdkSession.Open(device.ToConnection(),
                     device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null, device.Name);
                 try
                 {
-                    return (Session: session, Live: session.StartLive(channel, stream));
+                    return (Session: session, Live: session.StartLive(channel, stream), Owned: borrowed is null);
                 }
                 catch
                 {
-                    session.Dispose();
+                    if (borrowed is null)
+                        session.Dispose();
                     throw;
                 }
             });
             _dewarpStartTask = startTask;
             try
             {
-                var (session, live) = await startTask;
+                var (session, live, owned) = await startTask;
                 if (gen != _dewarpGen || selection != _selectionGen || _libVlc is null || _cleanupStarted)
                 {
-                    await Task.Run(session.Dispose);
+                    live.Dispose();
+                    if (owned)
+                        await Task.Run(session.Dispose);
                     return;
                 }
-                _dewarpSdkSession = session;
+                if (owned)
+                    _dewarpSdkSession = session;
+                else
+                    _dewarpBorrowedLive = live;
                 using var media = new Media(_libVlc, new StreamMediaInput(live.Media));
                 AddDewarpDecodeOptions(media);
                 source.Play(media);
@@ -225,6 +460,11 @@ public partial class MainWindow
             return;
         }
 
+        if (_client is null)
+        {
+            SetStatus("Select a device first.");
+            return;
+        }
         Uri uri;
         try
         {
@@ -269,47 +509,57 @@ public partial class MainWindow
             "The camera is most likely offline.");
     }
 
-    private void OnDewarpStop(object sender, RoutedEventArgs e)
-    {
-        StopDewarp();
-        SetStatus("Fisheye stopped — the recorder's stream slot is released. The last picture " +
-            "stays and can still be aimed.");
-    }
-
     /// <summary>
     /// Ends the stream: the decoder off the UI thread (LibVLC's Stop blocks until its threads
-    /// join) and the SDK session with it, releasing the recorder's stream slot.
+    /// join) and the SDK preview with it, releasing the recorder's stream slot. A session this
+    /// side opened is closed; one borrowed from the grid is left to the grid.
     /// </summary>
     private void StopDewarp()
     {
         _dewarpGen++;
+        _dewarpAwaitingFirstFrame = false;
         var session = _dewarpSdkSession;
         _dewarpSdkSession = null;
+        var borrowed = _dewarpBorrowedLive;
+        _dewarpBorrowedLive = null;
         var source = _dewarpSource;
         if (source is not null)
-            _ = source.StopAsync();
+            _dewarpStopTask = source.StopAsync();
         if (session is not null)
             _ = Task.Run(session.Dispose);
+        else if (borrowed is not null)
+            _ = Task.Run(borrowed.Dispose);
     }
 
     /// <summary>Shutdown-time teardown, waited on.</summary>
     private async Task DisposeDewarpAsync()
     {
         _dewarpGen++;
+        _dewarpMode = false;
         _dewarpStatsTimer.Stop();
         if (_dewarpStartTask is { } starting)
         {
             try { await starting; }
-            catch { /* already reported by OnDewarpPlay */ }
+            catch { /* already reported by StartDewarpAsync */ }
+        }
+        if (_dewarpStopTask is { } stopping)
+        {
+            try { await stopping; }
+            catch { /* Stop swallows its own disposal race */ }
+            _dewarpStopTask = null;
         }
         var source = _dewarpSource;
         _dewarpSource = null;
         var session = _dewarpSdkSession;
         _dewarpSdkSession = null;
+        var borrowed = _dewarpBorrowedLive;
+        _dewarpBorrowedLive = null;
         if (source is not null)
             await Task.Run(source.Dispose);
         if (session is not null)
             await Task.Run(session.Dispose);
+        else if (borrowed is not null)
+            await Task.Run(borrowed.Dispose);
         DewarpPane.Dispose();
     }
 
@@ -317,7 +567,7 @@ public partial class MainWindow
 
     private void OnDewarpFrame(DewarpFrame frame)
     {
-        if (_cleanupStarted)
+        if (_cleanupStarted || !_dewarpMode)
             return;
         if (frame.Width != _dewarpFrameWidth || frame.Height != _dewarpFrameHeight)
         {
@@ -335,7 +585,11 @@ public partial class MainWindow
                 };
                 FillCalibrationBoxes();
             }
-            if (_dewarpStatsShown == 0 && _dewarpSourceLabel.Length > 0)
+        }
+        if (_dewarpAwaitingFirstFrame)
+        {
+            _dewarpAwaitingFirstFrame = false;
+            if (_dewarpSourceLabel.Length > 0)
                 SetStatus($"Fisheye: {_dewarpSourceLabel}, {frame.Width}×{frame.Height}.");
         }
         PresentDewarp(frame);

@@ -174,6 +174,10 @@ public partial class MainWindow
         bool on = LiveGridToggle.IsChecked == true;
         if (on == _gridMode)
             return;
+
+        // Neither side of this switch is the camera the dewarp is aimed at, so the mode ends
+        // here rather than following the operator into a grid page or out of one.
+        ExitDewarpMode();
         _gridMode = on;
 
         // The grid decides main/sub for itself: sub in the tiles, main when maximized.
@@ -196,6 +200,7 @@ public partial class MainWindow
             LiveVideo.Visibility = Visibility.Visible;
             UpdateGridPageControls();
         }
+        UpdateDewarpAvailability();
     }
 
     private void OnLiveGridPrev(object sender, RoutedEventArgs e) => TurnGridPage(-1);
@@ -607,6 +612,8 @@ public partial class MainWindow
         _maxTile = tile;
         _maxPlayer ??= new MediaPlayer(_libVlc);
         LiveMaxVideo.MediaPlayer = _maxPlayer;
+        // One camera on screen is exactly the condition the dewarp needs.
+        UpdateDewarpAvailability();
 
         // The chosen tile grows to the whole panel; the others collapse. Collapsed tiles keep
         // their overlay windows where they were; emptied, those are transparent and
@@ -784,6 +791,10 @@ public partial class MainWindow
     /// <summary>Back to the grid: the main-stream preview released, tiles uncovered and re-laid.</summary>
     private void RestoreGrid()
     {
+        // Coming back to the grid is coming back to sixteen sub streams; the dewarp's camera is
+        // no longer on screen. Torn down here rather than delegated, because this method is
+        // already the one putting the tiles back — see TeardownDewarpMode.
+        TeardownDewarpMode();
         _maxGen++;
         var wasMax = _maxTile;
         _maxTile = null;
@@ -812,5 +823,6 @@ public partial class MainWindow
             if (wasMax is not null && _gridStatus.Length > 0)
                 SetStatus(_gridStatus);
         }
+        UpdateDewarpAvailability();
     }
 }

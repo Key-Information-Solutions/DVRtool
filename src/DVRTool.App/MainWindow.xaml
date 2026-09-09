@@ -105,92 +105,90 @@
                             <TextBlock x:Name="LiveGridPageLabel" VerticalAlignment="Center" Margin="4,0"/>
                             <Button x:Name="LiveGridNext" Content="▶" Click="OnLiveGridNext" IsEnabled="False"
                                     ToolTip="Next page of cameras"/>
+                            <Separator/>
+                            <ToggleButton x:Name="LiveDewarpToggle" Content="◎ Fisheye" Padding="6,2"
+                                          IsEnabled="False"
+                                          Checked="OnLiveDewarpToggle" Unchecked="OnLiveDewarpToggle">
+                                <ToggleButton.ToolTip>
+                                    <TextBlock>
+                                        Dewarps this camera's fisheye picture — drag to aim, wheel to zoom.<LineBreak/>
+                                        <LineBreak/>
+                                        It replaces the plain view of the <Bold>one</Bold> camera on screen, so it is<LineBreak/>
+                                        offered in the single view and on a maximized grid camera, never<LineBreak/>
+                                        across a whole grid page: a dewarp wants the full-resolution picture,<LineBreak/>
+                                        and sixteen of those is not a viewing mode.<LineBreak/>
+                                        <LineBreak/>
+                                        The stream is re-opened through the decoder this needs, so turning it<LineBreak/>
+                                        on or off restarts the picture. Turning it off brings the plain view back.
+                                    </TextBlock>
+                                </ToggleButton.ToolTip>
+                            </ToggleButton>
                             <TextBlock x:Name="LiveGridHint" VerticalAlignment="Center" Margin="10,0,0,0"
                                        Foreground="Gray" Visibility="Collapsed"
                                        Text="double-click a camera for its main stream"/>
                         </ToolBar>
+                        <StackPanel x:Name="DewarpToolBars" DockPanel.Dock="Top" Visibility="Collapsed">
+                            <ToolBar>
+                                <TextBlock Text="View: " VerticalAlignment="Center"/>
+                                <ComboBox x:Name="DewarpModeCombo" Width="120" SelectionChanged="OnDewarpViewSettingChanged"/>
+                                <TextBlock Text=" Mount: " VerticalAlignment="Center"/>
+                                <ComboBox x:Name="DewarpMountCombo" Width="80" SelectionChanged="OnDewarpCalibrationSettingChanged"/>
+                                <TextBlock Text=" Lens: " VerticalAlignment="Center"/>
+                                <ComboBox x:Name="DewarpLensCombo" Width="130" SelectionChanged="OnDewarpCalibrationSettingChanged"/>
+                                <Separator/>
+                                <Button Content="Reset view" Click="OnDewarpResetView"
+                                        ToolTip="Back to the opening view for this mount and view shape."/>
+                                <Separator/>
+                                <TextBlock Text="Renderer: " VerticalAlignment="Center"/>
+                                <ComboBox x:Name="DewarpRendererCombo" Width="70" SelectedIndex="0"
+                                          SelectionChanged="OnDewarpRendererChanged">
+                                    <ComboBoxItem Content="Auto"/>
+                                    <ComboBoxItem Content="GPU"/>
+                                    <ComboBoxItem Content="CPU"/>
+                                    <ComboBox.ToolTip>
+                                        <TextBlock>
+                                            Auto uses the graphics card unless this session cannot show its output<LineBreak/>
+                                            (Remote Desktop, software rendering) — then the CPU renderer.<LineBreak/>
+                                            GPU forces the card; CPU forces the fallback. The status line says which is drawing.
+                                        </TextBlock>
+                                    </ComboBox.ToolTip>
+                                </ComboBox>
+                                <Button Content="Test pattern" Click="OnDewarpTestPattern" Margin="8,0,0,0">
+                                    <Button.ToolTip>
+                                        <TextBlock>
+                                            Shows a synthetic tiled floor seen through the current calibration, no camera needed.<LineBreak/>
+                                            In the flat view the grout lines must come out straight; one half of the floor<LineBreak/>
+                                            is tinted red and the other blue, so a mirrored picture is obvious.
+                                        </TextBlock>
+                                    </Button.ToolTip>
+                                </Button>
+                            </ToolBar>
+                            <ToolBar>
+                                <TextBlock Text="Circle: X " VerticalAlignment="Center"
+                                           ToolTip="Where the image circle sits in the frame, in source pixels, and the lens's full field of view in degrees."/>
+                                <TextBox x:Name="DewarpCenterXBox" Width="55" ToolTip="Circle centre X, in source pixels"/>
+                                <TextBlock Text=" Y " VerticalAlignment="Center"/>
+                                <TextBox x:Name="DewarpCenterYBox" Width="55" ToolTip="Circle centre Y, in source pixels"/>
+                                <TextBlock Text=" r " VerticalAlignment="Center"/>
+                                <TextBox x:Name="DewarpRadiusBox" Width="55" ToolTip="Circle radius, in source pixels"/>
+                                <TextBlock Text=" FOV° " VerticalAlignment="Center"/>
+                                <TextBox x:Name="DewarpFovBox" Width="45" ToolTip="The lens's full field of view, in degrees (180 for most fisheyes)"/>
+                                <Button Content="Apply" Click="OnDewarpApplyCalibration" Margin="8,0,0,0"/>
+                                <Button Content="Default" Click="OnDewarpDefaultCalibration"
+                                        ToolTip="Circle inscribed in the shorter side and centred, 180° — right for most ceiling fisheyes."/>
+                                <TextBlock x:Name="DewarpCalibrationNote" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="Gray"/>
+                            </ToolBar>
+                        </StackPanel>
+                        <TextBlock x:Name="DewarpStatusText" DockPanel.Dock="Bottom" Margin="2,4,2,0"
+                                   Foreground="Gray" TextWrapping="Wrap" Visibility="Collapsed"
+                                   Text="Drag to aim, wheel to zoom."/>
                         <Border Background="Black">
                             <Grid>
                                 <vlc:VideoView x:Name="LiveVideo"/>
                                 <UniformGrid x:Name="LiveGridPanel" Visibility="Collapsed"/>
                                 <vlc:VideoView x:Name="LiveMaxVideo" Visibility="Collapsed"/>
+                                <local:DewarpSurface x:Name="DewarpPane" Visibility="Collapsed"/>
                             </Grid>
-                        </Border>
-                    </DockPanel>
-                </TabItem>
-
-                <TabItem Header="Fisheye">
-                    <DockPanel>
-                        <ToolBar DockPanel.Dock="Top">
-                            <TextBlock Text="Stream: " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="DewarpStreamCombo" Width="80" SelectedIndex="0"
-                                      ToolTip="Main is the full-resolution picture a dewarp needs; Sub is cheaper to decode but soft once zoomed.">
-                                <ComboBoxItem Content="Main"/>
-                                <ComboBoxItem Content="Sub"/>
-                            </ComboBox>
-                            <TextBlock Text=" over " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="DewarpTransportCombo" Width="130" SelectedIndex="1"
-                                      ToolTip="Same choice as the Live tab: SDK works wherever iVMS-4200 works (Hikvision only); RTSP needs the RTSP port forwarded.">
-                                <ComboBoxItem Content="RTSP"/>
-                                <ComboBoxItem Content="SDK"/>
-                            </ComboBox>
-                            <Button Content="▶ Play" Click="OnDewarpPlay" Margin="8,0,0,0"/>
-                            <Button Content="⏹ Stop" Click="OnDewarpStop"/>
-                            <Separator/>
-                            <TextBlock Text="View: " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="DewarpModeCombo" Width="120" SelectionChanged="OnDewarpViewSettingChanged"/>
-                            <TextBlock Text=" Mount: " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="DewarpMountCombo" Width="80" SelectionChanged="OnDewarpCalibrationSettingChanged"/>
-                            <TextBlock Text=" Lens: " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="DewarpLensCombo" Width="130" SelectionChanged="OnDewarpCalibrationSettingChanged"/>
-                        </ToolBar>
-                        <ToolBar DockPanel.Dock="Top">
-                            <Button Content="Reset view" Click="OnDewarpResetView"
-                                    ToolTip="Back to the opening view for this mount and view shape."/>
-                            <Separator/>
-                            <TextBlock Text="Renderer: " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="DewarpRendererCombo" Width="70" SelectedIndex="0"
-                                      SelectionChanged="OnDewarpRendererChanged">
-                                <ComboBoxItem Content="Auto"/>
-                                <ComboBoxItem Content="GPU"/>
-                                <ComboBoxItem Content="CPU"/>
-                                <ComboBox.ToolTip>
-                                    <TextBlock>
-                                        Auto uses the graphics card unless this session cannot show its output<LineBreak/>
-                                        (Remote Desktop, software rendering) — then the CPU renderer.<LineBreak/>
-                                        GPU forces the card; CPU forces the fallback. The status line says which is drawing.
-                                    </TextBlock>
-                                </ComboBox.ToolTip>
-                            </ComboBox>
-                            <Button Content="Test pattern" Click="OnDewarpTestPattern" Margin="8,0,0,0">
-                                <Button.ToolTip>
-                                    <TextBlock>
-                                        Shows a synthetic tiled floor seen through the current calibration, no camera needed.<LineBreak/>
-                                        In the flat view the grout lines must come out straight; one half of the floor<LineBreak/>
-                                        is tinted red and the other blue, so a mirrored picture is obvious.
-                                    </TextBlock>
-                                </Button.ToolTip>
-                            </Button>
-                            <Separator/>
-                            <TextBlock Text="Circle: X " VerticalAlignment="Center"
-                                       ToolTip="Where the image circle sits in the frame, in source pixels, and the lens's full field of view in degrees."/>
-                            <TextBox x:Name="DewarpCenterXBox" Width="55" ToolTip="Circle centre X, in source pixels"/>
-                            <TextBlock Text=" Y " VerticalAlignment="Center"/>
-                            <TextBox x:Name="DewarpCenterYBox" Width="55" ToolTip="Circle centre Y, in source pixels"/>
-                            <TextBlock Text=" r " VerticalAlignment="Center"/>
-                            <TextBox x:Name="DewarpRadiusBox" Width="55" ToolTip="Circle radius, in source pixels"/>
-                            <TextBlock Text=" FOV° " VerticalAlignment="Center"/>
-                            <TextBox x:Name="DewarpFovBox" Width="45" ToolTip="The lens's full field of view, in degrees (180 for most fisheyes)"/>
-                            <Button Content="Apply" Click="OnDewarpApplyCalibration" Margin="8,0,0,0"/>
-                            <Button Content="Default" Click="OnDewarpDefaultCalibration"
-                                    ToolTip="Circle inscribed in the shorter side and centred, 180° — right for most ceiling fisheyes."/>
-                            <TextBlock x:Name="DewarpCalibrationNote" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="Gray"/>
-                        </ToolBar>
-                        <TextBlock x:Name="DewarpStatusText" DockPanel.Dock="Bottom" Margin="2,4,2,0"
-                                   Foreground="Gray" TextWrapping="Wrap"
-                                   Text="Pick a channel and press Play, or Test pattern. Drag to aim, wheel to zoom."/>
-                        <Border Background="Black">
-                            <local:DewarpSurface x:Name="DewarpPane"/>
                         </Border>
                     </DockPanel>
                 </TabItem>
