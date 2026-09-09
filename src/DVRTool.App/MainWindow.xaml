@@ -647,6 +647,198 @@
                         </Grid>
                     </DockPanel>
                 </TabItem>
+                <TabItem Header="Config">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <TextBlock Text="System " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="ConfigDeviceCombo" Width="220"
+                                      DisplayMemberPath="DisplayLabel"/>
+                            <Button Content="Read" Click="OnLoadConfig" Margin="8,0,0,0"/>
+                            <Separator/>
+                            <Button Content="Fleet clocks" Click="OnAuditFleetClocks"
+                                    Padding="10,2">
+                                <Button.ToolTip>
+                                    <TextBlock>
+                                        Reads the clock and the time source of every saved recorder —<LineBreak/>
+                                        two small requests each — and says which ones are out.<LineBreak/>
+                                        <LineBreak/>
+                                        This is the reason the tab exists: footage search, the timeline<LineBreak/>
+                                        and export filenames all run on the recorder's own wall clock,<LineBreak/>
+                                        so a recorder an hour out stamps the wrong hour onto everything<LineBreak/>
+                                        it writes.
+                                    </TextBlock>
+                                </Button.ToolTip>
+                            </Button>
+                        </ToolBar>
+
+                        <TextBlock x:Name="ConfigWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
+                                   TextWrapping="Wrap" Foreground="DarkRed" FontWeight="Bold"
+                                   Visibility="Collapsed"/>
+
+                        <GroupBox DockPanel.Dock="Top" Header="Fleet clocks" Margin="0,4,0,0">
+                            <DockPanel>
+                                <TextBlock x:Name="ConfigFleetSummary" DockPanel.Dock="Top"
+                                           Margin="2,2,2,4" TextWrapping="Wrap"/>
+                                <DataGrid x:Name="ConfigFleetGrid" AutoGenerateColumns="False"
+                                          IsReadOnly="True" CanUserAddRows="False"
+                                          MaxHeight="170" Margin="0,2">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Recorder" Width="150"
+                                                            Binding="{Binding Device}"/>
+                                        <DataGridTextColumn Header="Its clock" Width="135"
+                                                            Binding="{Binding Clock}"/>
+                                        <DataGridTextColumn Header="Drift" Width="95"
+                                                            Binding="{Binding Drift}"/>
+                                        <DataGridTextColumn Header="Time source" Width="85"
+                                                            Binding="{Binding Source}"/>
+                                        <DataGridTextColumn Header="Verdict" Width="*"
+                                                            Binding="{Binding Verdict}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding Detail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <GroupBox DockPanel.Dock="Bottom" Header="Change the time source (writes)"
+                                  Margin="0,6,0,0">
+                            <DockPanel Margin="4">
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                                    <TextBlock Text="NTP server " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="ConfigNtpServerBox" Width="150"/>
+                                    <TextBlock Text=" port " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="ConfigNtpPortBox" Width="50"/>
+                                    <TextBlock Text=" every " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="ConfigNtpIntervalBox" Width="45"/>
+                                    <TextBlock Text=" min " VerticalAlignment="Center"/>
+                                    <CheckBox x:Name="ConfigNtpEnabledCheck" Content="NTP on"
+                                              VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal"
+                                            Margin="0,6,0,0">
+                                    <TextBlock Text="Time zone " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="ConfigZoneBox" Width="330">
+                                        <TextBox.ToolTip>
+                                            <TextBlock>
+                                                The vendor's OWN value: a Hikvision timeZone string, a Dahua<LineBreak/>
+                                                zone index. There is no reliable mapping from an IANA zone name,<LineBreak/>
+                                                and a wrong mapping mis-sets the clock silently — which is the<LineBreak/>
+                                                fault this tab exists to catch. Copy the value from a recorder<LineBreak/>
+                                                of the same vendor that is right.
+                                            </TextBlock>
+                                        </TextBox.ToolTip>
+                                    </TextBox>
+                                    <CheckBox x:Name="ConfigDstCheck" Content="DST"
+                                              VerticalAlignment="Center" Margin="8,0,0,0">
+                                        <CheckBox.ToolTip>
+                                            <TextBlock>
+                                                Dahua's own daylight-saving switch. Hikvision folds DST into the<LineBreak/>
+                                                zone string and has no switch, so this is disabled there.
+                                            </TextBlock>
+                                        </CheckBox.ToolTip>
+                                    </CheckBox>
+                                    <TextBlock Text="  Name " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="ConfigNameBox" Width="150"/>
+                                </StackPanel>
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal"
+                                            Margin="0,6,0,0">
+                                    <Button x:Name="ConfigApplyButton" Content="Apply…"
+                                            Click="OnApplyConfig" Padding="10,2" IsEnabled="False">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Writes only the fields you changed, then reads the recorder back<LineBreak/>
+                                                and shows what it actually kept. Asks for confirmation first.<LineBreak/>
+                                                <LineBreak/>
+                                                Reversible from this same tab, which is why it has a button here —<LineBreak/>
+                                                changing a LAN address or a service port is not, and is<LineBreak/>
+                                                deliberately not offered anywhere in DVRTool.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
+                                    <Button x:Name="ConfigSyncNowButton" Content="Set clock from this PC…"
+                                            Click="OnSyncConfigClock" Margin="8,0,0,0" Padding="10,2"
+                                            IsEnabled="False">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Stamps this workstation's wall clock onto the recorder.<LineBreak/>
+                                                Refused on a recorder that syncs from NTP — a hand-set clock<LineBreak/>
+                                                there is overwritten at the next sync and hides the real cause,<LineBreak/>
+                                                which is usually the zone or the DST switch.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
+                                    <TextBlock x:Name="ConfigWriteResult" Margin="12,0,0,0"
+                                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <GroupBox Grid.Row="0" Grid.ColumnSpan="2" Header="Clock">
+                                <TextBlock x:Name="ConfigClockText" Margin="4"
+                                           TextWrapping="Wrap"
+                                           FontFamily="Consolas, Segoe UI"/>
+                            </GroupBox>
+
+                            <GroupBox Grid.Row="1" Grid.Column="0" Header="Service ports">
+                                <DataGrid x:Name="ConfigPortGrid" AutoGenerateColumns="False"
+                                          IsReadOnly="True" CanUserAddRows="False" Margin="0,2">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Protocol" Width="110"
+                                                            Binding="{Binding Protocol}"/>
+                                        <DataGridTextColumn Header="Port" Width="55"
+                                                            Binding="{Binding Port}"/>
+                                        <DataGridTextColumn Header="State" Width="65"
+                                                            Binding="{Binding State}"/>
+                                        <DataGridTextColumn Header="Allowed" Width="130"
+                                                            Binding="{Binding Range}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding RangeDetail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="Saved record" Width="*"
+                                                            Binding="{Binding Saved}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding SavedDetail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </GroupBox>
+
+                            <GroupBox Grid.Row="1" Grid.Column="1" Header="Network and notes">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <StackPanel Margin="4">
+                                        <TextBlock x:Name="ConfigNetworkText" TextWrapping="Wrap"
+                                                   FontFamily="Consolas, Segoe UI"/>
+                                        <TextBlock x:Name="ConfigNotesText" Margin="0,8,0,0"
+                                                   TextWrapping="Wrap" Foreground="#333"/>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </GroupBox>
+                        </Grid>
+                    </DockPanel>
+                </TabItem>
             </TabControl>
         </Grid>
     </DockPanel>

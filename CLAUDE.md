@@ -268,6 +268,40 @@ IOPS-saturated array. Then `--record-audio off --all`: **63 changed, 0 failed**,
 move under you: seven cameras changed mode during an 18-minute window
 that day, edited from a remote client — re-read modes immediately before any batch.
 
+**Device config / the clock audit** (2026-09-09, `docs/device-config.md`, specced in
+`docs/device-config-spec.md` off the observed endpoint set in `docs/device-config-discovery.md`):
+the GUI **Config** tab and `dvrtool config show | clock | audit | set` read a recorder's own
+settings — clock, time source, service ports, LAN address, device name — for all three vendors
+(`IDeviceConfigClient` / `IDeviceConfigWriter` in `DeviceConfig.cs`; `ConfigAudit.cs` holds the
+pure audit plus the `ClockSweep` both front ends use). **The product is the fleet clock audit**:
+footage search, `TimelineWindow`/`PlaybackClock` and `ExportNaming` all run on NVR-local wall
+clock, and the first sweep of the saved fleet (21 recorders, 0 failures) found four wrong clocks —
+one Dahua an hour out with NTP syncing and `DSTEnable=false`, one 35 min out with NTP off, two
+Hikvision with no time source or minutes of drift. **Drift is a difference of wall-clock digits,
+never of instants**: Hikvision reports `localTime` as `-05:00` while standing in `-04:00`, so
+`ParseIsapiTime`'s "keep the wall clock" is now load-bearing and must not be "fixed"; a
+genuinely-other-zone recorder is handled by `SavedDevice.ExpectedOffsetMinutes` (Add/Edit device →
+Clock offset), never by inference. `ClockDrift.Measure` takes both ends of the round trip so the
+error bar is real. **Out of scope is not a failed read**: `ConfigScope.ClockOnly` (Nx — a
+distributed clock master by GUID, not an NTP client; zone and address belong to Windows) renders
+`n/a` + the reason while a failed read renders `?`, and `TimeSourceStatus.NtpEnabled` is null
+there rather than false. Hikvision's ports are one document (`/ISAPI/Security/adminAccesses`,
+`DEV_MANAGE` = the SDK port, and the default attribute is spelled **`def=` and `default=` in the
+same capabilities document**); `time/localTime` is a **plain-text scalar**; network ranges exist
+only at the interfaces **list** level. Dahua answers **only RTSP**'s port — every other name
+returns a 403 `Authority:check failure.` indistinguishable from a real denial, so **config names
+are never guessed at runtime** — declares no ranges (`ServicePortRange.Fallback`, labelled as
+ours), keeps the zone in `NTP` not `Locales`, and reports 65535 Mbps for an unconfigured bond.
+Writes are **read-modify-write, enforced**: refuse without a prior read, re-read and refuse if the
+document moved underneath, then read back and report what the recorder kept (the M-series NTP
+document's `portType`/`customPortNo` are why). `--sync-now` is refused on a recorder that syncs
+from NTP, and a Dahua `--timezone` given as text is refused because its zone is an index — there
+is no IANA mapping on either vendor. **Tier 3 (LAN address and service-port writes) is
+deliberately unbuilt** — spec §7 — since a network write cannot be verified on the socket that
+issued it. Fired live: the Hikvision NTP-interval write on the lab recorder (30 → read back →
+back to 60). Not yet fired: any Dahua write, the Hikvision zone/name/sync-now writes, and the GUI
+Apply button.
+
 **Recorded playback** (2026-09-04, `docs/playback.md`): the GUI Playback / Export tab is a
 day-per-camera **timeline** (`TimelineControl`, geometry in `TimelineWindow`/`FootageCoverage`/
 `PlaybackClock` in Core, all tested) — click seeks, drag selects an export range, wheel zooms,

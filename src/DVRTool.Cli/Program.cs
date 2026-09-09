@@ -23,6 +23,8 @@ const string Usage = """
                       (see: dvrtool storage --help)
       recording       Which tracks reach the disk: the secondary-stream and audio
                       switches (see: dvrtool recording --help)
+      config          The recorder's own settings — clock, NTP, ports, LAN address —
+                      and the FLEET CLOCK AUDIT (see: dvrtool config --help)
       search          List recordings for a channel in a window
       footage         Which days of a month hold footage for a channel; --probe opens
                       the playback body the GUI plays and says what arrived
@@ -101,13 +103,14 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 
 string command = args[0].ToLowerInvariant();
 
-// `access`, `storage` and `recording` are command groups:
+// `access`, `storage`, `recording` and `config` are command groups:
 // `dvrtool <group> <subcommand> [options]`, so their subcommand must be pulled off before
 // the rest is parsed as options.
 bool isAccess = command == "access";
 bool isStorage = command == "storage";
 bool isRecording = command == "recording";
-string groupSubcommand = (isAccess || isStorage || isRecording) && args.Length > 1 &&
+bool isConfig = command == "config";
+string groupSubcommand = (isAccess || isStorage || isRecording || isConfig) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -147,6 +150,18 @@ try
     if (isRecording &&
         RecordingCommands.TryRunHelp(groupSubcommand, opts, out int recordingHelpExit))
         return recordingHelpExit;
+
+    if (isConfig)
+    {
+        if (ConfigCommands.TryRunHelp(groupSubcommand, opts, out int configHelpExit))
+            return configHelpExit;
+
+        // `--all-saved` and `--device <name>` work from the GUI's saved records and build
+        // their own clients, so they run before the single-device connection below — which
+        // would otherwise demand a --host this invocation has no use for.
+        if (ConfigCommands.UsesSavedDevices(groupSubcommand, opts))
+            return await ConfigCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
+    }
 
     // `test` probes ports instead of driving a client, and ConnectivityProbe disposes every
     // client its factory hands it — so it gets the connection plus a factory rather than the
@@ -387,6 +402,8 @@ try
             return await StorageCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "recording":
             return await RecordingCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
+        case "config":
+            return await ConfigCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "live-url":
         {
             int channel = RequireChannel(opts);
@@ -890,12 +907,8 @@ static INvrClient BuildClient(Dictionary<string, string> opts, bool needsPasswor
     return ClientFor(conn, vendor);
 }
 
-static INvrClient ClientFor(NvrConnection conn, Vendor vendor) => vendor switch
-{
-    Vendor.Dahua => new DahuaClient(conn),
-    Vendor.NxWitness => new NxWitnessClient(conn),
-    _ => new HikvisionClient(conn),
-};
+static INvrClient ClientFor(NvrConnection conn, Vendor vendor) =>
+    VendorClients.For(conn, vendor);
 
 /// <summary>
 /// <c>--vendor</c>, resolved before the connection is built because the port defaults depend
@@ -1164,11 +1177,13 @@ static Dictionary<string, string> ParseOptions(string[] args)
         // `storage pin` / `storage plan` / `storage set`: valueless by design, and listed
         // here so a following bare word is reported as unexpected rather than swallowed.
         "pin", "unpin", "clear", "ignore-pins",
+        // `config audit` / `config set`: valueless by design.
+        "all-saved", "sync-now",
     ];
     // Flags that may be given more than once (e.g. `access onboard --group A --group B`).
     // Repeats accumulate, joined by an ASCII unit separator the caller splits back out; a
     // plain dictionary would otherwise keep only the last one.
-    string[] multiFlags = ["group"];
+    string[] multiFlags = ["group", "device"];
     var opts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     for (int i = 0; i < args.Length; i++)
     {

@@ -81,6 +81,7 @@ public partial class MainWindow : Window
 
         InitializeAccessTab();
         InitializeStorageTab();
+        InitializeConfigTab();
         InitializeLiveStats();
         InitializePlaybackTab();
         InitializeDewarpTab();
@@ -103,6 +104,7 @@ public partial class MainWindow : Window
         _usersCts?.Cancel();
         _accessCts?.Cancel();
         _storageCts?.Cancel();
+        _configCts?.Cancel();
         if (_downloadTask is { } task)
         {
             try { await task; }
@@ -136,6 +138,16 @@ public partial class MainWindow : Window
             try { await storageWork; }
             catch { /* canceled/failed; the Storage tab already reported it */ }
         }
+
+        // And the Config tab, which holds the client that did its read for the life of the
+        // view — a config write is that client's own document with fields replaced.
+        if (_configTask is { } configWork)
+        {
+            try { await configWork; }
+            catch { /* canceled/failed; the Config tab already reported it */ }
+        }
+        _configClient?.Dispose();
+        _configClient = null;
 
         // Before the players: an SDK preview is the source feeding one of them, and its
         // teardown blocks on the SDK's own receive thread. The grid first — it owns up to
@@ -177,6 +189,7 @@ public partial class MainWindow : Window
         _usersCts?.Dispose();
         _accessCts?.Dispose();
         _storageCts?.Dispose();
+        _configCts?.Dispose();
         _closePending = true;
         Close();
     }

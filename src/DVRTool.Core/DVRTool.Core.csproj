@@ -6,4 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- DPAPI for the saved-device password (System.Security.Cryptography.ProtectedData is
+         not in the base framework for a non-Windows TFM, and Core stays TFM-neutral). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.5" />
+  </ItemGroup>
+
 </Project>

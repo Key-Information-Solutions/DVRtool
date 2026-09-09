@@ -44,7 +44,8 @@ door-access writes.
 
 `DVRTool.App` is the everyday operator surface. The left panel lists the saved NVRs and,
 below them, the channels of whichever one is selected; the tabs on the right — **Live**,
-**Playback / Export**, **Users** and **Access** — are the work. Every export, remux,
+**Fisheye**, **Playback / Export**, **Users**, **Access**, **Storage** and **Config** — are the
+work. Every export, remux,
 overwrite check and name-enrichment step runs through the same `DVRTool.Core` engine the
 CLI uses, so the behavior is identical whichever front end you reach for — the app is not
 a lesser path.
@@ -259,6 +260,9 @@ dvrtool download --channel 3 --start "2026-07-21 08:00" --end "2026-07-21 08:05"
 dvrtool live     --channel 3 --seconds 30 --out clip.mp4 --remux  # over the SDK port, no RTSP
 dvrtool live-url --channel 3 [--stream sub] [--with-creds]     # paste into VLC
 dvrtool playback-url --channel 3 --start ... --end ... [--with-creds]
+dvrtool config audit --all-saved                # every saved recorder's clock, and which are wrong
+dvrtool config show                             # this recorder's clock, NTP, ports, LAN address
+dvrtool config set --ntp-server time.windows.com --force
 ```
 
 Add `--vendor dahua` for Dahua units (default is hikvision). `--tls` switches the
@@ -277,6 +281,20 @@ by name — `dvrtool channels` shows the numbering — because Nx addresses came
 Storage tab and `dvrtool storage` work the same as on the recorders, with one difference the
 report spells out: Nx archives each camera's secondary (low-quality) stream alongside the
 main one, and the retention totals include it.
+
+### Clocks
+
+Every export DVRTool writes is named from the recorder's own wall clock, and so are footage
+search and the playback timeline — so a recorder whose clock is wrong quietly stamps the wrong
+time onto everything it records. `dvrtool config audit --all-saved` and the **Config** tab's
+Fleet-clocks panel read the clock and the time source of every saved recorder and say which ones
+are out, with the cause where the vendor exposes one (an hour out with NTP syncing and daylight
+saving switched off is the common one). The same tab shows one recorder's clock, NTP servers,
+service ports with the ranges the firmware declares, and its LAN addressing, and can change the
+time source, the zone, the DST switch and the device name — reads and reversible writes only.
+Changing a LAN address or a service port is deliberately not offered: it cannot be verified on
+the connection that issued it, and through a port forward it is unrecoverable. See
+[docs/device-config.md](docs/device-config.md).
 
 Every vendor's Storage report also shows each camera's **recording mode** — the Storage tab's
 Recording column (hover for the week laid out and what is in effect now), the RECORDING column

@@ -1,14 +1,9 @@
-using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using DVRTool.Core;
-using DVRTool.Vendors.Dahua;
-using DVRTool.Vendors.Hikvision;
-using DVRTool.Vendors.NxWitness;
 
-namespace DVRTool.App;
+namespace DVRTool.Core;
 
 /// <summary>A saved device. The password is DPAPI-protected per Windows user.</summary>
 public sealed class SavedDevice
@@ -59,7 +54,22 @@ public sealed class SavedDevice
     public string ExpectedSerial { get; set; } = "";
 
     /// <summary>
-    /// <see cref="Vendor"/> as the enum. The stored form stays a string so an unknown value
+    /// How far this recorder's wall clock is *meant* to sit from the workstation's, in
+    /// minutes. Null — the normal case, and the default — means "the same wall clock as me".
+    /// </summary>
+    /// <remarks>
+    /// Only for a fleet that genuinely spans time zones. Clock drift is measured as a
+    /// difference of wall-clock digits (see <see cref="ClockDrift"/>), because the offset a
+    /// recorder declares is the field that lies — so a recorder deliberately set to another
+    /// zone reads as drifted by the zone difference until this says otherwise. It is a
+    /// nullable count of minutes rather than a zone picker because "same clock as me" is
+    /// right for every site in the current fleet, and because a zone id would need a mapping
+    /// from vendor zone strings that provably does not exist.
+    /// </remarks>
+    public int? ExpectedOffsetMinutes { get; set; }
+
+    /// <summary>
+    /// <see cref="DVRTool.Core.Vendor"/> as the enum. The stored form stays a string so an unknown value
     /// in <c>devices.json</c> degrades to Hikvision instead of failing to deserialize.
     /// </summary>
     [JsonIgnore]
@@ -77,6 +87,10 @@ public sealed class SavedDevice
     [JsonIgnore]
     private string DisplayName => Name.Length > 0 ? Name : Host;
 
+    // DPAPI is Windows-only and so is DVRTool — WPF front end, HCNetSDK, a WiX MSI — but
+    // Core carries no platform in its TFM so that the CLI stays a plain net10.0 build. The
+    // analyzer cannot see that; the product can.
+#pragma warning disable CA1416 // Validate platform compatibility
     public void SetPassword(string plain) =>
         ProtectedPassword = Convert.ToBase64String(ProtectedData.Protect(
             Encoding.UTF8.GetBytes(plain), null, DataProtectionScope.CurrentUser));
@@ -86,6 +100,7 @@ public sealed class SavedDevice
         ? ""
         : Encoding.UTF8.GetString(ProtectedData.Unprotect(
             Convert.FromBase64String(ProtectedPassword), null, DataProtectionScope.CurrentUser));
+#pragma warning restore CA1416
 
     public NvrConnection ToConnection() => new()
     {
@@ -97,24 +112,6 @@ public sealed class SavedDevice
         Password = Password,
         UseTls = UseTls,
     };
-
-    /// <summary>
-    /// A recorder's vendor client. Meaningless for a panel — those are driven through
-    /// <see cref="ToPanelConnection"/> — so calling this on one is a caller bug, not a
-    /// condition to degrade around.
-    /// </summary>
-    public INvrClient CreateClient()
-    {
-        if (IsPanel)
-            throw new InvalidOperationException(
-                $"'{Name}' is a door panel — it has no NVR client.");
-        return VendorKind switch
-        {
-            DVRTool.Core.Vendor.Dahua => new DahuaClient(ToConnection()),
-            DVRTool.Core.Vendor.NxWitness => new NxWitnessClient(ToConnection()),
-            _ => new HikvisionClient(ToConnection()),
-        };
-    }
 
     /// <summary>This record as the Access engine's connection type. Panels only.</summary>
     public AccessPanelConnection ToPanelConnection() => new()

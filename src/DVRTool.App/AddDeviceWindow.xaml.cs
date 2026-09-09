@@ -67,6 +67,7 @@ public partial class AddDeviceWindow : Window
         RtspPortBox.Text = device.RtspPort.ToString();
         SdkPortBox.Text = device.SdkPort.ToString();
         UserBox.Text = device.Username;
+        ClockOffsetBox.Text = device.ExpectedOffsetMinutes?.ToString() ?? "";
         PasswordHint.Visibility = Visibility.Visible;
     }
 
@@ -130,6 +131,9 @@ public partial class AddDeviceWindow : Window
         RtspPortLabel.Visibility = recorderRows;
         RtspPortBox.Visibility = recorderRows;
         TlsCheck.Visibility = recorderRows;
+        // A door panel has no clock DVRTool reads, so it has nothing to measure drift against.
+        ClockOffsetLabel.Visibility = recorderRows;
+        ClockOffsetRow.Visibility = recorderRows;
 
         if (panel)
         {
@@ -279,6 +283,21 @@ public partial class AddDeviceWindow : Window
             return null;
         }
 
+        // Blank means "the same wall clock as me" — the right answer for a single-zone
+        // fleet, and the reason this is a nullable count of minutes rather than a zone picker.
+        int? expectedOffset = null;
+        if (!panel && ClockOffsetBox.Text.Trim().Length > 0)
+        {
+            if (!int.TryParse(ClockOffsetBox.Text.Trim(), out int offsetMinutes) ||
+                Math.Abs(offsetMinutes) > 24 * 60)
+            {
+                error = "The clock offset is a whole number of minutes (blank = same clock " +
+                    "as this PC).";
+                return null;
+            }
+            expectedOffset = offsetMinutes;
+        }
+
         var device = new SavedDevice
         {
             Name = NameBox.Text.Trim().Length > 0 ? NameBox.Text.Trim() : host,
@@ -290,6 +309,7 @@ public partial class AddDeviceWindow : Window
             SdkPort = sdkPort,
             UseTls = !panel && TlsCheck.IsChecked == true,
             Username = UserBox.Text.Trim(),
+            ExpectedOffsetMinutes = expectedOffset,
         };
         device.ExpectedSerial = _expectedSerial;
         if (PassBox.Password.Length == 0 && _existingProtectedPassword is not null)

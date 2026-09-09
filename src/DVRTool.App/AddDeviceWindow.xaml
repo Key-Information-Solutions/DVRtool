@@ -23,6 +23,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -95,10 +96,34 @@
                    Text="Leave blank to keep the current password."
                    FontStyle="Italic" Foreground="Gray" Visibility="Collapsed"/>
 
+        <!-- Only for a fleet that spans time zones. The Config tab measures clock drift as a
+             difference of wall-clock DIGITS, because the offset a recorder declares is the
+             field that lies — so a recorder deliberately set to another zone reads as drifted
+             until this says how far it is meant to be. -->
+        <TextBlock x:Name="ClockOffsetLabel" Grid.Row="12" Grid.Column="0" Text="Clock offset"
+                   VerticalAlignment="Center"/>
+        <StackPanel x:Name="ClockOffsetRow" Grid.Row="12" Grid.Column="1" Margin="0,3"
+                    Orientation="Horizontal">
+            <TextBox x:Name="ClockOffsetBox" Width="60">
+                <TextBox.ToolTip>
+                    <TextBlock>
+                        How far this recorder's clock is MEANT to sit from this workstation's,<LineBreak/>
+                        in minutes — a site one zone east is 60, one zone west is -60.<LineBreak/>
+                        <LineBreak/>
+                        Leave it blank for "the same clock as me", which is right unless the<LineBreak/>
+                        site really is in another zone. It changes nothing on the recorder: it<LineBreak/>
+                        only tells the fleet clock audit what to measure against.
+                    </TextBlock>
+                </TextBox.ToolTip>
+            </TextBox>
+            <TextBlock Text=" minutes from this PC (blank = same clock)" VerticalAlignment="Center"
+                       Foreground="Gray" FontStyle="Italic"/>
+        </StackPanel>
+
         <!-- Edit mode only: which physical device this record is bound to. Shown because
              the binding is what refuses a connection when a port starts forwarding somewhere
              else, so the operator has to be able to see it and, deliberately, release it. -->
-        <StackPanel x:Name="IdentityRow" Grid.Row="12" Grid.Column="0" Grid.ColumnSpan="2"
+        <StackPanel x:Name="IdentityRow" Grid.Row="13" Grid.Column="0" Grid.ColumnSpan="2"
                     Orientation="Horizontal" Margin="0,8,0,0" Visibility="Collapsed">
             <TextBlock x:Name="IdentityText" TextWrapping="Wrap" MaxWidth="290"
                        VerticalAlignment="Center" Foreground="Gray" FontStyle="Italic"/>
@@ -106,7 +131,7 @@
                     Padding="8,2"/>
         </StackPanel>
 
-        <StackPanel Grid.Row="13" Grid.Column="0" Grid.ColumnSpan="2"
+        <StackPanel Grid.Row="14" Grid.Column="0" Grid.ColumnSpan="2"
                     Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button x:Name="TestButton" Content="Test connection" Click="OnTest" Padding="10,4"/>
             <Button Content="Save" Click="OnSave" Margin="8,0,0,0" Padding="14,4" IsDefault="True"/>
@@ -114,7 +139,7 @@
         </StackPanel>
 
         <!-- Scrolls because four wrapped result lines can outgrow the fixed dialog. -->
-        <ScrollViewer Grid.Row="14" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,10,0,0"
+        <ScrollViewer Grid.Row="15" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,10,0,0"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel x:Name="TestResults"/>
         </ScrollViewer>
