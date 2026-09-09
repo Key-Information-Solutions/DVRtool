@@ -105,6 +105,7 @@ public partial class MainWindow
             _liveStatsMedia = IntPtr.Zero;
             _liveStatsWindow.Reset();
             ShowLiveStats("");
+            UpdateLiveViewLabel();
             return;
         }
 
@@ -122,7 +123,8 @@ public partial class MainWindow
         {
             text = "";
         }
-        ShowLiveStats(text.Length > 0 ? $"{label}  ·  {text}" : "");
+        ShowLiveStats(text.Length > 0 ? $"{label}{LiveStatsZoomNote(player)}  ·  {text}" : "");
+        UpdateLiveViewLabel();
     }
 
     /// <summary>One reading of the player's counters, worded for the footer.</summary>
@@ -176,9 +178,11 @@ public partial class MainWindow
             break;
         }
         // The track header can lag the picture, or report the SPS size before cropping; the
-        // output's own size is what is on screen.
+        // output's own size is what is on screen — except under a digital zoom, where the
+        // output is showing a crop and the size worth reporting is still the stream's.
         uint px = 0, py = 0;
-        if (player.Size(0, ref px, ref py) && px > 0 && py > 0)
+        if (!(_zoom.IsZoomed && ReferenceEquals(_zoomPlayer, player)) &&
+            player.Size(0, ref px, ref py) && px > 0 && py > 0)
         {
             width = (int)px;
             height = (int)py;

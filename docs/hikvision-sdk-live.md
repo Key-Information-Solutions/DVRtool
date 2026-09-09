@@ -21,7 +21,11 @@ and the traps in the implementation. Read it before touching
 - **Two surfaces:** the desktop app's Live tab has a transport dropdown (`RTSP <port>` /
   `SDK <port>`), and the CLI has `dvrtool live`, which records to a file. The Live tab also
   has a **Grid** mode — every camera of the system at once on sub streams, 16 per page,
-  double-click for the main stream (§7).
+  double-click for the main stream (§7), a **fullscreen** toggle and a **wheel zoom** (§8).
+- **The wheel zoom is a crop, and VLC's documented crop syntax is wrong.** LibVLC 3.0.21
+  parses the documented `WxH+X+Y` window form and then applies it as though it were the
+  four-sided *border* form, so a real zoom computes a negative visible size and paints the
+  pane black. DVRTool emits `left+top+right+bottom` (§8). Measured, not guessed.
 - **Every live media needs `:avcodec-threads=1`** or a 20 fps stream shows its first frame
   and then nothing (§3, "LibVLC drops every frame after the first"). The bytes are fine; it
   is LibVLC's decoder latency against Hikvision's zero-lead timestamps. Applied by
@@ -432,6 +436,117 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
   as "dropped by viewer" — both are viewer-side problems and are worded as such, because the
   question a tech is answering is "camera, link, or this PC?".
 
+## 8. Fullscreen and digital zoom
+
+**Established:** 2026-09-09, on the lab recorder (16 channels, 9 live), verified over RTSP in
+the single view, in a 16-tile grid and on a maximized tile.
+
+Two additions to the Live tab: a fullscreen toggle (the toolbar button, `F11`, `Esc` to come
+back) and a wheel zoom on whichever pane the pointer is over, with a drag to pan and a
+right-click to fit. `MainWindow.LiveFullScreen.cs` and `MainWindow.LiveZoom.cs`, with the
+zoom arithmetic in `LiveZoom` (Core, unit-tested).
+
+### Fullscreen: hide the chrome, never move the video
+
+Fullscreen is the same window with everything but the video collapsed — the device list and
+its splitter (panel collapsed *and* the columns set to zero, since a collapsed child does not
+shrink a fixed-width column), the Live toolbar, the status bar and the tab headers — plus
+`WindowStyle.None` and `WindowState.Maximized`. `Normal` first and then `Maximized`, because
+changing the style while already maximized leaves the window sized to the work area and keeps
+a taskbar-shaped gap.
+
+**Nothing is reparented, and that is the load-bearing part.** A `VideoView` is a hosted child
+window that LibVLC renders into by handle; moving the host into a borderless window of its own
+destroys that handle and recreates it, which for a full grid is sixteen players pointed at
+dead windows. Collapsing the chrome in place costs a layout pass instead. Verified: a live
+2688×1520 H.265 stream stayed up across both transitions with no reconnect.
+
+Hiding the tab strip took two tries, both worth recording:
+
+- **Collapsing the `TabItem`s does not work.** A `TabControl` whose selected item is
+  `Visibility.Collapsed` has no selected content to present, so the whole tab went blank —
+  video, toolbar and all.
+- **Swapping the `TabControl`'s template would work and must not be used.** It rebuilds the
+  template's content presenter, which reparents the tab's content — the very thing the design
+  avoids.
+- **What is used:** each `TabItem` gets an empty `ControlTemplate`. A tab's own template draws
+  only its header; the selected tab's *content* is presented by the `TabControl`'s template,
+  which this never touches. Restoring is `ClearValue(TemplateProperty)`, **not** `Template =
+  null` — a local null is still a local value and beats the theme style's setter, which leaves
+  every tab permanently headerless (that was a real bug, caught on screen).
+
+### Zoom: a crop on the decoded picture
+
+The zoom is `libvlc_video_set_crop_geometry` on the pane's own player. Nothing is asked of the
+recorder — no second stream, no PTZ, no extra bandwidth — so it works over both transports and
+on all three vendors, and it cannot invent detail: a sub-stream tile at 4× is sub-stream pixels
+four times the size, which is why the useful move is to maximize a camera (that switches it to
+the main stream) and zoom that.
+
+**The crop geometry must be the border form.** VLC documents three forms — a ratio `W:H`, a
+window `WxH+X+Y`, and four borders `left+top+right+bottom` — and in LibVLC 3.0.21 the window
+form is broken. Probed against the shipped LibVLC with `--verbose=3` on a 1280×720 source,
+reading the vout's own `CROPPED` line:
+
+| geometry | vout reports | wanted |
+|---|---|---|
+| `640x360+320+180` | `of (320,180), vsz 320x180` | `vsz 640x360` |
+| `320+180+320+180` | `of (320,180), vsz 640x360` | ✔ |
+| `0+0+640+360` | `of (0,0), vsz 640x360` | ✔ |
+| `1:1` | `of (280,0), vsz 720x720` | ✔ (ratio form is fine) |
+
+The window form's `X`/`Y` land as the left/top borders and its `W`/`H` as the right/bottom
+ones, so the visible size comes out as `(width − x − W)` — which for any real zoom is negative
+and paints the pane black. That black pane is what the first live test showed, and it is the
+only reason `LiveZoom.CropGeometry` emits borders. Clearing is the empty string, which is what
+libvlc itself passes down for `NULL`.
+
+Everything else about the zoom is arithmetic in `LiveZoom`, kept pure so it could be tested
+without a window:
+
+- **State is a factor and a centre in picture coordinates** (0–1 across the decoded frame),
+  never pane pixels: panes get resized, letterboxed and in fullscreen reshaped, while the
+  thing being looked at is a place on the camera's picture. The centre is clamped as it is
+  set, so the visible window can never hang off the frame.
+- **A notch anchors on the point under the cursor**, which needs the letterboxing undone
+  first (`LiveZoom.Pick`) — treating pane coordinates as picture coordinates puts the anchor
+  off by the width of the bars, a sixth of the pane for a 16:9 camera in a 4:3 tile. On the
+  bars themselves there is no anchor, so the zoom works about the current centre instead.
+- **1.25 per notch, capped at 8×.** Ten notches crosses the range; six lands on 3.81, close
+  enough to "read the plate" that nobody counts.
+- **Sizes and offsets are rounded to even pixels** — the crop lands on a chroma-subsampled
+  plane — and the window keeps the picture's aspect ratio, so the pane's letterboxing does not
+  shift as it zooms.
+- **The picture size is captured when a pane takes the zoom**, because with a crop applied
+  `MediaPlayer.Size` reports what is being *displayed*; computing the next crop from that
+  would compound it. For the same reason the footer reports the stream's size, not the crop's,
+  while a zoom is on.
+
+**One camera is zoomed at a time** — whichever pane the pointer is over, which also selects
+that tile so the footer follows it. Any change of stream underneath (Play, Stop, a page turn,
+a maximize, a restore, grid on or off) drops the zoom, because the crop belongs to the
+*player* and would otherwise be inherited by the next camera to land there. The crop write
+goes through the same `_playerLock` / `_playersDisposed` guard as every other native call on
+these players: a crop set on a just-disposed player is a dereference of a released handle, not
+an exception.
+
+**Mouse input reaches the panes through their overlays.** A `VideoView` is a hosted child
+window and WPF sees no input over it, so the wheel, the drag and the right-click are handled on
+the almost-transparent overlay grid in front of each pane — the tiles' and the maximized view's
+already existed for their labels and the double-click; the single view got one, which also
+gave it a corner label (channel, stream, zoom factor) that is the only thing naming the camera
+once the status bar is gone. That overlay is a layered window that stops tracking a collapsed
+host, so switching to grid mode empties it: an empty overlay is fully transparent, and a fully
+transparent layered window is not hit-tested at all — otherwise it would sit over the grid and
+swallow the double-click.
+
+### Keys
+
+`F11` toggles fullscreen from the Live tab. `Esc` unwinds one step at a time in the order the
+operator got there: fullscreen first, then a maximized camera. Fullscreen hides the toolbar
+along with everything else, so `PgUp`/`PgDn` stand in for the grid's paging buttons while it
+is on. Leaving the Live tab leaves fullscreen with it.
+
 ## 5. Known limitations
 
 - **Hikvision only.** Dahua's equivalent is `CLIENT_RealPlayEx` in `dhnetsdk.dll` on 37777.
@@ -448,6 +563,9 @@ paged at 16, and a double-click on a tile brings that camera up full-size on its
 - **No audio.** `NET_DVR_AUDIOSTREAMDATA` is not requested and the muxed audio in
   `NET_DVR_STREAMDATA` is passed through untouched, which is all the RTSP path does either.
 - **No SDK playback or export yet.** See §2.
+- **The zoom is viewer-side only.** It crops what the stream already carries; it does not ask
+  the camera for a region of interest and it is not PTZ. It also does not persist — the zoom
+  is dropped whenever the stream underneath changes (§8).
 
 ## 6. Fleet consequence
 

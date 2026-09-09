@@ -48,7 +48,20 @@ VLC 3's `DecodedVideo` counts **twice per frame** (once per packet in, once per 
 `DisplayedPictures` counts 80 ms refresh re-renders, and the whole block is a 250 ms snapshot,
 so fps is the decoded delta halved over a four-second `LiveStatsWindow`, never a one-second
 delta and never the displayed counter; it reads "11/12 fps", measured over the configured rate
-the encoder declares in the track header.
+the encoder declares in the track header. **Fullscreen and wheel zoom** (2026-09-09,
+`MainWindow.LiveFullScreen.cs` / `MainWindow.LiveZoom.cs`, math in `LiveZoom` in Core, docs
+`docs/hikvision-sdk-live.md` §8): F11/Esc hides the chrome in place and **never reparents the
+video** — a `VideoView` is a hosted child window and moving it destroys the handle LibVLC
+renders into — so the tab strip goes away by giving each `TabItem` an empty `ControlTemplate`
+(collapsing the items blanks the whole tab, and restoring is `ClearValue`, never
+`Template = null`). The zoom is a crop on the decoded picture, and **VLC's documented
+`WxH+X+Y` crop form is broken in LibVLC 3.0.21** — it is applied as the four-sided border
+form, so a real zoom computes a negative visible size and paints the pane **black**;
+`LiveZoom.CropGeometry` therefore emits `left+top+right+bottom` (probed against the shipped
+LibVLC; the vout's own `CROPPED … vsz` line is the evidence). One camera is zoomed at a time
+and any change of stream drops it, because the crop belongs to the player rather than the
+media; the picture size is captured up front because `MediaPlayer.Size` reports the
+*cropped* size once a crop is on.
 
 **Device identity:** A successful login proves the credentials, not the hardware. Sites put
 several systems behind one address on different forwarded ports, and one shared account logs

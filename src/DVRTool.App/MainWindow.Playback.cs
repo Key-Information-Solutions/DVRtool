@@ -127,6 +127,7 @@ public partial class MainWindow
         // SelectionChanged bubbles up from every combo and grid inside the tabs.
         if (!ReferenceEquals(e.OriginalSource, MainTabs))
             return;
+        ExitFullScreenIfLeavingLiveTab();
         if (IsPlaybackTabVisible && _playbackDirty)
             _ = LoadPlaybackDayAsync();
     }

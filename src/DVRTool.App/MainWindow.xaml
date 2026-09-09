@@ -7,7 +7,7 @@
         Height="760" Width="1220"
         Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnLivePreviewKeyDown">
     <DockPanel>
-        <StatusBar DockPanel.Dock="Bottom">
+        <StatusBar x:Name="MainStatusBar" DockPanel.Dock="Bottom">
             <StatusBarItem DockPanel.Dock="Right">
                 <TextBlock x:Name="LiveStatsText" Visibility="Collapsed" Margin="12,0,4,0"
                            FontFamily="Consolas, Segoe UI">
@@ -32,12 +32,12 @@
 
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="290"/>
-                <ColumnDefinition Width="5"/>
+                <ColumnDefinition x:Name="SidePanelColumn" Width="290"/>
+                <ColumnDefinition x:Name="SidePanelSplitterColumn" Width="5"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <DockPanel Grid.Column="0" Margin="8">
+            <DockPanel x:Name="SidePanel" Grid.Column="0" Margin="8">
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
                     <Button Content="Add Device…" Click="OnAddDevice" Padding="10,4"/>
                     <Button Content="Edit…" Click="OnEditDevice" Margin="6,0,0,0" Padding="10,4"/>
@@ -53,12 +53,12 @@
                          SelectionChanged="OnChannelSelected"/>
             </DockPanel>
 
-            <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch"/>
+            <GridSplitter x:Name="SidePanelSplitter" Grid.Column="1" HorizontalAlignment="Stretch"/>
 
             <TabControl x:Name="MainTabs" Grid.Column="2" Margin="8" SelectionChanged="OnMainTabChanged">
-                <TabItem Header="Live">
+                <TabItem x:Name="LiveTab" Header="Live">
                     <DockPanel>
-                        <ToolBar DockPanel.Dock="Top">
+                        <ToolBar x:Name="LiveToolBar" DockPanel.Dock="Top">
                             <TextBlock Text="Stream: " VerticalAlignment="Center"/>
                             <ComboBox x:Name="LiveStreamCombo" Width="80" SelectedIndex="0">
                                 <ComboBoxItem Content="Main"/>
@@ -96,7 +96,10 @@
                                         <LineBreak/>
                                         Each tile is a stream slot on the recorder and one TCP<LineBreak/>
                                         connection on the chosen port, so a full page is 16 of each —<LineBreak/>
-                                        the same as an iVMS-4200 4×4 view.
+                                        the same as an iVMS-4200 4×4 view.<LineBreak/>
+                                        <LineBreak/>
+                                        The wheel zooms whichever camera the pointer is over, a drag<LineBreak/>
+                                        pans it and a right-click fits it again.
                                     </TextBlock>
                                 </ToggleButton.ToolTip>
                             </ToggleButton>
@@ -107,11 +110,36 @@
                                     ToolTip="Next page of cameras"/>
                             <TextBlock x:Name="LiveGridHint" VerticalAlignment="Center" Margin="10,0,0,0"
                                        Foreground="Gray" Visibility="Collapsed"
-                                       Text="double-click a camera for its main stream"/>
+                                       Text="double-click a camera for its main stream · wheel zooms, drag pans"/>
+                            <Separator/>
+                            <Button x:Name="LiveFullScreenButton" Content="&#x26F6; Full screen"
+                                    Click="OnLiveFullScreen" Padding="6,2">
+                                <Button.ToolTip>
+                                    <TextBlock>
+                                        Fills the screen with the video — the device list, the toolbars and<LineBreak/>
+                                        the status bar go away, and nothing about the streams changes.<LineBreak/>
+                                        <LineBreak/>
+                                        <Bold>F11</Bold> toggles it, <Bold>Esc</Bold> comes back, and in the grid<LineBreak/>
+                                        <Bold>PgUp</Bold> / <Bold>PgDn</Bold> turn the page without the toolbar.
+                                    </TextBlock>
+                                </Button.ToolTip>
+                            </Button>
                         </ToolBar>
                         <Border Background="Black">
                             <Grid>
-                                <vlc:VideoView x:Name="LiveVideo"/>
+                                <vlc:VideoView x:Name="LiveVideo">
+                                    <!-- An all-but-transparent overlay so the wheel, a drag and a
+                                         right-click reach the single view: a VideoView is a hosted
+                                         child window, and WPF sees no mouse input over it otherwise.
+                                         Fully transparent pixels in the overlay's layered window are
+                                         not hit-tested at all, hence the one unit of alpha. -->
+                                    <Grid x:Name="LiveVideoOverlay" Background="#01000000">
+                                        <TextBlock x:Name="LiveVideoLabel" Visibility="Collapsed"
+                                                   Foreground="White" Background="#80000000"
+                                                   Padding="6,2,6,3" FontSize="12"
+                                                   HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                                    </Grid>
+                                </vlc:VideoView>
                                 <UniformGrid x:Name="LiveGridPanel" Visibility="Collapsed"/>
                                 <vlc:VideoView x:Name="LiveMaxVideo" Visibility="Collapsed"/>
                             </Grid>
