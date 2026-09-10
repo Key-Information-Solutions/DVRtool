@@ -282,6 +282,65 @@ public static class FootageCoverage
         TimeSpan.FromTicks(coverage.Sum(c => c.Duration.Ticks));
 }
 
+/// <summary>What playback should do when the body it was reading has ended.</summary>
+public enum PlaybackResumeKind
+{
+    /// <summary>Open a new body at <see cref="PlaybackResume.At"/>.</summary>
+    Continue,
+
+    /// <summary>Nothing further to play on this day.</summary>
+    Stop,
+
+    /// <summary>
+    /// The body delivered so little that asking again from the same moment would just repeat
+    /// itself. Stop and say so rather than loop.
+    /// </summary>
+    GaveNothing,
+}
+
+/// <summary>The decision and, for <see cref="PlaybackResumeKind.Continue"/>, where.</summary>
+public readonly record struct PlaybackResume(PlaybackResumeKind Kind, DateTime At);
+
+/// <summary>
+/// Where playback picks up when a body ends.
+/// </summary>
+/// <remarks>
+/// A body is asked for one run of footage, and normally it plays that run out and the next
+/// run follows. But a body can also stop early — the vendor's per-request ceiling, a dropped
+/// connection, a recorder that simply stops sending — and then the footage it never delivered
+/// has not been watched. Carrying on from the <i>end of the request</i> in that case silently
+/// skips it, and on a day whose runs are hours long that is a jump of hours; carrying on from
+/// where the picture actually reached is what an operator means by "keep playing". The two
+/// cases are told apart by how close to the run's end the clock got, not by which event fired.
+/// </remarks>
+public static class PlaybackResumePlan
+{
+    /// <summary>This close to the end of the run counts as having played the run out.</summary>
+    public static readonly TimeSpan EndOfRunGrace = TimeSpan.FromSeconds(5);
+
+    /// <summary>Less footage than this out of a body, and resuming it is not worth it.</summary>
+    public static readonly TimeSpan MinimumProgress = TimeSpan.FromSeconds(1);
+
+    /// <param name="coverage">The day's runs of footage.</param>
+    /// <param name="bodyStart">The time the body that just ended was opened at.</param>
+    /// <param name="bodyEnd">Where that body was going to stop: its run's end, or the day's.</param>
+    /// <param name="clock">The decoder's last position, which may read past <paramref name="bodyEnd"/>.</param>
+    /// <param name="dayEnd">Midnight after the day on the timeline; nothing past it is played.</param>
+    public static PlaybackResume After(IReadOnlyList<FootageSpan> coverage, DateTime bodyStart,
+        DateTime bodyEnd, DateTime clock, DateTime dayEnd)
+    {
+        var reached = clock < bodyEnd ? clock : bodyEnd;
+        bool playedOut = reached >= bodyEnd - EndOfRunGrace;
+        if (!playedOut && reached <= bodyStart + MinimumProgress)
+            return new PlaybackResume(PlaybackResumeKind.GaveNothing, reached);
+
+        var next = FootageCoverage.NextFootageAt(coverage, playedOut ? bodyEnd : reached);
+        return next is DateTime n && n < dayEnd
+            ? new PlaybackResume(PlaybackResumeKind.Continue, n)
+            : new PlaybackResume(PlaybackResumeKind.Stop, reached);
+    }
+}
+
 /// <summary>
 /// Turns the decoder's media clock into a wall-clock playhead.
 /// </summary>

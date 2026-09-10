@@ -124,12 +124,62 @@ playhead is clamped to the requested end so read-ahead cannot show it past the r
 demuxer clock more than 3 s past the requested end with no end event is treated as the
 end, so a recorder that never signals one cannot freeze the tab. When a vendor ceiling
 cut the body short of the run (Dahua's 6 h) the continuation resumes at the body's
-requested end rather than the run's, so a long continuous day plays through. Re-measured
+requested end rather than the run's, so a long continuous day plays through — but only
+when the body actually reached that end. A body that stopped **early** resumes where the
+picture got to (`PlaybackResumePlan` in Core, tested), because resuming a cut-short body
+at the end of its request skips every minute it never delivered. Re-measured
 after the change: each clip played at 1× and handed off to the next. Note the clips are
 **shorter than the search says**: the 12:28:41→12:29:10 segment (29 s) is a 22.4 s body
 and the 12:33:45→12:34:41 one (56 s) is 51.8 s, measured with ffmpeg on the exact
 download — the search's end time carries post-record padding the file does not. The tab
 plays what the recorder holds and moves on when it ends, which is right.
+
+### The body must be paced, or the picture skips forward
+
+**A body LibVLC believes is live is a body it races through.** The symptom is footage
+that keeps jumping forward while it plays, on a camera whose recording is continuous —
+reported on the lab recorder's channel 2, 2026-09-10, and reproduced exactly.
+
+libvlc decides whether it may control an input's pace from **one thing: whether a seek
+callback was registered**. LibVLCSharp's `StreamMediaInput` sets `MediaInput.CanSeek`
+from `Stream.CanSeek`, so a forward-only HTTP body registers none — and libvlc then
+treats the input as a live source that paces itself, reads it flat out, and slaves its
+clock to the arrival rate. A playback body arrives about seventy times faster than real
+time, so the clock runs seventy times too fast, every picture is late the moment it is
+decoded, and the video output shows the handful that land.
+
+Measured on channel 2 (4096×1840 HEVC, 10 fps, ~1.9 Mbps), body 06:00:00 → 07:47:04:
+
+| input | read in 30 s | decoded | lost | clock |
+|---|---|---|---|---|
+| `StreamMediaInput` (forward-only) | **1279.8 MB** of a 1492 MB body | 42117 | 615 | pictures 135 s late |
+| seekable — the same bytes from a file | 4.3 MB | 403 | **0** | 1.00× |
+| `PlaybackMediaInput` (seek registered, refused) | 6.3 MB | 605 | **0** | 0.99× |
+
+Over 90 s the last row is 18.9 MB, 1.00×, zero lost, zero late. So the fix is
+`PlaybackMediaInput`: register the seek callback and refuse every seek. That says the
+true thing about an HTTP body — it cannot be seeked, but it certainly can be paced,
+because a reader that stops reading fills the socket and the recorder waits. It also
+makes the speed buttons real: at 4× libvlc now pulls four times the bytes and the clock
+runs at 3.97×, where before it was already reading as fast as the network allowed and
+had nothing left to give.
+
+The cost is that a demuxer which genuinely needs a seek now gives up on the media
+instead of limping on — a loud failure, no picture at all. It does not arise for the
+bodies we play, and the one case that provokes it is instructive: leave Hikvision's
+64-byte IMKH envelope on the front and libvlc seeks looking for the pack header, is
+refused, and shows nothing. That envelope is already dropped (above), which is why the
+program stream needs no seek at all.
+
+Ruled out along the way, on the same body: `avcodec-threads`, the audio track, the
+reported input size, and the read chunk size all make no difference — the racing is
+identical with and without each. The stream itself is clean: the full 1h47m body
+downloads complete, ffmpeg reads it end to end, and the pack SCRs and PTSs step
+uniformly by 0.1 s with no discontinuity across the recorder's own ~80-minute file
+boundaries. **This is not a container problem and never was.**
+
+Live video keeps `StreamMediaInput`, because live really is live: it arrives in real
+time and libvlc's live handling is the right one.
 
 ### The clock against the picture
 

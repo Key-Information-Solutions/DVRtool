@@ -121,6 +121,94 @@ public class PlaybackTimelineTests
         Assert.Equal(Day.AddMinutes(300), FootageCoverage.SpanAt(runs, Day.AddMinutes(301))!.Start);
     }
 
+    // ----- PlaybackResumePlan -----
+
+    // A continuous day is one run, and a body asked for all of it. The interesting cases are
+    // all about a body that stops before that run does.
+    private static readonly IReadOnlyList<FootageSpan> TwoRuns =
+        FootageCoverage.Merge([Seg(0, 240), Seg(300, 480)]);
+
+    [Fact]
+    public void Resume_moves_to_the_next_run_when_the_body_played_its_own_run_out()
+    {
+        var plan = PlaybackResumePlan.After(TwoRuns, Day, Day.AddMinutes(240),
+            Day.AddMinutes(240), Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.Continue, plan.Kind);
+        Assert.Equal(Day.AddMinutes(300), plan.At);
+    }
+
+    [Fact]
+    public void Resume_carries_on_where_the_picture_reached_when_the_body_stopped_early()
+    {
+        // The bug this covers: resuming from the *end of the request* instead skipped from
+        // minute 30 to minute 300 — four and a half hours of footage silently jumped.
+        var plan = PlaybackResumePlan.After(TwoRuns, Day, Day.AddMinutes(240),
+            Day.AddMinutes(30), Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.Continue, plan.Kind);
+        Assert.Equal(Day.AddMinutes(30), plan.At);
+    }
+
+    [Fact]
+    public void Resume_treats_the_last_few_seconds_of_a_run_as_having_played_it_out()
+    {
+        // Otherwise the run's final seconds are re-requested forever, one body per tick.
+        var plan = PlaybackResumePlan.After(TwoRuns, Day, Day.AddMinutes(240),
+            Day.AddMinutes(240) - TimeSpan.FromSeconds(2), Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.Continue, plan.Kind);
+        Assert.Equal(Day.AddMinutes(300), plan.At);
+    }
+
+    [Fact]
+    public void Resume_refuses_to_reopen_a_body_that_delivered_nothing()
+    {
+        var plan = PlaybackResumePlan.After(TwoRuns, Day.AddMinutes(60), Day.AddMinutes(240),
+            Day.AddMinutes(60).AddMilliseconds(200), Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.GaveNothing, plan.Kind);
+    }
+
+    [Fact]
+    public void Resume_stops_at_the_end_of_the_days_footage()
+    {
+        var plan = PlaybackResumePlan.After(TwoRuns, Day.AddMinutes(300), Day.AddMinutes(480),
+            Day.AddMinutes(480), Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.Stop, plan.Kind);
+    }
+
+    [Fact]
+    public void Resume_stops_rather_than_playing_into_the_next_day()
+    {
+        var runs = FootageCoverage.Merge([Seg(0, 240), Seg(1500, 1560)]);
+        var plan = PlaybackResumePlan.After(runs, Day, Day.AddMinutes(240), Day.AddMinutes(240),
+            Day.AddMinutes(1440 - 60));
+
+        Assert.Equal(PlaybackResumeKind.Stop, plan.Kind);
+    }
+
+    [Fact]
+    public void Resume_ignores_a_clock_that_read_past_the_body()
+    {
+        // The demuxer reads ahead of the picture, so its clock can sit past the window.
+        var plan = PlaybackResumePlan.After(TwoRuns, Day, Day.AddMinutes(240),
+            Day.AddMinutes(241), Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.Continue, plan.Kind);
+        Assert.Equal(Day.AddMinutes(300), plan.At);
+    }
+
+    [Fact]
+    public void Resume_with_no_coverage_loaded_stops_instead_of_guessing()
+    {
+        var plan = PlaybackResumePlan.After([], Day, Day.AddMinutes(240), Day.AddMinutes(240),
+            Day.AddDays(1));
+
+        Assert.Equal(PlaybackResumeKind.Stop, plan.Kind);
+    }
+
     // ----- PlaybackClock -----
 
     [Fact]

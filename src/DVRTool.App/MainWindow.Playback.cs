@@ -17,12 +17,15 @@ namespace DVRTool.App;
 /// <para>
 /// <b>The video comes over the web port, never RTSP.</b> Every recorder streams a time range
 /// for export over the port it is administered on (<see cref="IPlaybackClient"/>), and that
-/// body fed to LibVLC through a <see cref="StreamMediaInput"/> plays at the footage's own pace —
-/// exactly the way the Live tab's SDK route feeds it a program stream. RTSP playback would need
-/// the RTSP port forwarded, and across the fleet it is not; the web port is, everywhere,
-/// including the DW Cloud relay. So a seek is a new request from a new time, not a seek inside
-/// the stream, and pausing pauses the download: the decoder stops reading, the socket fills,
-/// the recorder waits.
+/// body fed to LibVLC through a <see cref="PlaybackMediaInput"/> plays at the footage's own
+/// pace. RTSP playback would need the RTSP port forwarded, and across the fleet it is not; the
+/// web port is, everywhere, including the DW Cloud relay. So a seek is a new request from a new
+/// time, not a seek inside the stream, and pausing pauses the download: the decoder stops
+/// reading, the socket fills, the recorder waits. That back-pressure is the whole design, and
+/// it only works because the input tells libvlc it may be paced — <b>read
+/// <see cref="PlaybackMediaInput"/> before changing how the body is handed over</b>, because a
+/// body libvlc thinks is live is a body it races through, and the picture then skips forward
+/// in jumps rather than playing.
 /// </para>
 /// <para>
 /// <b>Dahua goes through ffmpeg.</b> Its footage is DHAV, and the LibVLC build we ship has no
@@ -392,8 +395,9 @@ public partial class MainWindow
             _playbackStream = opened;
             _playbackPipe = pipe;
 
-            // Non-seekable and of unknown length: the decoder plays it as it arrives.
-            using var media = new Media(_libVlc, new StreamMediaInput(feed));
+            // Of unknown length, and read at the speed the footage plays at — see
+            // PlaybackMediaInput: a body libvlc cannot pace is a body it races through.
+            using var media = new Media(_libVlc, new PlaybackMediaInput(feed));
             AddLiveDecodeOptions(media);
             _playbackPlayer.Play(media);
             _playbackPlayer.SetRate(_playbackClock.Rate);
@@ -558,15 +562,14 @@ public partial class MainWindow
         RetryPendingOneToOne(_playbackZoom);
         if (_playbackStream is not null && player is not null && !_playbackPaused)
             _playbackClock.Update(player.Time);
-        var position = _playbackClock.Position;
-        // The clock is the demuxer's, which reads ahead of the picture by its buffer; it must
-        // not show the playhead past the end of what was asked for.
-        if (position is DateTime raw && _playbackStream is { } current)
-        {
-            var bodyEnd = current.RequestedEnd < _playbackSpanEnd ? current.RequestedEnd : _playbackSpanEnd;
-            if (raw > bodyEnd)
-                position = bodyEnd;
-        }
+        // The clock is the demuxer's, which reads ahead of the picture by its buffer; the
+        // playhead must not show past the end of what was asked for. The unclamped value is
+        // kept, because clamping it is exactly what would hide a body that has run past its
+        // window with no end event to say so.
+        var unclamped = _playbackClock.Position;
+        var position = unclamped;
+        if (unclamped is DateTime raw && _playbackStream is { } current && raw > BodyEnd(current))
+            position = BodyEnd(current);
         PlaybackTimeline.Playhead = position;
 
         string state = _playbackStream is null ? "stopped"
@@ -575,34 +578,46 @@ public partial class MainWindow
             : _playbackClock.Rate == 1f ? "playing" : $"playing {_playbackClock.Rate:0}×";
         PlaybackClockText.Text = position is DateTime p ? $"{p:yyyy-MM-dd HH:mm:ss}  {state}" : "";
 
-        if (_playbackStream is not { } body || _playbackPaused || position is not DateTime at)
+        if (_playbackStream is not { } body || _playbackPaused || unclamped is not DateTime at)
             return;
 
-        // The body ended — the run of footage it was asked for is played out, or the vendor's
-        // per-request ceiling cut it short — so carry on from where it stopped: the next run
-        // when the body reached the run's end, the same run otherwise. The demuxer's clock
-        // running past the requested end with no end event is treated the same way, with a
-        // margin for its read-ahead, so a recorder that never signals the end cannot freeze
-        // the tab on the last frame.
-        bool overran = at > body.RequestedEnd + TimeSpan.FromSeconds(3);
+        // The body ended. The demuxer's clock running past the requested end with no end event
+        // counts as the same thing, with a margin for its read-ahead, so a recorder that never
+        // signals the end cannot freeze the tab on the last frame — which is why this compares
+        // the unclamped clock: the clamped one can never exceed the window it is clamped to.
+        var end = BodyEnd(body);
+        bool overran = at > end + EndOfBodyMargin;
         if (!_playbackEnded && !overran)
             return;
-        DateTime? next = null;
-        if (_playbackDayLoaded)
+
+        // Where to carry on from is a question about the footage, so it is answered in Core
+        // and tested there: from where the picture actually reached when the body was cut
+        // short, from the next run when it played this one out.
+        var resume = PlaybackResumePlan.After(_playbackDayLoaded ? _playbackCoverage : [],
+            body.RequestedStart, end, at, PlaybackDay.AddDays(1));
+        switch (resume.Kind)
         {
-            var resumeAt = body.RequestedEnd < _playbackSpanEnd ? body.RequestedEnd : _playbackSpanEnd;
-            next = FootageCoverage.NextFootageAt(_playbackCoverage, resumeAt);
-        }
-        if (next is DateTime n && n < PlaybackDay.AddDays(1))
-        {
-            _ = SeekPlaybackAsync(n);
-        }
-        else
-        {
-            StopPlayback(clearClock: false);
-            SetStatus($"End of the footage on {PlaybackDay:yyyy-MM-dd} for this camera.");
+            case PlaybackResumeKind.Continue:
+                _ = SeekPlaybackAsync(resume.At);
+                break;
+            case PlaybackResumeKind.GaveNothing:
+                StopPlayback(clearClock: false);
+                SetStatus($"The recorder stopped sending at {resume.At:HH:mm:ss} almost as soon " +
+                    "as it started — playback stopped there. Click the timeline to retry.");
+                break;
+            default:
+                StopPlayback(clearClock: false);
+                SetStatus($"End of the footage on {PlaybackDay:yyyy-MM-dd} for this camera.");
+                break;
         }
     }
+
+    /// <summary>Where the body being played stops: its own window, or its run's end.</summary>
+    private DateTime BodyEnd(PlaybackStream body) =>
+        body.RequestedEnd < _playbackSpanEnd ? body.RequestedEnd : _playbackSpanEnd;
+
+    /// <summary>Read-ahead allowance before a clock past the window means the body is done.</summary>
+    private static readonly TimeSpan EndOfBodyMargin = TimeSpan.FromSeconds(3);
 
     private void UpdatePlaybackButtons()
     {

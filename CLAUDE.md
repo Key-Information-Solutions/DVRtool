@@ -333,8 +333,13 @@ Apply button.
 day-per-camera **timeline** (`TimelineControl`, geometry in `TimelineWindow`/`FootageCoverage`/
 `PlaybackClock` in Core, all tested) — click seeks, drag selects an export range, wheel zooms,
 right-drag pans — and the video comes over the **web port, never RTSP**: `IPlaybackClient`
-(`*Client.Playback.cs`) hands the export body to LibVLC through a `StreamMediaInput`, a seek is
-a new request, pause pauses the download. Hikvision's download body opens with a **64-byte IMKH
+(`*Client.Playback.cs`) hands the export body to LibVLC through **`PlaybackMediaInput`, never
+`StreamMediaInput`** — libvlc decides it may pace an input from the sole fact that a seek
+callback was registered, so a forward-only body registers one and refuses every seek; without
+that libvlc calls the body live, reads it flat out (1.28 GB of a 1.49 GB body in 30 s, measured
+2026-09-10), slaves its clock to the arrival rate and shows only the frames that land — footage
+**skipping forward** on a continuous camera. Live video keeps `StreamMediaInput`, being
+genuinely live. A seek is a new request, pause pauses the download. Hikvision's download body opens with a **64-byte IMKH
 envelope** before the first pack header, which VLC's PS demuxer refuses and ffmpeg silently
 skips — `SkipTo` drops it. Dahua's `loadfile.cgi` refuses any window **over ~6 h** (400; 6 h
 verified, 8 h refused, midnight irrelevant) so `MaxLoadfileWindow` caps requests and the tab
@@ -345,7 +350,10 @@ faster than real time: a window spanning several motion clips is concatenated by
 and the clock jumps minutes per second across the gaps (Site E stairway) — so a body is
 requested for **one run of footage at a time** (`FootageCoverage.SpanAt`) and `EndReached`
 carries playback to the next run; never compare that clock against the footage map to decide
-to skip. Every face peeks the
+to skip. Where a finished body resumes is `PlaybackResumePlan` in Core (tested): the next run
+only when the body reached its own end, and **where the picture actually got to** when it
+stopped early — resuming a cut-short body at the end of its request jumps over everything it
+never sent. Every face peeks the
 first 16 KB so "accepted, sent nothing" fails up front. `dvrtool footage --probe` opens exactly
 the body the GUI plays and reports what arrived; verified 2026-09-04 on Site C, Site B
 and Site D (relay). Hikvision SDK playback (`NET_DVR_PlayBackByTime_V40`) is approved but
