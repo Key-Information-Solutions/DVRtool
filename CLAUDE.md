@@ -61,7 +61,11 @@ form, so a real zoom computes a negative visible size and paints the pane **blac
 LibVLC; the vout's own `CROPPED … vsz` line is the evidence). One camera is zoomed at a time
 and any change of stream drops it, because the crop belongs to the player rather than the
 media; the picture size is captured up front because `MediaPlayer.Size` reports the
-*cropped* size once a crop is on. **1:1 and Playback zoom** (2026-09-10): the same crop with the
+*cropped* size once a crop is on. The crop window takes the **pane's** shape, not the picture's
+(`LiveZoom.VisibleSpan`, 2026-09-10), so a zoom fills the letterbox bars in with picture rather
+than magnifying them; a fitted pane is letterboxed as before, the bars close continuously as the
+factor comes up, and the crop now depends on the pane, so a resize re-applies it.
+**1:1 and Playback zoom** (2026-09-10): the same crop with the
 factor solved by `LiveZoom.OneToOne` (DPI-aware, one picture pixel per screen pixel; keeps the
 centre); a toggle on both the Live and Playback toolbars that re-solves on pane resize, is
 **softly** cancelled by the wheel (button un-presses, picture stays), pends until the first
