@@ -821,8 +821,7 @@ public partial class MainWindow
     {
         if (_maxOverlayLabel is null || _maxTile is not { } tile)
             return;
-        string zoom = _maxPlayer is { } player && _zoom.IsZoomed &&
-            ReferenceEquals(_zoomPlayer, player) ? $"  ·  zoom {_zoom.Describe()}" : "";
+        string zoom = _maxPlayer is { } player ? LiveStatsZoomNote(player) : "";
         _maxOverlayLabel.Text = $"{tile.DefaultLabel}  —  main stream{zoom}  ·  {ReturnHint}" +
             (_fullScreen ? "  ·  F11 leaves fullscreen" : "");
     }

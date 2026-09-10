@@ -130,6 +130,20 @@
                                        Foreground="Gray" Visibility="Collapsed"
                                        Text="double-click a camera for its main stream · wheel zooms, drag pans"/>
                             <Separator/>
+                            <ToggleButton x:Name="LiveOneToOneButton" Content="1:1" Padding="6,2"
+                                          Click="OnLiveOneToOne">
+                                <ToggleButton.ToolTip>
+                                    <TextBlock>
+                                        Shows the camera at its real size: one camera pixel per screen<LineBreak/>
+                                        pixel, centred where the picture is centred now. Applies to the<LineBreak/>
+                                        single view, a maximized camera, or the selected grid tile.<LineBreak/>
+                                        <LineBreak/>
+                                        Drag to pan. The wheel zooms on from there and un-presses this<LineBreak/>
+                                        button; a right-click or pressing it again fits the whole picture.<LineBreak/>
+                                        Going fullscreen or resizing the window re-solves 1:1 for the new pane.
+                                    </TextBlock>
+                                </ToggleButton.ToolTip>
+                            </ToggleButton>
                             <Button x:Name="LiveFullScreenButton" Content="&#x26F6; Full screen"
                                     Click="OnLiveFullScreen" Padding="6,2">
                                 <Button.ToolTip>
@@ -269,6 +283,16 @@
                                 <ComboBoxItem Content="4×"/>
                                 <ComboBoxItem Content="8×"/>
                             </ComboBox>
+                            <ToggleButton x:Name="PlaybackOneToOneButton" Content="1:1" Padding="6,2"
+                                          Click="OnPlaybackOneToOne">
+                                <ToggleButton.ToolTip>
+                                    <TextBlock>
+                                        Shows the recording at its real size: one camera pixel per screen<LineBreak/>
+                                        pixel. Drag the picture to pan; the wheel zooms on from there and<LineBreak/>
+                                        un-presses this button; a right-click or pressing it again fits.
+                                    </TextBlock>
+                                </ToggleButton.ToolTip>
+                            </ToggleButton>
                             <Separator/>
                             <TextBlock x:Name="PlaybackClockText" FontFamily="Consolas, Segoe UI"
                                        VerticalAlignment="Center" MinWidth="210" Margin="4,0"/>
@@ -325,7 +349,16 @@
                         </DataGrid>
 
                         <Border Background="Black">
-                            <vlc:VideoView x:Name="PlaybackVideo"/>
+                            <vlc:VideoView x:Name="PlaybackVideo">
+                                <!-- Same trick as the Live view: an all-but-transparent overlay so the
+                                     wheel, a drag and a right-click reach a hosted child window. -->
+                                <Grid x:Name="PlaybackVideoOverlay" Background="#01000000">
+                                    <TextBlock x:Name="PlaybackVideoLabel" Visibility="Collapsed"
+                                               Foreground="White" Background="#80000000"
+                                               Padding="6,2,6,3" FontSize="12"
+                                               HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                                </Grid>
+                            </vlc:VideoView>
                         </Border>
                     </DockPanel>
                 </TabItem>

@@ -131,7 +131,11 @@ public partial class MainWindow
         }
         ShowLiveStats(text.Length > 0 ? $"{label}{LiveStatsZoomNote(player)}  ·  {text}" : "");
         UpdateLiveViewLabel();
+        RetryPendingOneToOne(_liveZoom);
     }
+
+    /// <summary>The picture size the footer last read, per player: the zoom's fallback when its own read is early.</summary>
+    private (MediaPlayer Player, int Width, int Height)? _liveStatsSize;
 
     /// <summary>One reading of the player's counters, worded for the footer.</summary>
     private string SampleLiveStats(MediaPlayer player, SdkMediaStream? sdk)
@@ -187,13 +191,15 @@ public partial class MainWindow
         // output's own size is what is on screen — except under a digital zoom, where the
         // output is showing a crop and the size worth reporting is still the stream's.
         uint px = 0, py = 0;
-        if (!(_zoom.IsZoomed && ReferenceEquals(_zoomPlayer, player)) &&
+        if (!IsLiveZoomed(player) &&
             player.Size(0, ref px, ref py) && px > 0 && py > 0)
         {
             width = (int)px;
             height = (int)py;
         }
 
+        if (width > 0 && height > 0)
+            _liveStatsSize = (player, width, height);
         if (rates is null && codec.Length == 0 && width == 0 && stats.DemuxReadBytes == 0)
             return "connecting …";
         return LiveStats.Describe(codec, width, height, rates, sdk?.BytesDropped ?? 0, configuredFps);

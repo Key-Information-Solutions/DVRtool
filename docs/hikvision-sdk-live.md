@@ -543,6 +543,43 @@ the double-click, or over the dewarp pane and swallow the drag and wheel that ai
 hides the fisheye toolbars and hint line with the rest of the chrome, and puts back whichever of
 them were showing.
 
+### 1:1, and the Playback tab
+
+**1:1** (2026-09-10; a toggle button on the Live and Playback toolbars) is the same crop with
+the factor computed rather than scrolled to: `LiveZoom.OneToOne` solves the factor at which one
+picture pixel lands on one *screen* pixel — `pictureWidth / (fittedWidth × dpiScale)`, the
+fitted width being what `Fit` gives the pane and the DPI coming from
+`VisualTreeHelper.GetDpi`, so a 150 % monitor needs a smaller factor than its DIP width
+suggests. It keeps the current centre, so it can follow a wheel zoom onto the thing being
+looked at. Verified live on the lab recorder: a 4096×1840 camera in the single view solved to
+2.6×, drag and wheel continuing from there.
+
+Its semantics are deliberately soft:
+
+- **It is a toggle that follows the pane's size.** Going fullscreen, dragging the window or
+  moving a splitter re-solves it (`SizeChanged` on the overlay), so it stays pixel-exact
+  rather than freezing the factor it had at the old size.
+- **The wheel cancels it softly.** A notch in or out un-presses the button but leaves the
+  picture where the wheel put it: the operator asked for a different magnification, not for
+  the whole picture back. Right-click still fits, and pressing the button again fits.
+- **A picture already at or above life size has nothing to magnify** — a 704×480 sub stream in
+  a full-screen pane — and 1:1 is not a shrink (the crop cannot make a picture smaller), so it
+  fits and says why. A picture that wants more than the 8× ceiling (4K in a small tile) shows
+  8× and says to maximize the camera for the real thing.
+- **Pressed before the first picture, it pends** rather than failing: the button stays down and
+  the footer's 250 ms tick (Live) or the playhead timer (Playback) applies it as soon as the
+  size is known. The size read also falls back to what the footer last saw for that player,
+  because `MediaPlayer.Size` and the track header can both lag the picture on an RTSP open.
+
+In the Live tab it applies to the pane already zoomed if there is one, else the single view, the
+maximized camera, or the selected grid tile — whichever is on screen.
+
+**The Playback tab has the same zoom** (wheel, drag, right-click, 1:1) on its video pane, through
+an overlay of its own, with its own `PaneZoom` state: zooming a recording does not fit the live
+camera behind the other tab. Its zoom is dropped when the channel, device or stream (main ↔ sub
+is a different picture size) changes, and kept across a plain Stop, so ▶ Play resumes the same
+view. The Playback pane shows the factor in a corner label, since it has no footer.
+
 ### Keys
 
 `F11` toggles fullscreen from the Live tab. `Esc` unwinds one step at a time in the order the

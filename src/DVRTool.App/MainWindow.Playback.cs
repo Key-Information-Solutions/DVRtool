@@ -77,6 +77,10 @@ public partial class MainWindow
         PlaybackTimeline.SelectionChanged += (_, _) => UpdatePlaybackSelectionLabel();
         _playbackTimer.Tick += (_, _) => UpdatePlayback();
         _playbackTimer.Start();
+        // Wheel zoom, drag pan, right-click fit and the 1:1 button, on the one playback player.
+        WireZoom(_playbackZoom, PlaybackVideoOverlay, () => _playbackPlayer is { } player
+            ? new ZoomTarget(player, "playback", null)
+            : null);
 
         if (_playbackPlayer is { } player)
         {
@@ -108,6 +112,8 @@ public partial class MainWindow
 
     private void OnPlaybackStreamChanged(object sender, SelectionChangedEventArgs e)
     {
+        // The other stream is a different picture size, so a crop computed for this one is wrong.
+        ResetPlaybackZoom();
         // Re-request the same moment on the other stream, if something is playing.
         if (_playbackClock.Position is DateTime at && _playbackStream is not null)
             _ = SeekPlaybackAsync(at);
@@ -472,6 +478,10 @@ public partial class MainWindow
     private void StopPlayback(bool clearClock)
     {
         _playbackGen++;
+        // A clock clear means another camera or device; the zoom was for this one's picture.
+        // A plain Stop keeps it, so ▶ Play resumes the same view.
+        if (clearClock)
+            ResetPlaybackZoom();
         var stream = _playbackStream;
         var pipe = _playbackPipe;
         _playbackStream = null;
@@ -545,6 +555,7 @@ public partial class MainWindow
         }
 
         var player = _playbackPlayer;
+        RetryPendingOneToOne(_playbackZoom);
         if (_playbackStream is not null && player is not null && !_playbackPaused)
             _playbackClock.Update(player.Time);
         var position = _playbackClock.Position;

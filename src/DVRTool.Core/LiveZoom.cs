@@ -175,6 +175,58 @@ public readonly record struct LiveZoom
         }
     }
 
+    /// <summary>
+    /// The zoom at which one picture pixel is one screen pixel — "1:1", the pixel-peeper's
+    /// setting — centred where the zoom is centred now, or null when the pane already shows
+    /// the picture at or above its native size and there is nothing to magnify.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pane draws the whole picture at <see cref="Fit"/>'s size, in device-independent
+    /// units; multiplied by <paramref name="dpiScale"/> that is how many screen pixels the
+    /// picture's width is spread over. A factor of <c>f</c> spreads <c>1/f</c> of the picture
+    /// over the same screen pixels, so one picture pixel is one screen pixel when
+    /// <c>f = pictureWidth / fittedScreenWidth</c>. Width and height agree because the fit
+    /// keeps the picture's aspect ratio.
+    /// </para>
+    /// <para>
+    /// Null rather than 1× for the small-picture case, so the caller can say why nothing
+    /// happened: a 704×480 sub stream in a full-screen pane is already bigger than life and a
+    /// crop cannot shrink it. The factor is clamped to <see cref="MaxFactor"/> like any other,
+    /// and <see cref="IsOneToOne"/> tells whether it made it — a 4K picture in a 16-up tile
+    /// wants 11× and does not.
+    /// </para>
+    /// </remarks>
+    public LiveZoom? OneToOne(int pictureWidth, int pictureHeight,
+        double paneWidth, double paneHeight, double dpiScale = 1.0)
+    {
+        if (pictureWidth <= 0 || pictureHeight <= 0 || paneWidth <= 0 || paneHeight <= 0)
+            return null;
+        if (double.IsNaN(dpiScale) || dpiScale <= 0)
+            dpiScale = 1.0;
+        var (width, _) = Fit(paneWidth, paneHeight, (double)pictureWidth / pictureHeight);
+        double factor = pictureWidth / (width * dpiScale);
+        if (factor <= MinFactor + 1e-6)
+            return null;
+        return At(factor, CenterX, CenterY);
+    }
+
+    /// <summary>
+    /// Whether this zoom is the one <see cref="OneToOne"/> would compute for these sizes —
+    /// within a percent, since a pane's width is a real number and the crop is whole pixels.
+    /// </summary>
+    public bool IsOneToOne(int pictureWidth, int pictureHeight,
+        double paneWidth, double paneHeight, double dpiScale = 1.0)
+    {
+        if (!IsZoomed || pictureWidth <= 0 || pictureHeight <= 0 || paneWidth <= 0 || paneHeight <= 0)
+            return false;
+        if (double.IsNaN(dpiScale) || dpiScale <= 0)
+            dpiScale = 1.0;
+        var (width, _) = Fit(paneWidth, paneHeight, (double)pictureWidth / pictureHeight);
+        double wanted = pictureWidth / (width * dpiScale);
+        return Math.Abs(Factor - wanted) <= wanted * 0.01;
+    }
+
     /// <summary>"3.8×", or "" when the whole picture is showing.</summary>
     public string Describe() => IsZoomed ? $"{Factor:0.#}×" : "";
 

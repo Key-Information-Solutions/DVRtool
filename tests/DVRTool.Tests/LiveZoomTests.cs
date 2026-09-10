@@ -236,4 +236,64 @@ public class LiveZoomTests
         Assert.Equal("2×", LiveZoom.At(2, 0.5, 0.5).Describe());
         Assert.Equal("3.8×", LiveZoom.At(3.81, 0.5, 0.5).Describe());
     }
+
+    [Fact]
+    public void OneToOneMagnifiesUntilAPicturePixelIsAScreenPixel()
+    {
+        // 1920 picture pixels across a 960-unit pane at 100 % DPI: 2×, and the crop is exactly
+        // the pane's size in picture pixels, centred.
+        var zoom = LiveZoom.None.OneToOne(1920, 1080, 960, 540);
+        Assert.NotNull(zoom);
+        Assert.Equal(2.0, zoom!.Value.Factor, 6);
+        Assert.Equal("480+270+480+270", zoom.Value.CropGeometry(1920, 1080));
+        Assert.True(zoom.Value.IsOneToOne(1920, 1080, 960, 540));
+    }
+
+    [Fact]
+    public void OneToOneAccountsForLetterboxingAndDpi()
+    {
+        // A 16:9 picture in a square pane is fitted to the pane's width, so the height is what
+        // limits nothing and the width is what counts: 1920 / 600 = 3.2×.
+        var square = LiveZoom.None.OneToOne(1920, 1080, 600, 600);
+        Assert.Equal(3.2, square!.Value.Factor, 6);
+
+        // A pane in a 4:3 shape fits the picture to its height: 1920 / (450 × 16/9) = 2.4×.
+        var tall = LiveZoom.None.OneToOne(1920, 1080, 800, 450);
+        Assert.Equal(2.4, tall!.Value.Factor, 6);
+
+        // At 150 % DPI the 960-unit pane is 1440 screen pixels wide, so 1920 needs only 1.33×.
+        var hidpi = LiveZoom.None.OneToOne(1920, 1080, 960, 540, 1.5);
+        Assert.Equal(1920.0 / 1440.0, hidpi!.Value.Factor, 6);
+        Assert.True(hidpi.Value.IsOneToOne(1920, 1080, 960, 540, 1.5));
+        Assert.False(hidpi.Value.IsOneToOne(1920, 1080, 960, 540, 1.0));
+    }
+
+    [Fact]
+    public void OneToOneKeepsTheCentreAndIsNullWhenThePictureIsAlreadyLifeSize()
+    {
+        var aimed = LiveZoom.At(4, 0.2, 0.8).OneToOne(3840, 2160, 960, 540);
+        Assert.Equal(4.0, aimed!.Value.Factor, 6);
+        Assert.Equal(0.2, aimed.Value.CenterX, 6);
+        Assert.Equal(0.8, aimed.Value.CenterY, 6);
+
+        // A 704×480 sub stream in a 1920-wide pane is already bigger than life: nothing to do.
+        Assert.Null(LiveZoom.None.OneToOne(704, 480, 1920, 1080));
+        // The exact fit is 1×, which is also "nothing to do".
+        Assert.Null(LiveZoom.None.OneToOne(1920, 1080, 1920, 1080));
+        Assert.Null(LiveZoom.None.OneToOne(0, 0, 1920, 1080));
+        Assert.Null(LiveZoom.None.OneToOne(1920, 1080, 0, 0));
+    }
+
+    [Fact]
+    public void OneToOneIsClampedAndThenIsNotOneToOne()
+    {
+        // 4K in a small tile wants 12×; the ceiling is 8×, and the caller can tell.
+        var tile = LiveZoom.None.OneToOne(3840, 2160, 320, 180);
+        Assert.Equal(LiveZoom.MaxFactor, tile!.Value.Factor);
+        Assert.False(tile.Value.IsOneToOne(3840, 2160, 320, 180));
+        // A wheel notch away from the exact factor is no longer 1:1 either.
+        var exact = LiveZoom.None.OneToOne(1920, 1080, 960, 540)!.Value;
+        Assert.False(exact.StepAt(1, 0.5, 0.5).IsOneToOne(1920, 1080, 960, 540));
+        Assert.False(LiveZoom.None.IsOneToOne(1920, 1080, 960, 540));
+    }
 }
