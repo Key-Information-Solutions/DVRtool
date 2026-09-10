@@ -129,7 +129,9 @@ public readonly record struct LiveZoom
 
     /// <summary>
     /// The crop LibVLC should apply to a picture of this size, or null for "no crop" —
-    /// which is how the setting is cleared.
+    /// which is how the setting is cleared. Given the pane's size the window takes the
+    /// <em>pane's</em> shape rather than the picture's, so a zoom fills the black bars in
+    /// with picture instead of magnifying them along with everything else.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -147,16 +149,17 @@ public readonly record struct LiveZoom
     /// Everything is rounded to an even number of pixels: the crop lands on a
     /// chroma-subsampled plane, so odd sizes and offsets are the vout's problem to round, and
     /// rounding them here is how the geometry that goes out matches the picture that comes
-    /// back. The window keeps the picture's aspect ratio, so the pane's letterboxing does not
-    /// change as it zooms.
+    /// back.
     /// </para>
     /// </remarks>
-    public string? CropGeometry(int pictureWidth, int pictureHeight)
+    public string? CropGeometry(int pictureWidth, int pictureHeight,
+        double paneWidth = 0, double paneHeight = 0)
     {
         if (!IsZoomed || pictureWidth <= 0 || pictureHeight <= 0)
             return null;
-        int width = Even(Math.Round(pictureWidth * VisibleFraction), pictureWidth);
-        int height = Even(Math.Round(pictureHeight * VisibleFraction), pictureHeight);
+        var (spanU, spanV) = VisibleSpan(pictureWidth, pictureHeight, paneWidth, paneHeight);
+        int width = Even(Math.Round(pictureWidth * spanU), pictureWidth);
+        int height = Even(Math.Round(pictureHeight * spanV), pictureHeight);
         int left = Offset(CenterX, pictureWidth, width);
         int top = Offset(CenterY, pictureHeight, height);
         return $"{left}+{top}+{pictureWidth - left - width}+{pictureHeight - top - height}";
@@ -174,6 +177,74 @@ public readonly record struct LiveZoom
             return offset - (offset % 2);
         }
     }
+
+    /// <summary>
+    /// How much of the picture is on screen, as a fraction of its width and of its height.
+    /// Without a pane both are <see cref="VisibleFraction"/> — a window the picture's own
+    /// shape, which keeps the pane's black bars exactly as they were. With one, each axis
+    /// shows as much as the pane has room for at this magnification, which is what fills the
+    /// bars in.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The picture is drawn at <see cref="Fit"/>'s size times <see cref="Factor"/>, so the
+    /// pane's <c>paneWidth</c> covers <c>paneWidth / (fitWidth · Factor)</c> of it; the same
+    /// for the height. Neither can exceed the whole picture, and at 1× both clamp there — so
+    /// a fitted pane is letterboxed as before and the bars close continuously as the zoom
+    /// comes up, vanishing at the factor where the pane's shape first fits inside the
+    /// picture's (4/3 of the way for a 16:9 camera in a 4:3 tile).
+    /// </para>
+    /// <para>
+    /// The magnification is <see cref="Factor"/> on both axes either way: the axis that is
+    /// clamped is the one still showing bars, and its picture is being scaled by the other
+    /// axis's fit. That is why <see cref="OneToOne"/> needs no adjustment for any of this.
+    /// </para>
+    /// </remarks>
+    public (double U, double V) VisibleSpan(int pictureWidth, int pictureHeight,
+        double paneWidth, double paneHeight)
+    {
+        double span = VisibleFraction;
+        if (pictureWidth <= 0 || pictureHeight <= 0 || paneWidth <= 0 || paneHeight <= 0)
+            return (span, span);
+        var (fitWidth, fitHeight) = Fit(paneWidth, paneHeight, (double)pictureWidth / pictureHeight);
+        if (fitWidth <= 0 || fitHeight <= 0)
+            return (span, span);
+        return (Math.Min(1.0, paneWidth / (fitWidth * Factor)),
+                Math.Min(1.0, paneHeight / (fitHeight * Factor)));
+    }
+
+    /// <summary>
+    /// The shape of what is actually on screen: the picture's aspect ratio at 1×, and the
+    /// pane's once the zoom has closed the bars. <see cref="Pick"/> and a drag both need this
+    /// rather than the picture's own aspect, or they would go on allowing for bars that are
+    /// no longer there.
+    /// </summary>
+    public double VisibleAspect(int pictureWidth, int pictureHeight,
+        double paneWidth, double paneHeight)
+    {
+        if (pictureWidth <= 0 || pictureHeight <= 0)
+            return 0;
+        var (spanU, spanV) = VisibleSpan(pictureWidth, pictureHeight, paneWidth, paneHeight);
+        return pictureWidth * spanU / (pictureHeight * spanV);
+    }
+
+    /// <summary>
+    /// The size the visible picture is drawn at in the pane, allowing for the zoom: the whole
+    /// pane once the bars have closed. A drag divides by this, so that moving the mouse across
+    /// the picture moves the picture by the same fraction of itself.
+    /// </summary>
+    public (double Width, double Height) DisplayedSize(int pictureWidth, int pictureHeight,
+        double paneWidth, double paneHeight) =>
+        Fit(paneWidth, paneHeight, VisibleAspect(pictureWidth, pictureHeight, paneWidth, paneHeight));
+
+    /// <summary>
+    /// Where a point in the pane lands on what is showing — 0–1 across the visible image, or
+    /// null out on the black bars — with this zoom's crop taken into account.
+    /// </summary>
+    public (double U, double V)? PickVisible(double x, double y, int pictureWidth, int pictureHeight,
+        double paneWidth, double paneHeight) =>
+        Pick(x, y, paneWidth, paneHeight,
+            VisibleAspect(pictureWidth, pictureHeight, paneWidth, paneHeight));
 
     /// <summary>
     /// The zoom at which one picture pixel is one screen pixel — "1:1", the pixel-peeper's

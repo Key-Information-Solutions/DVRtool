@@ -47,8 +47,16 @@ namespace DVRTool.App;
 /// <c>VideoView</c> is a hosted child window that WPF sees no input over, so the wheel, the
 /// drag and the right-click are all handled on the almost-transparent overlay grid that sits
 /// in front of each one. Pane pixels are turned into picture coordinates by
-/// <see cref="LiveZoom.Pick"/>, so a zoom anchors on the point under the cursor rather than
-/// on the middle of the letterboxed pane.
+/// <see cref="LiveZoom.PickVisible"/>, so a zoom anchors on the point under the cursor rather
+/// than on the middle of the letterboxed pane.
+/// </para>
+/// <para>
+/// The crop window takes the <em>pane's</em> shape rather than the picture's
+/// (<see cref="LiveZoom.VisibleSpan"/>), so zooming a camera whose shape does not match the
+/// pane fills the black bars in with picture instead of magnifying them along with the rest.
+/// A fitted pane is letterboxed exactly as before and the bars close as the zoom comes up. The
+/// crop therefore depends on the pane's size, which is why a resize re-applies it even when
+/// 1:1 is not holding it.
 /// </para>
 /// </remarks>
 public partial class MainWindow
@@ -103,8 +111,15 @@ public partial class MainWindow
         // window drag) re-solves it rather than leaving yesterday's factor pressed.
         pane.SizeChanged += (_, _) =>
         {
-            if (state.OneToOne && ReferenceEquals(state.Pane, pane) && !_cleanupStarted)
+            if (_cleanupStarted || !ReferenceEquals(state.Pane, pane))
+                return;
+            if (state.OneToOne)
                 ApplyOneToOne(state, quiet: true);
+            else if (state.IsZoomed)
+                // The crop follows the pane's shape, so a reshaped pane wants a new one —
+                // otherwise the bars the zoom had closed reopen (or the picture stays
+                // stretched into a shape the pane no longer has).
+                ApplyZoom(state);
         };
     }
 
@@ -133,8 +148,8 @@ public partial class MainWindow
 
         // Off the picture and on the black bars there is no point to anchor on, so the zoom
         // works about the middle of what is showing instead of a made-up position.
-        var hit = LiveZoom.Pick(e.GetPosition(pane).X, e.GetPosition(pane).Y,
-            pane.ActualWidth, pane.ActualHeight, (double)state.Width / state.Height);
+        var hit = state.Zoom.PickVisible(e.GetPosition(pane).X, e.GetPosition(pane).Y,
+            state.Width, state.Height, pane.ActualWidth, pane.ActualHeight);
         state.Zoom = state.Zoom.StepAt(notches, hit?.U ?? 0.5, hit?.V ?? 0.5);
         // The wheel softly cancels 1:1: the picture stays where the wheel put it, the button
         // just stops claiming it is pixel-exact.
@@ -170,8 +185,8 @@ public partial class MainWindow
         var now = e.GetPosition(pane);
         // In fractions of the displayed picture, not of the pane: a drag across a letterboxed
         // pane must move the picture by the same fraction whatever shape the pane is.
-        var (width, height) = LiveZoom.Fit(pane.ActualWidth, pane.ActualHeight,
-            state.Height > 0 ? (double)state.Width / state.Height : 0);
+        var (width, height) = state.Zoom.DisplayedSize(state.Width, state.Height,
+            pane.ActualWidth, pane.ActualHeight);
         if (width <= 0 || height <= 0)
             return;
         state.Zoom = state.Zoom.PanBy((now.X - state.DragFrom.X) / width, (now.Y - state.DragFrom.Y) / height);
@@ -367,7 +382,11 @@ public partial class MainWindow
             return;
         // Empty rather than null clears it — that is what libvlc itself passes down for
         // "no crop", and it keeps this off the marshalling of a null string.
-        SetCrop(player, state.Zoom.CropGeometry(state.Width, state.Height) ?? "");
+        // The pane's size, not just the picture's: the crop window takes the pane's shape so
+        // that a zoom fills the letterbox bars in with picture rather than magnifying them.
+        var pane0 = state.Pane;
+        SetCrop(player, state.Zoom.CropGeometry(state.Width, state.Height,
+            pane0?.ActualWidth ?? 0, pane0?.ActualHeight ?? 0) ?? "");
 
         if (state.Pane is { } pane)
             pane.Cursor = state.IsZoomed ? Cursors.SizeAll : null;

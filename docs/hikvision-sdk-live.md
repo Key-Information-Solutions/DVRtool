@@ -509,14 +509,29 @@ without a window:
   thing being looked at is a place on the camera's picture. The centre is clamped as it is
   set, so the visible window can never hang off the frame.
 - **A notch anchors on the point under the cursor**, which needs the letterboxing undone
-  first (`LiveZoom.Pick`) — treating pane coordinates as picture coordinates puts the anchor
-  off by the width of the bars, a sixth of the pane for a 16:9 camera in a 4:3 tile. On the
-  bars themselves there is no anchor, so the zoom works about the current centre instead.
+  first (`LiveZoom.PickVisible`) — treating pane coordinates as picture coordinates puts the
+  anchor off by the width of the bars, a sixth of the pane for a 16:9 camera in a 4:3 tile. On
+  the bars themselves there is no anchor, so the zoom works about the current centre instead.
+  It picks against *what is showing*, not against the picture's own shape, because a zoom that
+  has closed the bars (below) has no bars left to allow for.
 - **1.25 per notch, capped at 8×.** Ten notches crosses the range; six lands on 3.81, close
   enough to "read the plate" that nobody counts.
+- **The crop window takes the _pane's_ shape, not the picture's** (2026-09-10), so a zoom
+  fills the black bars in with picture instead of magnifying them along with everything else —
+  which was the whole point of zooming in the first place. `LiveZoom.VisibleSpan` asks, per
+  axis, how much of the picture the pane covers at this magnification —
+  `paneWidth / (fitWidth × factor)`, capped at the whole picture — so at 1× both axes cap and
+  a fitted pane is letterboxed exactly as before, and the bars then close *continuously* as
+  the zoom comes up, vanishing at the factor where the pane's shape first fits inside the
+  picture's (4/3× for a 16:9 camera in a 4:3 pane). The magnification is the factor on both
+  axes either way: the axis still showing bars is the clamped one, and it is being scaled by
+  the other axis's fit. That is why `OneToOne` needed no adjustment for any of it — and why
+  the crop now depends on the pane, so a `SizeChanged` re-applies it even when 1:1 is off.
+  Without a pane size (the parameters default to 0) the window keeps the picture's aspect
+  ratio, the old behaviour.
 - **Sizes and offsets are rounded to even pixels** — the crop lands on a chroma-subsampled
-  plane — and the window keeps the picture's aspect ratio, so the pane's letterboxing does not
-  shift as it zooms.
+  plane, so odd sizes are the vout's problem to round and rounding them here is how the
+  geometry that goes out matches the picture that comes back.
 - **The picture size is captured when a pane takes the zoom**, because with a crop applied
   `MediaPlayer.Size` reports what is being *displayed*; computing the next crop from that
   would compound it. For the same reason the footer reports the stream's size, not the crop's,

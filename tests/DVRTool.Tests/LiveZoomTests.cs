@@ -148,12 +148,62 @@ public class LiveZoomTests
     }
 
     [Fact]
-    public void ACropWindowKeepsThePicturesShape()
+    public void ACropWindowKeepsThePicturesShapeWhenThePaneIsUnknown()
     {
-        // Same aspect in as out, so the pane's letterboxing does not shift as it zooms.
+        // No pane to fill, so the window keeps the picture's own aspect and whatever
+        // letterboxing there is stays exactly as it was.
         var (left, top, right, bottom) = Borders(LiveZoom.At(3, 0.5, 0.5).CropGeometry(1920, 1080)!);
         double aspect = (1920.0 - left - right) / (1080.0 - top - bottom);
         Assert.Equal(1920.0 / 1080.0, aspect, 2);
+    }
+
+    [Fact]
+    public void ACropWindowTakesThePanesShapeSoTheBarsFillIn()
+    {
+        // A 16:9 camera in a square pane is letterboxed top and bottom. Zoomed well past the
+        // point where the pane's shape fits inside the picture's, the window is the pane's
+        // shape and there are no bars left to magnify.
+        var (left, top, right, bottom) = Borders(LiveZoom.At(4, 0.5, 0.5).CropGeometry(1920, 1080, 800, 800)!);
+        double width = 1920.0 - left - right, height = 1080.0 - top - bottom;
+        Assert.Equal(1.0, width / height, 2);
+
+        // And it really is a 4× magnification of each axis, not a stretch: the fit put 1920
+        // across the pane's 800, so a quarter of that width is on screen.
+        Assert.Equal(1920.0 / 4, width, 0);
+    }
+
+    [Fact]
+    public void TheBarsCloseGraduallyAndAreUntouchedAtFit()
+    {
+        // 16:9 in a 4:3 pane: bars top and bottom until 4/3×, when the pane's shape first
+        // fits inside the picture's. Below that the full height still shows and the bars are
+        // simply thinner than they were.
+        Assert.Equal((1.0, 1.0), LiveZoom.At(1, 0.5, 0.5).VisibleSpan(1920, 1080, 800, 600));
+
+        var half = LiveZoom.At(1.2, 0.5, 0.5).VisibleSpan(1920, 1080, 800, 600);
+        Assert.Equal(1.0 / 1.2, half.U, 6);                 // cropped left and right only …
+        Assert.Equal(1.0, half.V, 6);                       // … the full height still shows
+
+        var filled = LiveZoom.At(2, 0.5, 0.5).VisibleSpan(1920, 1080, 800, 600);
+        Assert.Equal(0.5, filled.U, 6);
+        Assert.Equal(2.0 / 3, filled.V, 6);
+        Assert.Equal(4.0 / 3, LiveZoom.At(2, 0.5, 0.5).VisibleAspect(1920, 1080, 800, 600), 6);
+    }
+
+    [Fact]
+    public void AFilledPaneIsPickedAndDraggedAgainstTheWholePane()
+    {
+        var zoom = LiveZoom.At(3, 0.5, 0.5);
+        // Zoomed enough to fill a square pane, the top-left pane pixel is on the picture —
+        // where at 1× it was out on a black bar.
+        Assert.Null(LiveZoom.None.PickVisible(4, 4, 1920, 1080, 800, 800));
+        var hit = zoom.PickVisible(4, 4, 1920, 1080, 800, 800);
+        Assert.NotNull(hit);
+        Assert.Equal(0.005, hit!.Value.U, 3);
+        Assert.Equal(0.005, hit.Value.V, 3);
+
+        // And a drag divides by the whole pane, not by a letterboxed picture inside it.
+        Assert.Equal((800.0, 800.0), zoom.DisplayedSize(1920, 1080, 800, 800));
     }
 
     /// <summary>The four border widths of a crop geometry.</summary>
