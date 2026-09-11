@@ -102,4 +102,58 @@ public class ExportNamingTests
             foreach (var vendor in Enum.GetValues<Vendor>())
                 Assert.Equal(0, ExportNaming.SaveFilter(vendor, remux).Split('|').Length % 2);
     }
+
+    // ----- camera-name prefix -----
+
+    [Fact]
+    public void BaseName_PutsTheCameraNameInFront()
+    {
+        Assert.Equal("S Service Drive ch9_20260911_115000-120000",
+            ExportNaming.BaseName("S Service Drive", "ch9_20260911_115000-120000"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("///")]
+    [InlineData("...")]
+    public void BaseName_WithNothingUsable_IsJustTheStamp(string? cameraName)
+    {
+        Assert.Equal(Base, ExportNaming.BaseName(cameraName, Base));
+    }
+
+    [Fact]
+    public void CameraPrefix_StripsWhatAFileNameCannotHold()
+    {
+        // A recorder hands back whatever was typed into it. None of this may reach a path:
+        // the separators would redirect the export, and the rest Windows refuses outright.
+        Assert.Equal("Lot 3 North East", ExportNaming.CameraPrefix(@"Lot 3 / North\East"));
+        Assert.Equal("Cam 1 2", ExportNaming.CameraPrefix("Cam 1:2"));
+        Assert.Equal("Dock", ExportNaming.CameraPrefix("Dock\t\r\n"));
+    }
+
+    [Fact]
+    public void CameraPrefix_NeverEndsInADotOrSpace()
+    {
+        // Windows silently drops a trailing dot or space from a file name, so a name that
+        // ends in one does not round-trip — the file the operator is shown and the file
+        // that exists disagree.
+        Assert.Equal("Bay 4", ExportNaming.CameraPrefix("Bay 4. "));
+    }
+
+    [Fact]
+    public void CameraPrefix_LongNameIsCapped()
+    {
+        string prefix = ExportNaming.CameraPrefix(new string('x', 200));
+        Assert.Equal(ExportNaming.MaxCameraPrefix, prefix.Length);
+    }
+
+    [Fact]
+    public void SuggestedFileName_KeepsTheCameraNameOnTheSuggestion()
+    {
+        string name = ExportNaming.BaseName("S Service Drive", Base);
+        Assert.Equal($"S Service Drive {Base}.mp4",
+            ExportNaming.SuggestedFileName(name, Vendor.Hikvision, remux: true));
+    }
 }

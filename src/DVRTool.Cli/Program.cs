@@ -317,7 +317,13 @@ try
                 ? DownloadPaths.ResolveContainer(remuxValue, requestedOut)
                 : null;
             var plan = DownloadPaths.Plan(requestedOut,
-                $"ch{channel}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}", container);
+                ExportNaming.BaseName(
+                    // Only worth a round trip when the name is ours to choose.
+                    requestedOut is null
+                        ? await TryGetChannelNameAsync(client, channel, cts.Token)
+                        : null,
+                    $"ch{channel}_{start:yyyyMMdd_HHmmss}-{end:HHmmss}"),
+                container);
 
             // Before a download that can run for minutes, not after it.
             DownloadPaths.EnsureNotOverwriting(plan.FinalPath, force,
@@ -1144,6 +1150,29 @@ static async Task<(long Total, byte[] Head)> ReadSomeAsync(Stream source, long b
 static string FormatDuration(TimeSpan t) =>
     // TimeSpan's "h" specifier drops whole days (40h renders as "16:00:00").
     $"{(long)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}";
+
+/// <summary>
+/// A channel's name for an export file name, or null if the recorder will not say. Naming
+/// is a convenience: a recorder that refuses the channel list must not take the download
+/// with it, so every failure here is silent and the export keeps its stamp-only name.
+/// </summary>
+static async Task<string?> TryGetChannelNameAsync(INvrClient client, int channel,
+    CancellationToken ct)
+{
+    try
+    {
+        var channels = await client.GetChannelsAsync(ct);
+        return channels.FirstOrDefault(c => c.Id == channel)?.Name;
+    }
+    catch (OperationCanceledException)
+    {
+        throw;
+    }
+    catch
+    {
+        return null;
+    }
+}
 
 static int RequireChannel(Dictionary<string, string> opts)
 {

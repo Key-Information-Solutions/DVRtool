@@ -735,7 +735,9 @@ public partial class MainWindow
         }
         var client = _client;
         int channel = item.Channel.Id;
-        await RunDownloadAsync($"ch{channel}_{sel.Start:yyyyMMdd_HHmmss}-{sel.End:HHmmss}",
+        await RunDownloadAsync(
+            ExportNaming.BaseName(item.Channel.Name,
+                $"ch{channel}_{sel.Start:yyyyMMdd_HHmmss}-{sel.End:HHmmss}"),
             client.Vendor, null, (path, progress, ct) =>
                 client.DownloadAsync(channel, sel.Start, sel.End, path, progress, ct));
     }
@@ -748,7 +750,13 @@ public partial class MainWindow
             return;
         }
         var client = _client;
-        await RunDownloadAsync($"ch{segment.Channel}_{segment.Start:yyyyMMdd_HHmmss}",
+        // The row carries a channel number, not a name — the list the operator is looking
+        // at is where the name lives, and a row for a channel no longer in it simply keeps
+        // the old stamp-only name.
+        string? cameraName = ChannelList.Items.OfType<ChannelItem>()
+            .FirstOrDefault(c => c.Channel.Id == segment.Channel)?.Channel.Name;
+        await RunDownloadAsync(
+            ExportNaming.BaseName(cameraName, $"ch{segment.Channel}_{segment.Start:yyyyMMdd_HHmmss}"),
             client.Vendor, segment.SizeBytes, (path, progress, ct) =>
                 client.DownloadSegmentAsync(segment, path, progress, ct));
     }
