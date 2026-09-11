@@ -25,10 +25,33 @@
                     </TextBlock.ToolTip>
                 </TextBlock>
             </StatusBarItem>
+            <StatusBarItem DockPanel.Dock="Right">
+                <!-- Version, install location, last update check, and a manual check. -->
+                <Button x:Name="AboutButton" Content="?" Width="22" Padding="0" Margin="0,0,4,0"
+                        Click="OnAbout" ToolTip="About DVRTool / check for updates"/>
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="Ready"/>
             </StatusBarItem>
         </StatusBar>
+
+        <!-- Update banner: shown only when a signed newer release is available. Never modal,
+             never steals focus from a live view; MainWindow.Updates.cs owns it. -->
+        <Border x:Name="UpdateBanner" DockPanel.Dock="Top" Visibility="Collapsed"
+                Background="#FFF4E5" BorderBrush="#E0B56A" BorderThickness="0,0,0,1" Padding="10,5">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="✕" Width="22" Padding="0" Margin="8,0,0,0"
+                        Click="OnUpdateDismiss" ToolTip="Hide until next time"/>
+                <Button DockPanel.Dock="Right" Content="Skip this version" Padding="8,2" Margin="8,0,0,0"
+                        Click="OnUpdateSkip"/>
+                <Button DockPanel.Dock="Right" Content="Install now" Padding="8,2" Margin="8,0,0,0"
+                        FontWeight="Bold" Click="OnUpdateInstall"/>
+                <Button DockPanel.Dock="Right" Content="What's new" Padding="8,2" Margin="8,0,0,0"
+                        Click="OnUpdateNotes"/>
+                <TextBlock x:Name="UpdateBannerText" VerticalAlignment="Center"
+                           Text="A newer DVRTool is available."/>
+            </DockPanel>
+        </Border>
 
         <Grid>
             <Grid.ColumnDefinitions>

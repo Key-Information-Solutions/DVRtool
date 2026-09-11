@@ -14,4 +14,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/DVRTool.Tests/DVRTool.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/DVRTool.ReleaseSign/DVRTool.ReleaseSign.csproj" />
+  </Folder>
 </Solution>

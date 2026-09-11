@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
@@ -92,6 +92,9 @@ public partial class MainWindow : Window
 
         if (_devices.Count > 0)
             DeviceList.SelectedIndex = 0;
+
+        // Quiet daily check for a newer release; shows the banner only when one is available.
+        StartAutomaticUpdateCheck();
     }
 
     private async void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -104,6 +107,7 @@ public partial class MainWindow : Window
         _cleanupStarted = true;
 
         _downloadCts?.Cancel();
+        _updateCts?.Cancel();
         _clientCts?.Cancel();
         _usersCts?.Cancel();
         _accessCts?.Cancel();

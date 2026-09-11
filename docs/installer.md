@@ -40,6 +40,7 @@ build should not re-publish two self-contained apps every time.
 | Public-desktop shortcut (`C:\Users\Public\Desktop`) | default on; `DESKTOP_SHORTCUT=0` skips it |
 | System `PATH` | `...\DVRTool\cli` appended (so `dvrtool` works in any shell); removed on uninstall |
 | Registry | `HKLM\SOFTWARE\DVRTool` — see below |
+| Update policy | `HKLM\SOFTWARE\DVRTool\Updates\Enabled` = `UPDATES` (default 1); `UPDATES=0` disables self-update on this machine — see [updates.md](updates.md) |
 
 Discovery key for scripts and other programs (64-bit view):
 
@@ -70,7 +71,9 @@ msiexec /i DVRTool-1.0.0.msi /qn DESKTOP_SHORTCUT=0 INSTALLFOLDER="D:\Tools\DVRT
 
 Upgrades are major-upgrade in place: installing a higher `-Version` MSI replaces the
 old one (same `UpgradeCode`); installing an older version over a newer one is
-refused. Silent uninstall:
+refused. This is also exactly what the built-in updater does ([updates.md](updates.md)):
+it downloads the next release's MSI, verifies it against a signed manifest, and runs
+`msiexec /i … /passive /norestart`. Silent uninstall:
 
 ```powershell
 msiexec /x DVRTool-1.0.0.msi /qn        # or /x {ProductCode} without the file
@@ -83,7 +86,8 @@ services) keep their old environment until restarted.
 
 - `UpgradeCode` in [installer/Package.wxs](../installer/Package.wxs) is the product's
   permanent identity — **never change it**, or upgrades stop replacing old installs.
-- `ProductVersion` must be numeric `x.y.z` (MSI limit: 255.255.65535). Bump at least
-  the third field for every shipped build, or Windows treats it as the same product.
+- `ProductVersion` must be numeric `x.y.z` (MSI limit: 255.255.65535). It defaults to
+  `<Version>` in the root `Directory.Build.props`, which `release.ps1` bumps; bump at
+  least the third field for every shipped build, or Windows treats it as the same product.
 - The component GUIDs on the PATH/registry/shortcut components are likewise stable
   on purpose; only new components need new GUIDs.

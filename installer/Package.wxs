@@ -17,6 +17,9 @@
 
     <!-- Public property: pass DESKTOP_SHORTCUT=0 to skip the public-desktop shortcut. -->
     <Property Id="DESKTOP_SHORTCUT" Value="1" Secure="yes" />
+    <!-- Public property: pass UPDATES=0 and this machine's DVRTool never checks for, offers or
+         installs updates (GUI shows nothing; `dvrtool update` reports the policy). docs/updates.md -->
+    <Property Id="UPDATES" Value="1" Secure="yes" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="DVRTool">
@@ -54,6 +57,13 @@
           <RegistryValue Name="GuiExe" Type="string" Value="[GuiFolder]DVRTool.exe" />
           <RegistryValue Name="CliExe" Type="string" Value="[CliFolder]dvrtool.exe" />
           <RegistryValue Name="Version" Type="string" Value="$(var.ProductVersion)" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+
+      <!-- The update policy the running app reads (UpdatePolicy in DVRTool.Core). -->
+      <Component Id="UpdatePolicyRegistry" Directory="INSTALLFOLDER" Guid="5B1E2C0A-7D64-4F1B-9C3E-2A8F6D1B0E47">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\DVRTool\Updates">
+          <RegistryValue Name="Enabled" Type="integer" Value="[UPDATES]" KeyPath="yes" />
         </RegistryKey>
       </Component>
 

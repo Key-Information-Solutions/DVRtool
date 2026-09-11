@@ -1,8 +1,9 @@
 <Project Sdk="WixToolset.Sdk/6.0.1">
 
   <PropertyGroup>
-    <!-- MSI ProductVersion: numeric major.minor.build (max 255.255.65535). -->
-    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+    <!-- MSI ProductVersion: numeric major.minor.build (max 255.255.65535). Defaults to the
+         product version in ..Directory.Build.props, so one bump moves the apps and the MSI. -->
+    <ProductVersion Condition="'$(ProductVersion)' == ''">$(Version)</ProductVersion>
     <OutputName>DVRTool-$(ProductVersion)</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
     <OutputPath>$(MSBuildThisFileDirectory)..\artifacts\installer\</OutputPath>

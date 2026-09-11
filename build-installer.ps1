@@ -8,18 +8,25 @@
   a NuGet SDK — nothing to install beyond the .NET SDK.
 
 .EXAMPLE
-  .\build-installer.ps1                    # DVRTool-1.0.0.msi
+  .\build-installer.ps1                    # the version in Directory.Build.props
   .\build-installer.ps1 -Version 1.2.0
   .\build-installer.ps1 -SkipPublish      # repackage existing publish output only
 #>
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = "1.0.0",
+    [ValidatePattern('^(\d+\.\d+\.\d+)?$')]
+    [string]$Version = "",
     [switch]$SkipPublish
 )
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+
+# Default to the product version every assembly is stamped with, so an MSI built here carries
+# the number the running app compares against a release manifest (release.ps1 bumps it).
+if (-not $Version) {
+    $Version = ([xml](Get-Content (Join-Path $root "Directory.Build.props"))).Project.PropertyGroup.Version
+    if (-not $Version) { throw "No <Version> in Directory.Build.props and none passed." }
+}
 
 $buildArgs = @(
     "build", (Join-Path $root "installer\DVRTool.Installer.wixproj"),

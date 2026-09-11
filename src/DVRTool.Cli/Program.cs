@@ -33,6 +33,8 @@ const string Usage = """
                       that works when RTSP is closed
       live-url        Print the RTSP live URI (paste into VLC)
       playback-url    Print the RTSP playback-by-time URI
+      update          Check for, download or install a newer DVRTool
+                      (see: dvrtool update --help); `dvrtool --version` prints this build
 
     Options:
       --vendor <hikvision|dahua|nx>  default: hikvision (nx = DW Spectrum / Nx Witness)
@@ -101,6 +103,12 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
     return 0;
 }
 
+if (args[0] is "--version" or "-V" or "version")
+{
+    Console.WriteLine($"dvrtool {DVRTool.Core.Updates.ProductVersion.Display}");
+    return 0;
+}
+
 string command = args[0].ToLowerInvariant();
 
 // `access`, `storage`, `recording` and `config` are command groups:
@@ -110,7 +118,8 @@ bool isAccess = command == "access";
 bool isStorage = command == "storage";
 bool isRecording = command == "recording";
 bool isConfig = command == "config";
-string groupSubcommand = (isAccess || isStorage || isRecording || isConfig) && args.Length > 1 &&
+bool isUpdate = command == "update";
+string groupSubcommand = (isAccess || isStorage || isRecording || isConfig || isUpdate) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -141,6 +150,14 @@ try
     // are dispatched before any INvrClient is built.
     if (isAccess)
         return await AccessCommands.RunAsync(accessSubcommand, opts, cts.Token);
+
+    // `update` talks to the release channel, not to a recorder — no client, no credentials.
+    if (isUpdate)
+    {
+        if (UpdateCommands.TryRunHelp(groupSubcommand, opts, out int updateHelpExit))
+            return updateHelpExit;
+        return await UpdateCommands.RunAsync(groupSubcommand, opts, cts.Token);
+    }
 
     // Storage help must print without a connection; the real subcommands fall through
     // to the ordinary client + identity path below.
@@ -1179,6 +1196,8 @@ static Dictionary<string, string> ParseOptions(string[] args)
         "pin", "unpin", "clear", "ignore-pins",
         // `config audit` / `config set`: valueless by design.
         "all-saved", "sync-now",
+        // `update`: valueless by design.
+        "yes", "quiet", "json",
     ];
     // Flags that may be given more than once (e.g. `access onboard --group A --group B`).
     // Repeats accumulate, joined by an ASCII unit separator the caller splits back out; a

@@ -11,6 +11,20 @@ produces a per-machine WiX MSI carrying both front ends self-contained; it insta
 The wixproj is deliberately not in `DVRTool.slnx` — see `docs/installer.md` (UpgradeCode and
 component GUIDs are permanent; MSI versions are numeric x.y.z).
 
+**Updates** (2026-09-11, `docs/updates.md`): `src/DVRTool.Core/Updates/`, the GUI banner +
+About `?` (`MainWindow.Updates.cs`, `UpdateWindow`), `dvrtool update check | download | install
+--yes` and `dvrtool --version`. Releases are GitHub Releases on the public repo (tag `vX.Y.Z` +
+MSI + `update.json` + `update.json.sig`), cut by `release.ps1`; **the trust root is the Ed25519
+key baked into `UpdateSigning.PublicKeyHex`, not github.com** — the private key is DPAPI-held in
+`%USERPROFILE%\.dvrtool-release` on the release machine, never in CI or the repo, and the
+manifest is verified as bytes before it is parsed. The MSI stays the only installer (msiexec
+`/passive` major upgrade, relaunched via `cmd.exe`, **never elevated by us**); the one product
+version is `<Version>` in `Directory.Build.props`, numeric x.y.z, compared as `System.Version`.
+A copy outside the installer's `InstallDir` never offers; `msiexec … UPDATES=0` writes
+`HKLM\SOFTWARE\DVRTool\Updates\Enabled=0` and that machine shows nothing. Nothing downloads or
+installs without a click / `--yes`; a signature rejection is the one failure that is never quiet.
+Ed25519 comes from BouncyCastle (the net10.0 BCL has only the ML-DSA composites).
+
 **Device ports:** The three ports an NVR record carries are per-vendor, not universal — the
 vendor SDK port is 8000 on Hikvision and **37777** on Dahua (`VendorPorts.Sdk` in
 `DVRTool.Core`, honoured by the GUI Add-NVR dialog, `dvrtool --sdk-port` and `dvrtool test`).

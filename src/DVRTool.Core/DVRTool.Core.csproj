@@ -10,6 +10,10 @@
     <!-- DPAPI for the saved-device password (System.Security.Cryptography.ProtectedData is
          not in the base framework for a non-Windows TFM, and Core stays TFM-neutral). -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.5" />
+    <!-- Ed25519 for the update manifest signature (UpdateSigning). The BCL in net10.0 has no
+         standalone Ed25519 (only the ML-DSA composites), and BouncyCastle is pure managed, so
+         Core carries no native library for it. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
   </ItemGroup>
 
 </Project>
