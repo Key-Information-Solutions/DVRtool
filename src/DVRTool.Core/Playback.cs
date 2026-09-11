@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace DVRTool.Core;
 
 /// <summary>The container a recorder streams recorded footage in over its web port.</summary>
@@ -280,6 +282,85 @@ public static class FootageCoverage
     /// <summary>Total recorded time.</summary>
     public static TimeSpan Total(IReadOnlyList<FootageSpan> coverage) =>
         TimeSpan.FromTicks(coverage.Sum(c => c.Duration.Ticks));
+}
+
+/// <summary>
+/// The export range typed as text: two clock times on the timeline's day.
+/// </summary>
+/// <remarks>
+/// A dragged selection is the quick way to choose a clip; the typed one is the exact way — an
+/// incident report says "14:32:10 to 14:35:40", and a drag on a day-wide strip cannot land on
+/// a second. Times are the recorder's wall clock on the day shown, like everything else on the
+/// tab; <c>24:00</c> (or <c>24:00:00</c>) means the end of that day, since a clip that runs to
+/// midnight has no other way to say so. Seconds are optional, a leading zero is optional, and
+/// the end must come after the start — a reversed pair is a mistake to report, not to swap,
+/// because the operator typed what they meant in one of the boxes and this cannot know which.
+/// </remarks>
+public static class ClipRange
+{
+    /// <summary>Parses <c>H:mm</c> / <c>HH:mm:ss</c> on <paramref name="day"/>; null when it is not a time.</summary>
+    public static DateTime? ParseTime(DateTime day, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        var parts = text.Trim().Split(':');
+        if (parts.Length is < 2 or > 3)
+            return null;
+        if (!int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out int h) ||
+            !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int m))
+            return null;
+        int s = 0;
+        if (parts.Length == 3 &&
+            !int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out s))
+            return null;
+        if (parts[1].Length != 2 || (parts.Length == 3 && parts[2].Length != 2))
+            return null;
+        if (m is < 0 or > 59 || s is < 0 or > 59)
+            return null;
+        if (h == 24)
+            return m == 0 && s == 0 ? day.Date.AddDays(1) : null;
+        if (h is < 0 or > 23)
+            return null;
+        return day.Date.AddHours(h).AddMinutes(m).AddSeconds(s);
+    }
+
+    /// <summary>
+    /// Both ends typed, or the reason they do not make a range. <paramref name="error"/> is
+    /// worded for the operator; either end blank is "incomplete", not an error.
+    /// </summary>
+    public static (DateTime Start, DateTime End)? Parse(DateTime day, string? startText,
+        string? endText, out string? error)
+    {
+        error = null;
+        bool startBlank = string.IsNullOrWhiteSpace(startText);
+        bool endBlank = string.IsNullOrWhiteSpace(endText);
+        if (startBlank && endBlank)
+            return null;
+        var start = ParseTime(day, startText);
+        var end = ParseTime(day, endText);
+        if (start is null && !startBlank)
+        {
+            error = $"\"{startText!.Trim()}\" is not a time — use HH:mm or HH:mm:ss.";
+            return null;
+        }
+        if (end is null && !endBlank)
+        {
+            error = $"\"{endText!.Trim()}\" is not a time — use HH:mm or HH:mm:ss (24:00 for midnight).";
+            return null;
+        }
+        if (start is null || end is null)
+            return null;
+        if (end <= start)
+        {
+            error = "The end of the clip must be after its start.";
+            return null;
+        }
+        return (start.Value, end.Value);
+    }
+
+    /// <summary>The text for a box: <c>HH:mm:ss</c>, with midnight after the day as <c>24:00:00</c>.</summary>
+    public static string Format(DateTime day, DateTime t) =>
+        t == day.Date.AddDays(1) ? "24:00:00" : t.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 }
 
 /// <summary>What playback should do when the body it was reading has ended.</summary>

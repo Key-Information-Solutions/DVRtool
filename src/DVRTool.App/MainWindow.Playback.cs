@@ -224,7 +224,7 @@ public partial class MainWindow
                 ? $"No recordings on {day:yyyy-MM-dd} for channel {channel}."
                 : $"{day:yyyy-MM-dd}, channel {channel}: {segments.Count} segment(s), " +
                   $"{(long)total.TotalHours}:{total.Minutes:D2}:{total.Seconds:D2} of footage. " +
-                  "Click the timeline to play from there; drag to select a range to export.");
+                  "Click the timeline to play from there; drag (or type a start and end) to choose a clip to export.");
         }
         catch (OperationCanceledException)
         {
@@ -628,15 +628,91 @@ public partial class MainWindow
 
     private void UpdatePlaybackSelectionLabel()
     {
+        var day = PlaybackDay;
         if (PlaybackTimeline.Selection is { } sel)
         {
             var length = sel.End - sel.Start;
-            PlaybackSelectionText.Text = $"Selected {sel.Start:HH:mm:ss} → {sel.End:HH:mm:ss} ({(long)length.TotalMinutes} min {length.Seconds} s)";
+            PlaybackSelectionText.Text = $"Clip {sel.Start:HH:mm:ss} → {ClipRange.Format(day, sel.End)} ({(long)length.TotalMinutes} min {length.Seconds} s)";
         }
         else
         {
             PlaybackSelectionText.Text = "";
         }
+        // The boxes mirror the selection, whichever way it was made — but not while the
+        // operator is typing in one, or a half-typed end would be overwritten by the drag it
+        // does not yet make.
+        if (_clipBoxesUpdating || ClipStartBox.IsKeyboardFocusWithin || ClipEndBox.IsKeyboardFocusWithin)
+            return;
+        _clipBoxesUpdating = true;
+        try
+        {
+            ClipStartBox.Text = PlaybackTimeline.Selection is { } s ? ClipRange.Format(day, s.Start) : "";
+            ClipEndBox.Text = PlaybackTimeline.Selection is { } e ? ClipRange.Format(day, e.End) : "";
+        }
+        finally
+        {
+            _clipBoxesUpdating = false;
+        }
+    }
+
+    // ----- the typed clip -----
+
+    /// <summary>
+    /// Set while this code writes the boxes, so the LostFocus/Enter commit and the label
+    /// refresh do not chase each other.
+    /// </summary>
+    private bool _clipBoxesUpdating;
+
+    private void OnClipRangeKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+            return;
+        e.Handled = true;
+        // Enter commits and moves on: from the start box to the end box, from the end box to
+        // the timeline (which un-focuses the box, so a drag then repaints both).
+        if (ReferenceEquals(sender, ClipStartBox))
+            ClipEndBox.Focus();
+        else
+            PlaybackTimeline.Focus();
+        CommitClipRange();
+    }
+
+    private void OnClipRangeCommit(object sender, RoutedEventArgs e) => CommitClipRange();
+
+    /// <summary>
+    /// Reads the two boxes onto the timeline. False when they hold something that is not a
+    /// range (reported in the status line); true when they made one, or are blank/incomplete.
+    /// </summary>
+    private bool CommitClipRange()
+    {
+        if (_clipBoxesUpdating)
+            return true;
+        var day = PlaybackDay;
+        var range = ClipRange.Parse(day, ClipStartBox.Text, ClipEndBox.Text, out var error);
+        if (error is not null)
+        {
+            SetStatus(error);
+            return false;
+        }
+        if (range is null)
+            return true; // blank or one end only: nothing to set, nothing wrong yet
+        if (PlaybackTimeline.Selection is { } current && current.Start == range.Value.Start &&
+            current.End == range.Value.End)
+            return true;
+        _clipBoxesUpdating = true;
+        try
+        {
+            PlaybackTimeline.Selection = range;
+        }
+        finally
+        {
+            _clipBoxesUpdating = false;
+        }
+        // Formatted back so "9:05" reads "09:05:00" like the label does.
+        ClipStartBox.Text = ClipRange.Format(day, range.Value.Start);
+        ClipEndBox.Text = ClipRange.Format(day, range.Value.End);
+        UpdatePlaybackSelectionLabel();
+        return true;
     }
 
     // ----- export -----
@@ -648,9 +724,13 @@ public partial class MainWindow
             SetStatus("Select a device and channel first.");
             return;
         }
+        // A range still sitting in the boxes uncommitted (the operator typed and went straight
+        // for the button) counts: the button is the commit.
+        if (!CommitClipRange())
+            return;
         if (PlaybackTimeline.Selection is not { } sel || sel.End <= sel.Start)
         {
-            SetStatus("Drag across the timeline to select the range to export.");
+            SetStatus("Drag across the timeline, or type a start and end, to choose the clip to export.");
             return;
         }
         var client = _client;

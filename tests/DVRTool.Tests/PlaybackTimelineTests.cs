@@ -24,6 +24,84 @@ public class PlaybackTimelineTests
         Type = type,
     };
 
+    // ----- ClipRange (the typed export range) -----
+
+    [Theory]
+    [InlineData("14:32:10", 14, 32, 10)]
+    [InlineData("14:32", 14, 32, 0)]
+    [InlineData("9:05", 9, 5, 0)]
+    [InlineData(" 00:00:00 ", 0, 0, 0)]
+    [InlineData("23:59:59", 23, 59, 59)]
+    public void ClipRange_parses_clock_times_on_the_day(string text, int h, int m, int s)
+    {
+        Assert.Equal(Day.AddHours(h).AddMinutes(m).AddSeconds(s), ClipRange.ParseTime(Day, text));
+    }
+
+    [Fact]
+    public void ClipRange_reads_24_00_as_the_end_of_the_day()
+    {
+        Assert.Equal(Day.AddDays(1), ClipRange.ParseTime(Day, "24:00"));
+        Assert.Equal(Day.AddDays(1), ClipRange.ParseTime(Day, "24:00:00"));
+        Assert.Null(ClipRange.ParseTime(Day, "24:00:01"));
+        Assert.Equal("24:00:00", ClipRange.Format(Day, Day.AddDays(1)));
+        Assert.Equal("14:32:10", ClipRange.Format(Day, Day.AddHours(14).AddMinutes(32).AddSeconds(10)));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("noon")]
+    [InlineData("14")]
+    [InlineData("14:5")]
+    [InlineData("14:60")]
+    [InlineData("25:00")]
+    [InlineData("14:32:5")]
+    [InlineData("14:32:60")]
+    [InlineData("14:32:10:00")]
+    [InlineData("-1:00")]
+    [InlineData("2026-09-03 14:32")]
+    public void ClipRange_rejects_what_is_not_a_time(string text)
+    {
+        Assert.Null(ClipRange.ParseTime(Day, text));
+    }
+
+    [Fact]
+    public void ClipRange_pairs_a_start_and_an_end()
+    {
+        var range = ClipRange.Parse(Day, "14:32:10", "14:35:40", out var error);
+        Assert.Null(error);
+        Assert.Equal((Day.AddHours(14).AddMinutes(32).AddSeconds(10),
+            Day.AddHours(14).AddMinutes(35).AddSeconds(40)), range);
+    }
+
+    [Fact]
+    public void ClipRange_is_incomplete_without_both_ends_and_silent_about_it()
+    {
+        Assert.Null(ClipRange.Parse(Day, "14:32", "", out var error));
+        Assert.Null(error);
+        Assert.Null(ClipRange.Parse(Day, "", "14:35", out error));
+        Assert.Null(error);
+        Assert.Null(ClipRange.Parse(Day, "", "", out error));
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void ClipRange_reports_a_reversed_pair_rather_than_swapping_it()
+    {
+        Assert.Null(ClipRange.Parse(Day, "14:35", "14:32", out var error));
+        Assert.Contains("after its start", error);
+        Assert.Null(ClipRange.Parse(Day, "14:35", "14:35", out error));
+        Assert.Contains("after its start", error);
+    }
+
+    [Fact]
+    public void ClipRange_names_the_box_that_is_wrong()
+    {
+        Assert.Null(ClipRange.Parse(Day, "abc", "14:35", out var error));
+        Assert.Contains("\"abc\"", error);
+        Assert.Null(ClipRange.Parse(Day, "14:30", "14:99", out error));
+        Assert.Contains("\"14:99\"", error);
+    }
+
     // ----- TimelineWindow -----
 
     [Fact]

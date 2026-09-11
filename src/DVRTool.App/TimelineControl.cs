@@ -183,18 +183,22 @@ public sealed class TimelineControl : FrameworkElement
         base.OnMouseLeftButtonUp(e);
         if (_pressAt is null)
             return;
-        ReleaseMouseCapture();
+        // Read the gesture before releasing capture: ReleaseMouseCapture raises
+        // LostMouseCapture synchronously, and that handler resets these flags — checking
+        // _selecting after the release turned every drag into a click (and a seek), which
+        // is how the export selection was unreachable until 2026-09-11.
+        bool wasSelecting = _selecting;
+        var pressTime = _pressTime;
         _pressAt = null;
-        if (_selecting)
-        {
-            _selecting = false;
+        _selecting = false;
+        ReleaseMouseCapture();
+        e.Handled = true;
+        if (wasSelecting)
             return;
-        }
         // A click: a plain one seeks and clears any selection, so the selection never
         // silently outlives the range the operator was looking at.
         Selection = null;
-        SeekRequested?.Invoke(this, new SeekRequestedEventArgs(_pressTime));
-        e.Handled = true;
+        SeekRequested?.Invoke(this, new SeekRequestedEventArgs(pressTime));
     }
 
     protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)

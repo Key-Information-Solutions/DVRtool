@@ -288,8 +288,9 @@
                                     uses — so it plays wherever this tool can log in; RTSP is not needed.<LineBreak/>
                                     Dahua footage passes through ffmpeg on the way (it must be on PATH).<LineBreak/>
                                     <LineBreak/>
-                                    On the timeline: click to play from there, drag to select a range to<LineBreak/>
-                                    export, wheel to zoom, right-drag to pan.
+                                    On the timeline: click to play from there, drag to select a clip to<LineBreak/>
+                                    export (or type its start and end in the Clip boxes), wheel to zoom,<LineBreak/>
+                                    right-drag to pan.
                                 </TextBlock>
                             </ToolBar.ToolTip>
                         </ToolBar>
@@ -320,14 +321,23 @@
                             <TextBlock x:Name="PlaybackClockText" FontFamily="Consolas, Segoe UI"
                                        VerticalAlignment="Center" MinWidth="210" Margin="4,0"/>
                             <Separator/>
-                            <Button Content="⬇ Export selection…" Click="OnExportSelection"/>
+                            <TextBlock Text="Clip " VerticalAlignment="Center"/>
+                            <TextBox x:Name="ClipStartBox" Width="70" VerticalAlignment="Center"
+                                     FontFamily="Consolas, Segoe UI" LostFocus="OnClipRangeCommit"
+                                     KeyDown="OnClipRangeKeyDown" ToolTip="Clip start on this day, HH:mm or HH:mm:ss — type it, or drag on the timeline"/>
+                            <TextBlock Text=" → " VerticalAlignment="Center"/>
+                            <TextBox x:Name="ClipEndBox" Width="70" VerticalAlignment="Center"
+                                     FontFamily="Consolas, Segoe UI" LostFocus="OnClipRangeCommit"
+                                     KeyDown="OnClipRangeKeyDown" ToolTip="Clip end on this day, HH:mm or HH:mm:ss (24:00 = midnight) — type it, or drag on the timeline"/>
+                            <Button Content="⬇ Export clip…" Click="OnExportSelection" Margin="4,0,0,0"
+                                    ToolTip="Exports the clip above: the range dragged on the timeline, or typed here"/>
                             <Button Content="⬇ Download segment…" Click="OnDownloadSegment"
                                     ToolTip="The row selected in the segment list"/>
                             <CheckBox x:Name="RemuxCheck" Content="Remux to a playable file"
                                       IsChecked="True" VerticalAlignment="Center" Margin="4,0">
                                 <CheckBox.ToolTip>
                                     <TextBlock>
-                                        Applies to both &quot;Export selection&quot; and &quot;Download segment&quot;.<LineBreak/>
+                                        Applies to both &quot;Export clip&quot; and &quot;Download segment&quot;.<LineBreak/>
                                         <LineBreak/>
                                         NVR exports are MPEG program streams (Hikvision) or DHAV/.dav<LineBreak/>
                                         (Dahua) whatever they are named, and most players outside VLC<LineBreak/>

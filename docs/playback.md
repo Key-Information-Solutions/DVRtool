@@ -85,9 +85,16 @@ clock anchored in a gap would drift by the gap. All of it is in
 `PlaybackTimelineTests`.
 
 `TimelineControl` (App) only paints and translates mouse: click seeks, drag selects a
-range for export (a drag under 4 px is a click), wheel zooms about the cursor,
+clip for export (a drag under 4 px is a click), wheel zooms about the cursor,
 right-drag pans. Footage colour follows `RecordingType` — continuous blue,
-event-triggered amber, mixed/unknown green.
+event-triggered amber, mixed/unknown green. One trap, found 2026-09-11 after the drag had
+been silently a click since the tab shipped: **`ReleaseMouseCapture` raises
+`LostMouseCapture` synchronously**, and that handler resets the gesture flags — so the
+release handler must read "was this a drag" *before* it releases capture, or every drag
+ends as a click and a seek. The clip can also be **typed**: the Clip boxes on the
+toolbar take `HH:mm` / `HH:mm:ss` on the day shown (`24:00` = midnight after it) and mirror
+the dragged selection; `ClipRange` in Core parses and formats them (tested), refuses a
+reversed pair rather than swapping it, and Export commits whatever is in the boxes first.
 
 The tab loads **one day** per camera (`SearchAsync` over the day, merged), plus the
 month's recorded days for the date row (`GetRecordedDaysAsync`: Hikvision
