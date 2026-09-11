@@ -129,7 +129,8 @@ Dictionary<string, string> opts;
 try
 {
     opts = ParseOptions(args.Skip(groupSubcommand.Length > 0 ? 2 : 1).ToArray());
-    LoadDotEnv(opts.GetValueOrDefault("env"));
+    if (!isUpdate) // `update` talks to no recorder, so device credentials are irrelevant
+        LoadDotEnv(opts.GetValueOrDefault("env"));
 }
 catch (ArgumentException ex)
 {
