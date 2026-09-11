@@ -5,6 +5,6 @@
        compares too. Bump at least the third field for every shipped build (docs/updates.md);
        release.ps1 does this. Numeric x.y.z only: it is also the MSI ProductVersion. -->
   <PropertyGroup>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
   </PropertyGroup>
 </Project>
