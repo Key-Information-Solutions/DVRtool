@@ -630,3 +630,29 @@ endpoint, and one site with two recorders behind a single WAN address and no SDK
 all. The identity guard is what turns the first kind into an error instead of a wrong-camera
 feed. Site-by-site addresses and open ports are deliberately not recorded here —
 customer names and WAN ports do not belong in git.
+
+## 9. A black pane with healthy numbers
+
+A pane that stays black while the footer counts a bitrate is the tab's worst failure: every
+reading an operator can see says the link is fine. `MainWindow.LiveDiagnostics.cs` watches the
+camera the footer is describing and separates the three cases from LibVLC's own counters —
+bytes arriving with **nothing decoded** (a codec or a stream the demuxer cannot read), pictures
+decoded with **nothing displayed** (the video output), and neither (a connection problem, which
+the footer already words). `DecodedVideo` counts twice per frame, so `DisplayedPictures` is the
+only counter that says the pane is painting.
+
+One cause is repaired rather than described: a **stale window handle**. `VideoView` hands
+LibVLC the handle of the `HwndHost` in its template in `OnApplyTemplate` and never mentions it
+again, so if WPF rebuilds that child window the player decodes into a window that no longer
+exists — no error anywhere, black forever, inherited by every later Play. The watchdog compares
+`MediaPlayer.Hwnd` against the host's own handle before blaming anything else and re-attaches
+on a mismatch.
+
+`DVRTOOL_LOG=1` writes LibVLC's own log to `%APPDATA%\DVRTool\logs` (off by default — it is
+megabytes a minute). The vout's module selection and its errors are in there and nowhere else,
+so it is what to ask a site for when a black pane survives all of the above.
+
+Verified 2026-09-11 by driving the GUI through UI Automation: switching the single view between
+six recorders (KISFL, PS Acura 1, OSA Boca, PS Kia, PS Mitsubishi) over SDK and RTSP, in both
+directions and eight times running, paints every time — so a plain device switch is not itself
+a black-pane path on 1.1.1.

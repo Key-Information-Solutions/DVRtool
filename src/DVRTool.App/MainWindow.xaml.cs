@@ -82,6 +82,7 @@ public partial class MainWindow : Window
         InitializeAccessTab();
         InitializeStorageTab();
         InitializeConfigTab();
+        InitializeDiagnostics();
         InitializeLiveStats();
         // The single view's zoom target is its one player, named by whatever it is playing.
         WireLiveZoom(LiveVideoOverlay, () => !_gridMode && _livePlayer is { } player
@@ -171,6 +172,7 @@ public partial class MainWindow : Window
         // Detach the views first so VideoView never renders against a disposed
         // player, then run the blocking Stop/Dispose chain off the UI thread —
         // libvlc 3.x Stop blocks (and can hang while a connect is pending).
+        DisposeDiagnostics();
         LiveVideo.MediaPlayer = null;
         PlaybackVideo.MediaPlayer = null;
         var live = _livePlayer;

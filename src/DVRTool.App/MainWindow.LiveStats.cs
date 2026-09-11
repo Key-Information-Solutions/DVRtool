@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using DVRTool.Core;
 using DVRTool.Vendors.HikvisionSdk;
 using LibVLCSharp.Shared;
+using LibVLCSharp.WPF;
 using MediaPlayer = LibVLCSharp.Shared.MediaPlayer;
 
 namespace DVRTool.App;
@@ -64,8 +65,12 @@ public partial class MainWindow
         UpdateLiveStats();
     }
 
-    /// <summary>The player the footer should describe right now, or null for none.</summary>
-    private (MediaPlayer Player, string Label, SdkMediaStream? Sdk)? ResolveLiveStatsSource()
+    /// <summary>
+    /// The player the footer should describe right now, or null for none. The view comes with
+    /// it where there is one: the black-pane watchdog needs the window the player draws into,
+    /// and a tile's is not worth tracking (the footer describes one camera at a time).
+    /// </summary>
+    private (MediaPlayer Player, string Label, SdkMediaStream? Sdk, VideoView? View)? ResolveLiveStatsSource()
     {
         // The dewarp has its own status line, over its own decoder. Whatever is still running
         // behind it — a maximized camera's tile is still on its sub stream — is not what the
@@ -76,13 +81,13 @@ public partial class MainWindow
         if (_maxTile is { } max)
         {
             if (LiveMaxVideo.Visibility == Visibility.Visible && _maxPlayer is { } big)
-                return (big, $"{max.DefaultLabel}  ·  main", _maxSdk?.Media);
-            return (max.Player, $"{max.DefaultLabel}  ·  sub", max.Sdk?.Media);
+                return (big, $"{max.DefaultLabel}  ·  main", _maxSdk?.Media, LiveMaxVideo);
+            return (max.Player, $"{max.DefaultLabel}  ·  sub", max.Sdk?.Media, null);
         }
         if (_gridMode)
         {
             if (_selectedTile is { } tile && _tiles.Contains(tile))
-                return (tile.Player, $"{tile.DefaultLabel}  ·  sub", tile.Sdk?.Media);
+                return (tile.Player, $"{tile.DefaultLabel}  ·  sub", tile.Sdk?.Media, null);
             return null;
         }
         if (_livePlayer is { } player && _liveLabel.Length > 0)
@@ -92,7 +97,7 @@ public partial class MainWindow
             var state = player.State;
             if (state is VLCState.Stopped or VLCState.NothingSpecial)
                 return null;
-            return (player, _liveLabel, _sdkLive?.Media);
+            return (player, _liveLabel, _sdkLive?.Media, LiveVideo);
         }
         return null;
     }
@@ -115,11 +120,11 @@ public partial class MainWindow
             return;
         }
 
-        var (player, label, sdk) = source.Value;
+        var (player, label, sdk, view) = source.Value;
         string text;
         try
         {
-            text = SampleLiveStats(player, sdk);
+            text = SampleLiveStats(player, sdk, view);
         }
         catch (ObjectDisposedException)
         {
@@ -138,7 +143,7 @@ public partial class MainWindow
     private (MediaPlayer Player, int Width, int Height)? _liveStatsSize;
 
     /// <summary>One reading of the player's counters, worded for the footer.</summary>
-    private string SampleLiveStats(MediaPlayer player, SdkMediaStream? sdk)
+    private string SampleLiveStats(MediaPlayer player, SdkMediaStream? sdk, VideoView? view = null)
     {
         switch (player.State)
         {
@@ -202,7 +207,11 @@ public partial class MainWindow
             _liveStatsSize = (player, width, height);
         if (rates is null && codec.Length == 0 && width == 0 && stats.DemuxReadBytes == 0)
             return "connecting …";
-        return LiveStats.Describe(codec, width, height, rates, sdk?.BytesDropped ?? 0, configuredFps);
+        // A pane that is black while these numbers look healthy is the one failure the footer
+        // would otherwise describe as success.
+        string described = LiveStats.Describe(codec, width, height, rates, sdk?.BytesDropped ?? 0, configuredFps);
+        string blind = WatchPainting(player, media, stats, view);
+        return blind.Length > 0 ? $"{described}  ·  {blind}" : described;
     }
 
     private void ShowLiveStats(string text)
