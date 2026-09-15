@@ -137,10 +137,13 @@ defence against misconfiguration rather than against an attacker on the path —
 
 ### Live
 
-Pick a channel, choose **Main** or **Sub**, pick the transport, and **▶ Play** opens the
-stream in the embedded player; **⏹ Stop** ends it.
+Pick a channel, choose **Main** or **Sub**, and **▶ Play** opens the stream in the embedded
+player; **⏹ Stop** ends it.
 
-The transport dropdown is labelled with this device's own port numbers:
+Selecting a Hikvision recorder selects the **SDK** transport with it, because that is the port
+most sites forward — a Dahua or Nx recorder, and any machine without `HCNetSDK.dll`, gets RTSP,
+which is then the only route there is. The dropdown changes it per device, and is labelled with
+this device's own port numbers:
 
 * **RTSP `<port>`** — the standard route. Credentials are handed to libVLC as stream options
   rather than embedded in the URL, so the password never appears in the stream MRL or the

@@ -267,7 +267,7 @@ public partial class MainWindow : Window
         ExitDewarpMode();
         ResetPlaybackTab();
         UpdateGridPageControls();
-        UpdateLiveTransportLabels(DeviceList.SelectedItem as SavedDevice);
+        UpdateLiveTransportForDevice(DeviceList.SelectedItem as SavedDevice);
 
         _clientCts?.Cancel();
         _clientCts?.Dispose();

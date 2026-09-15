@@ -88,7 +88,7 @@
                                 <ComboBoxItem Content="Sub"/>
                             </ComboBox>
                             <TextBlock Text=" over " VerticalAlignment="Center"/>
-                            <ComboBox x:Name="LiveTransportCombo" Width="130" SelectedIndex="0">
+                            <ComboBox x:Name="LiveTransportCombo" Width="130" SelectedIndex="1">
                                 <ComboBoxItem x:Name="LiveTransportRtsp" Content="RTSP"/>
                                 <ComboBoxItem x:Name="LiveTransportSdk" Content="SDK"/>
                                 <ComboBox.ToolTip>
@@ -102,7 +102,11 @@
                                         over the same port it logs in on — so it works wherever iVMS-4200<LineBreak/>
                                         works, with nothing forwarded but the SDK port. Hikvision only,<LineBreak/>
                                         and it needs HCNetSDK.dll (iVMS-4200 or HikCentral installs it).<LineBreak/>
-                                        Each viewer uses one of the recorder's stream slots.
+                                        Each viewer uses one of the recorder's stream slots.<LineBreak/>
+                                        <LineBreak/>
+                                        A Hikvision recorder is selected on <Bold>SDK</Bold>, because that is the<LineBreak/>
+                                        port most sites forward; everything else, and a machine with no<LineBreak/>
+                                        HCNetSDK.dll, is selected on RTSP. Change it here per device.
                                     </TextBlock>
                                 </ComboBox.ToolTip>
                             </ComboBox>

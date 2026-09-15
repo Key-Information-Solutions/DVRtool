@@ -38,7 +38,10 @@ for separate hardware.
 `dwLinkMode = 0` brings the media back over the same SDK-port session the login authenticated
 on, which across our fleet is the difference between live view working at 3 sites and at 14
 (`src/DVRTool.Vendors.HikvisionSdk` — `HikvisionSdkSession`, the GUI Live tab's transport
-dropdown, and `dvrtool live`). The HTTP alternative was probed on all 17 recorders and
+dropdown, and `dvrtool live`). **It is also what the Live tab selects a Hikvision device on**
+(2026-09-15, `MainWindow.DefaultLiveTransport`, re-derived per device), falling back to RTSP
+only where the SDK cannot carry video at all: a non-Hikvision recorder, or a machine where
+`SdkRuntime.IsInstalled` cannot find `HCNetSDK.dll` (it ships with iVMS-4200, not with us). The HTTP alternative was probed on all 17 recorders and
 answered 403 on every one, so do not design around `httpPreview`. Read
 `docs/hikvision-sdk-live.md` before touching it — notably: an NVR's **display channel 1 is
 device channel 33** and getting it wrong shows no error at all (`SdkChannelMap` reads the

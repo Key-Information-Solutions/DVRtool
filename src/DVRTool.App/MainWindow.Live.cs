@@ -18,9 +18,10 @@ namespace DVRTool.App;
 /// </para>
 /// <para>
 /// So this is not a fallback bolted onto the RTSP path — on most of the fleet it is the only
-/// transport that works remotely, and the choice is the operator's rather than something
-/// guessed at. The SDK route is Hikvision-only and needs <c>HCNetSDK.dll</c> present; both
-/// facts are reported when they bite, not assumed away.
+/// transport that works remotely, which is why it is what a Hikvision device is selected on
+/// (<see cref="DefaultLiveTransport"/>) rather than something the operator has to know to
+/// reach for. The SDK route is Hikvision-only and needs <c>HCNetSDK.dll</c> present; both
+/// facts pick the default, and both are still reported when an explicit choice hits them.
 /// </para>
 /// <para>
 /// Either way the picture goes through the same LibVLC player. The SDK's data callback hands
@@ -49,11 +50,31 @@ public partial class MainWindow
     private Task? _sdkStartTask;
 
     /// <summary>
-    /// Names the transports after the ports this device actually uses. The numbers are
-    /// per-device and operators do move them, so a bare "RTSP / SDK" would leave the one
-    /// question the row exists to answer — which port has to be open — unanswered.
+    /// The transport a device gets when it is selected: the route most likely to carry a
+    /// picture, rather than the one that happens to be first in the list.
     /// </summary>
-    private void UpdateLiveTransportLabels(SavedDevice? device)
+    /// <remarks>
+    /// RTSP is the standard route and the field exception — reachable at 3 of our 17
+    /// Hikvision sites against the SDK port's 14 — so an RTSP default meant ▶ Play painted a
+    /// black pane at most recorders and only an operator who already knew about the dropdown
+    /// ever saw video. SDK is therefore the default wherever it can work at all, and the two
+    /// cases below are the ones where it cannot: a non-Hikvision recorder (Dahua's DHNetSDK
+    /// is not implemented and Nx has no SDK port), and a workstation with no HCNetSDK.dll,
+    /// which arrives with iVMS-4200 rather than with DVRTool. Both fall back to RTSP, which
+    /// is then genuinely the only route this install has.
+    /// </remarks>
+    private static LiveTransport DefaultLiveTransport(SavedDevice device) =>
+        device.VendorKind == Vendor.Hikvision && SdkRuntime.IsInstalled
+            ? LiveTransport.Sdk
+            : LiveTransport.Rtsp;
+
+    /// <summary>
+    /// Points the transport row at this device: the default route selected, and both entries
+    /// named after the ports this device actually uses. The numbers are per-device and
+    /// operators do move them, so a bare "RTSP / SDK" would leave the one question the row
+    /// exists to answer — which port has to be open — unanswered.
+    /// </summary>
+    private void UpdateLiveTransportForDevice(SavedDevice? device)
     {
         if (device is null)
         {
@@ -62,9 +83,16 @@ public partial class MainWindow
             return;
         }
         LiveTransportRtsp.Content = $"RTSP {device.RtspPort}";
-        LiveTransportSdk.Content = device.VendorKind == Vendor.Hikvision
-            ? $"SDK {device.SdkPort}"
-            : "SDK (Hikvision only)";
+        LiveTransportSdk.Content = device.VendorKind != Vendor.Hikvision
+            ? "SDK (Hikvision only)"
+            : SdkRuntime.IsInstalled
+                ? $"SDK {device.SdkPort}"
+                : $"SDK {device.SdkPort} (not installed)";
+
+        // Deliberately re-derived per device rather than remembered: picking a recorder is
+        // also picking which of its ports is open, and an RTSP choice made for one site is
+        // not a statement about the next one.
+        LiveTransportCombo.SelectedIndex = (int)DefaultLiveTransport(device);
     }
 
     private LiveTransport SelectedLiveTransport =>

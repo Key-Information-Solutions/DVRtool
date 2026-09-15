@@ -318,6 +318,36 @@ public sealed class SdkRuntime : IDisposable
 
     private SdkRuntime(string sdkDirectory) => SdkDirectory = sdkDirectory;
 
+    private static bool? _installed;
+
+    /// <summary>
+    /// Whether HCNetSDK can be found on this machine — asked without loading anything.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The SDK ships with iVMS-4200 / HikCentral rather than with DVRTool, so "is it here at
+    /// all" is a real question on a fresh workstation, and one the GUI has to answer before it
+    /// can offer the SDK transport as a camera's default route rather than as a click.
+    /// </para>
+    /// <para>
+    /// The answer is cached for the process: an install that appears mid-session is not worth
+    /// probing the file system for on every device click, and it is picked up on the next run.
+    /// A true here is "the DLL is where <see cref="Acquire"/> will look", not "the SDK
+    /// initialized" — that can still fail, and says so when it does.
+    /// </para>
+    /// </remarks>
+    public static bool IsInstalled => _installed ??= ProbeInstalled();
+
+    private static bool ProbeInstalled()
+    {
+        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
+            return false;
+        if (_loadedFrom is not null)
+            return true;
+        string? dir = Environment.GetEnvironmentVariable("OCB_SDK_DIR") ?? ProbeForDirectory();
+        return dir is not null && File.Exists(Path.Combine(dir, "HCNetSDK.dll"));
+    }
+
     /// <summary>
     /// Initializes (or joins) the SDK. <paramref name="sdkDirectory"/> null means: use
     /// <c>OCB_SDK_DIR</c>, else probe the usual install locations.
@@ -369,7 +399,7 @@ public sealed class SdkRuntime : IDisposable
     {
         string? dir = requested
             ?? Environment.GetEnvironmentVariable("OCB_SDK_DIR")
-            ?? ProbePaths.FirstOrDefault(p => File.Exists(Path.Combine(p, "HCNetSDK.dll")));
+            ?? ProbeForDirectory();
 
         if (dir is null)
             throw new NvrException(
@@ -382,6 +412,9 @@ public sealed class SdkRuntime : IDisposable
 
         return Path.GetFullPath(dir);
     }
+
+    private static string? ProbeForDirectory() =>
+        ProbePaths.FirstOrDefault(p => File.Exists(Path.Combine(p, "HCNetSDK.dll")));
 
     /// <summary>
     /// Loads HCNetSDK and its plugin set by absolute path.

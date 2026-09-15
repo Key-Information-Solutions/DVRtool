@@ -22,6 +22,12 @@ and the traps in the implementation. Read it before touching
   `SDK <port>`), and the CLI has `dvrtool live`, which records to a file. The Live tab also
   has a **Grid** mode — every camera of the system at once on sub streams, 16 per page,
   double-click for the main stream (§7), a **fullscreen** toggle and a **wheel zoom** (§8).
+- **SDK is the default the Live tab opens on** (2026-09-15, `MainWindow.DefaultLiveTransport`),
+  re-derived each time a device is selected. The numbers above are the reason: an RTSP default
+  meant ▶ Play painted a black pane at most of the fleet unless the operator already knew to
+  change a dropdown. It falls back to RTSP for the two cases where the SDK cannot carry video
+  at all — a non-Hikvision recorder, and a machine with no `HCNetSDK.dll` (`SdkRuntime.IsInstalled`,
+  which probes for the DLL without loading it).
 - **The wheel zoom is a crop, and VLC's documented crop syntax is wrong.** LibVLC 3.0.21
   parses the documented `WxH+X+Y` window form and then applies it as though it were the
   four-sided *border* form, so a real zoom computes a negative visible size and paints the
