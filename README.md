@@ -227,9 +227,18 @@ displays it). **Import CSV…** reads the supported iVMS Person export — the c
 expiry — a deliberately partial path, and the app says so each time. **Clear map** drops
 the cached names.
 
-The tab is read-only toward the panels on purpose: granting or revoking changes physical
-door access, so those writes live only in the CLI, behind an explicit `--force` and a
-read-back verification (see CLI automation). Nothing here writes back toward iVMS.
+**Revoking a fob** is the one write the tab makes, and it is gated the way the CLI's
+`--force` gates it. Select a roster row (or type a fob number) and press **Revoke…**: the
+panels are re-read first, so the confirmation names the doors that exist now rather than the
+ones the grid was showing; the dialog lists every panel and door the write would close and
+defaults to No; each write is then **read back** and reported, because a write the SDK
+acknowledged is not proof the door changed. A panel that could not be read is not written to,
+and the tab says so — the fob may still be active there, and "access removed" is a
+conclusion only a complete read supports.
+
+Granting stays in the CLI. A grant needs a door set, a validity window and a right plan, and
+getting the door/right-plan pairing wrong silently produces a card that opens nothing — a
+toolbar is the wrong place for that. Nothing here writes back toward iVMS.
 
 ## CLI automation
 
@@ -443,8 +452,9 @@ dvrtool access revoke  --card 9001 --force
 ```
 
 The read verbs (`panels`, `roster`, `cards`, `find`, `compare`, `export`) are the same
-reads the Access tab surfaces, from a shell instead of a grid; `grant` and `revoke` are
-the writes the tab deliberately does not offer. Cardholder names come in one-way from iVMS
+reads the Access tab surfaces, from a shell instead of a grid; `revoke` is the same write
+the tab's **Revoke…** button makes, and `grant` is the one the tab deliberately does not
+offer. Cardholder names come in one-way from iVMS
 the same way the Access tab imports them — the `access identity` verbs (`--import-csv` for
 the supported Person export, `--import-ivms` for the live database, plus `--capture-key`,
 `--where`, `--clear`) build a DVRTool-owned map that the read verbs apply automatically.
@@ -471,9 +481,10 @@ run: they print what they would change and exit non-zero. With `--force` they wr
 **read the fob back**, printing the state the device actually holds — a write the SDK
 acknowledged is not proof the door changed. Revoking targets only panels that actually hold
 the fob, and a revoke is `byCardValid = 0`, which is the device's own delete mechanism — the
-record disappears outright rather than lingering as deactivated. These writes are the reason
-the Access tab stays read-only: a button nobody has to confirm is the wrong home for a change
-to a physical door.
+record disappears outright rather than lingering as deactivated. The Access tab's
+**Revoke…** button does exactly this, with its confirmation dialog standing in for
+`--force`; `grant` has no button, because a door set plus a right plan is not something to
+get wrong from a toolbar.
 
 A fob granted without `--valid-until` never expires, so `grant` says so; every fob iVMS
 provisioned on these panels carries a window.

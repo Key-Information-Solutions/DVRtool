@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 using DVRTool.Core;
 using DVRTool.Vendors.HikvisionAccess;
 using DVRTool.Vendors.HikvisionIvms;
@@ -14,9 +15,12 @@ namespace DVRTool.App;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Read-only toward the panels on purpose. Granting or revoking changes physical door
-/// access, and the CLI gates those behind an explicit <c>--force</c> plus a read-back
-/// verification — a button in a tab is the wrong place for a write nobody has to confirm.
+/// Revoking a fob is the one write this tab makes, and it is gated the way the CLI's
+/// <c>--force</c> gates it: the fleet is re-read first, a confirmation names every panel and
+/// door the write would close and defaults to No, and each write is read back before it is
+/// reported. Granting stays in the CLI — a grant needs a door set, a validity window and a
+/// right plan, and getting the door/right-plan pairing wrong silently produces a card that
+/// opens nothing (<c>docs/hikvision-access-control-findings.md</c>).
 /// </para>
 /// <para>
 /// Cardholder names are imported one-way from iVMS (iVMS → DVRTool). The panels store no
@@ -264,6 +268,253 @@ public partial class MainWindow
         SetStatus($"PARTIAL — {roster.Entries.Count} fob(s) from {ok} of " +
                   $"{roster.Panels.Count} panel(s); see the warning above.");
     }
+
+    // ----- revoke (the one write this tab makes) -----
+
+    /// <summary>
+    /// Keeps the fob box pointed at whatever row the operator is looking at, so "Revoke…" acts
+    /// on the line they just clicked rather than on whatever was typed three minutes ago.
+    /// </summary>
+    private void OnAccessRowSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (AccessGrid.SelectedItem is AccessRow row)
+            AccessRevokeCardBox.Text = row.Card;
+    }
+
+    private async void OnRevokeCard(object sender, RoutedEventArgs e) =>
+        await RunAccessWorkAsync(RevokeCardAsync);
+
+    /// <summary>
+    /// Revokes one fob everywhere it is currently active: read the fleet, show the operator
+    /// exactly which doors are about to close, write only on confirmation, verify every write
+    /// by reading the card back, then re-read the fleet so the grid shows the result rather
+    /// than the intention.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The fresh read is not a formality. The grid may be minutes old, somebody else may have
+    /// re-granted the fob from iVMS since, and a confirmation dialog that names doors has to
+    /// name the doors that exist now. It also means a panel that has gone unreachable is
+    /// reported as unreachable at the moment of the write.
+    /// </para>
+    /// <para>
+    /// The dialog is the GUI's <c>--force</c>: the CLI refuses a revoke without an explicit
+    /// flag because the write closes a physical door, and the equivalent here is a confirmation
+    /// that lists every panel and door it will take away and defaults to No.
+    /// </para>
+    /// </remarks>
+    private async Task RevokeCardAsync(CancellationToken ct)
+    {
+        int gen = ++_accessGen;
+        string card = AccessRevokeCardBox.Text.Trim();
+        if (card.Length == 0)
+        {
+            SetStatus("Enter a fob number to revoke, or select a row in the roster.");
+            return;
+        }
+        if (!TryGetPanelSettings(out var settings))
+            return;
+
+        CardRevokePlan plan;
+        try
+        {
+            SetStatus($"Reading {settings.Panels.Count} panel(s) to see where fob {card} is active …");
+            var roster = await ReadRosterAsync(settings, ct);
+            if (gen != _accessGen)
+                return;
+
+            BindPanelSerials(roster, settings.Panels);
+            var map = TryLoadIdentityMap();
+            var shown = map is null ? roster : roster.EnrichWith(map);
+            ShowRoster(shown);
+            plan = CardRevokePlan.For(shown, card);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (gen != _accessGen)
+                return;
+            SetStatus($"Revoke aborted — the panels could not be read: {Shorten(ex.Message)}");
+            return;
+        }
+
+        if (!plan.HasWork)
+        {
+            // Deliberately not "this fob has no access": a panel that did not answer could
+            // still be letting it through, and that distinction is the whole point of the tab.
+            string what = plan.NotFound
+                ? $"Fob {plan.CardNo} is not on any panel that answered."
+                : $"Fob {plan.CardNo} is already revoked on {Panels(plan.AlreadyRevoked)}.";
+            SetStatus(plan.IsPartial
+                ? $"{what} Nothing written — but {plan.Unreadable.Count} panel(s) could not be " +
+                  "read, so it may still be active there."
+                : $"{what} Nothing to write.");
+            return;
+        }
+
+        if (_cleanupStarted)
+            return;
+        if (MessageBox.Show(this, DescribeRevoke(plan),
+                "DVRTool — revoke fob", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        {
+            SetStatus($"Revoke canceled — fob {plan.CardNo} was not touched.");
+            return;
+        }
+
+        try
+        {
+            SetStatus($"Revoking fob {plan.CardNo} on {plan.Revokes.Count} panel(s) …");
+            var outcomes = await ApplyRevokeAsync(settings, plan, ct);
+            if (gen != _accessGen)
+                return;
+
+            // The grid still shows the pre-write read; replace it with what the panels hold now
+            // rather than leaving a revoked fob displayed as valid.
+            var after = await ReadRosterAsync(settings, ct);
+            if (gen != _accessGen)
+                return;
+            var map = TryLoadIdentityMap();
+            ShowRoster(map is null ? after : after.EnrichWith(map));
+
+            ReportRevoke(plan, outcomes);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (gen != _accessGen)
+                return;
+            SetStatus($"Revoke failed: {Shorten(ex.Message)}");
+        }
+    }
+
+    /// <summary>What one panel did when it was told to revoke.</summary>
+    private sealed record RevokeOutcome(string PanelHost, bool Ok, string Message);
+
+    /// <summary>
+    /// Performs the writes, one fresh connection per panel, each re-verified and each read back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The identity check is repeated on the write connection rather than trusted from the read
+    /// pass: this is a second login, and between the two the address could be answering
+    /// somewhere else entirely. A panel that fails it is recorded as a failure and the remaining
+    /// panels are still written — each is its own verified address, and refusing them would
+    /// leave a departing holder with live access because a *different* controller moved.
+    /// </para>
+    /// <para>
+    /// A write the SDK acknowledged is not proof the door closed, so the card is read back and
+    /// the outcome is what the panel now holds, not what we sent. Same worker-thread reason as
+    /// the roster read: the client's constructor and Dispose both block.
+    /// </para>
+    /// </remarks>
+    private static Task<IReadOnlyList<RevokeOutcome>> ApplyRevokeAsync(
+        PanelConnectionSettings settings, CardRevokePlan plan, CancellationToken ct) =>
+        Task.Run<IReadOnlyList<RevokeOutcome>>(async () =>
+        {
+            var outcomes = new List<RevokeOutcome>();
+            foreach (var target in plan.Revokes)
+            {
+                ct.ThrowIfCancellationRequested();
+                var entry = settings.Panels.FirstOrDefault(p =>
+                    string.Equals(p.Panel.Label, target.PanelHost, StringComparison.OrdinalIgnoreCase));
+                if (entry is null)
+                {
+                    outcomes.Add(new RevokeOutcome(target.PanelHost, false,
+                        "the panel dropped out of the list between the read and the write"));
+                    continue;
+                }
+
+                try
+                {
+                    using var client = settings.Connect(entry);
+                    var info = await client.GetDeviceInfoAsync(ct);
+                    DeviceIdentityGuard.Ensure(DeviceIdentityGuard.Check(
+                        DeviceIdentityGuard.AddressOf(entry.Panel), info,
+                        entry.ExpectedSerial, entry.Record?.Name));
+
+                    await client.RevokeCardAsync(plan.CardNo, ct);
+
+                    var after = await client.GetCardAsync(plan.CardNo, ct);
+                    bool gone = after is null || !after.Valid;
+                    outcomes.Add(new RevokeOutcome(target.PanelHost, gone,
+                        gone
+                            ? $"verified — fob {plan.CardNo} is {(after is null ? "gone" : "revoked")}"
+                            : $"NOT VERIFIED — fob {plan.CardNo} still reads valid " +
+                              $"(doors {after!.DoorSummary})"));
+                }
+                catch (Exception ex) when (ex is NvrException or ArgumentException
+                                               or DeviceIdentityException)
+                {
+                    outcomes.Add(new RevokeOutcome(target.PanelHost, false, ex.Message));
+                }
+            }
+            return outcomes;
+        }, ct);
+
+    /// <summary>The confirmation text: every door this closes, and everything it cannot promise.</summary>
+    private static string DescribeRevoke(CardRevokePlan plan)
+    {
+        string who = plan.Name is { Length: > 0 } name ? $"fob {plan.CardNo} ({name})" : $"fob {plan.CardNo}";
+        var text =
+            $"Revoke {who} on {plan.Revokes.Count} panel(s)?\n\n" +
+            string.Join("\n", plan.Revokes.Select(r => $"  {r.PanelHost} — doors {r.DoorSummary}")) +
+            "\n\nThis removes physical door access. Each write is read back and reported.";
+
+        if (plan.AlreadyRevoked.Count > 0)
+            text += $"\n\nAlready revoked on {Panels(plan.AlreadyRevoked)} — left alone.";
+        if (plan.IsPartial)
+        {
+            text +=
+                "\n\nPARTIAL — " +
+                string.Join("; ", plan.Unreadable.Select(p =>
+                    $"{p.PanelHost}: {Shorten(p.Error ?? "unreadable")}")) +
+                ". Those panels are not part of this write, and the fob may stay active on them.";
+        }
+        return text;
+    }
+
+    /// <summary>Reports what the panels actually did — failures first, and never as a footnote.</summary>
+    private void ReportRevoke(CardRevokePlan plan, IReadOnlyList<RevokeOutcome> outcomes)
+    {
+        var failed = outcomes.Where(o => !o.Ok).ToList();
+        int ok = outcomes.Count - failed.Count;
+
+        if (failed.Count == 0 && !plan.IsPartial)
+        {
+            AccessWarning.Text = "";
+            AccessWarning.Visibility = Visibility.Collapsed;
+            SetStatus($"Revoked fob {plan.CardNo} on {ok} panel(s); every write verified.");
+            return;
+        }
+
+        var parts = new List<string>();
+        if (failed.Count > 0)
+        {
+            parts.Add($"fob {plan.CardNo} was NOT revoked on " +
+                      string.Join("; ", failed.Select(f => $"{f.PanelHost}: {Shorten(f.Message)}")));
+        }
+        if (plan.IsPartial)
+        {
+            parts.Add($"{plan.Unreadable.Count} panel(s) could not be read (" +
+                      string.Join(", ", plan.Unreadable.Select(p => p.PanelHost)) +
+                      "), so this fob may still be active there");
+        }
+
+        AccessWarning.Text =
+            $"REVOKE INCOMPLETE — {string.Join(". ", parts)}. " +
+            $"{ok} panel(s) were revoked and verified. Access has not been removed everywhere.";
+        AccessWarning.Visibility = Visibility.Visible;
+        SetStatus($"Revoke incomplete — {ok} of {plan.Revokes.Count} panel(s) written; " +
+                  "see the warning above.");
+    }
+
+    private static string Panels(IReadOnlyList<string> hosts) => string.Join(", ", hosts);
 
     // ----- cardholder names (one-way iVMS → DVRTool) -----
 

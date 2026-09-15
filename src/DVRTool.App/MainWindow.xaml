@@ -1,4 +1,4 @@
-<Window x:Class="DVRTool.App.MainWindow"
+﻿<Window x:Class="DVRTool.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
@@ -418,8 +418,8 @@
                                         <LineBreak/>
                                         <Bold>Access control</Bold> — the fobs on the door panels, one row<LineBreak/>
                                         per fob, one column per panel. Names come from the iVMS<LineBreak/>
-                                        import on the Access tab. Reads only; grants and revokes<LineBreak/>
-                                        stay in the CLI behind --force.
+                                        import on the Access tab. Reads only — revoke a fob on the<LineBreak/>
+                                        Access tab; grants stay in the CLI behind --force.
                                     </TextBlock>
                                 </ComboBox.ToolTip>
                             </ComboBox>
@@ -495,6 +495,29 @@
                                    TextWrapping="Wrap" Foreground="DarkRed" FontWeight="Bold"
                                    Visibility="Collapsed"/>
 
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2,6,2,0">
+                            <TextBlock Text="Fob " VerticalAlignment="Center"/>
+                            <TextBox x:Name="AccessRevokeCardBox" Width="110"
+                                     VerticalAlignment="Center"
+                                     ToolTip="Selecting a row in the roster fills this in; a fob that is not on screen can be typed."/>
+                            <Button Content="Revoke…" Click="OnRevokeCard" Margin="6,0,0,0"
+                                    Padding="10,2">
+                                <Button.ToolTip>
+                                    <TextBlock>
+                                        Invalidates this fob on every panel that currently holds it active —<LineBreak/>
+                                        the panels are re-read first, the confirmation names every door it<LineBreak/>
+                                        closes, and each write is read back and reported.<LineBreak/>
+                                        <LineBreak/>
+                                        This removes physical door access. A panel that cannot be read is<LineBreak/>
+                                        not written to, and the fob may stay active on it.
+                                    </TextBlock>
+                                </Button.ToolTip>
+                            </Button>
+                            <TextBlock VerticalAlignment="Center" Margin="10,0,0,0"
+                                       Foreground="Gray"
+                                       Text="Revoking closes doors. The panels are re-read first and the confirmation names every door."/>
+                        </StackPanel>
+
                         <GroupBox DockPanel.Dock="Bottom" Margin="0,6,0,0"
                                   Header="Cardholder names (from iVMS)">
                             <Grid Margin="4">
@@ -557,7 +580,8 @@
                         </GroupBox>
 
                         <DataGrid x:Name="AccessGrid" AutoGenerateColumns="False" IsReadOnly="True"
-                                  CanUserAddRows="False" Margin="0,4">
+                                  CanUserAddRows="False" Margin="0,4"
+                                  SelectionChanged="OnAccessRowSelected">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Card" Width="110"
                                                     Binding="{Binding Card}"/>

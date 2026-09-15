@@ -167,6 +167,40 @@ Results:
   iVMS provisioned here carries a ~10-year window, so `grant` prints a notice when no
   `--valid-until` is given.
 
+## 5b. Write path in the GUI — revoke (2026-09-15)
+
+The desktop Access tab makes exactly one write: **Revoke…**, on the row selected in the roster
+(or on a fob number typed into the box next to it). It is the same `RevokeCardAsync` the CLI's
+`access revoke --force` calls, wrapped in the same discipline:
+
+1. **Re-read the fleet first.** The grid may be minutes old and somebody may have re-granted the
+   fob from iVMS since. `CardRevokePlan.For` (Core, pure, unit-tested) then works out which panels
+   hold it *active* — those are the writes — which already have it revoked, and which did
+   not answer.
+2. **Confirm against the plan.** The dialog names every panel and its door list, defaults to No,
+   and repeats the PARTIAL warning verbatim when a panel could not be read. That dialog is the
+   GUI's `--force`.
+3. **One fresh connection per panel, identity re-verified on it** — not trusted from the read
+   pass, since the write is a second login and the address could be answering elsewhere by then. A
+   panel that fails the check is recorded as a failure and the *other* panels are still written:
+   each is its own verified address, and refusing them would leave a departing holder with live
+   access because a different controller moved. (The CLI aborts the whole verb instead, because
+   there the check happens before any write has been made.)
+4. **Read the fob back per panel**, then re-read the fleet so the grid shows the result rather than
+   the intention. Per §5a a revoked card is *gone* from the enumeration, so the expected
+   outcome is the row disappearing — both "gone" and "present but invalid" count as verified.
+5. Anything short of complete — a failed write, or a panel that never answered — raises the
+   red warning bar and says plainly that access has not been removed everywhere.
+
+The plan type's `AlreadyRevoked` list is therefore near-dead on DS-K firmware (a revoked card does
+not linger), and is kept for the vendors that do deactivate in place.
+
+`grant` has no button. A grant needs a door set, a validity window and a right plan, and the
+door/right-plan pairing (§7) is the trap that silently produces a card that opens nothing —
+not something to get wrong from a toolbar.
+
+**Not yet fired live from the GUI.** The CLI path is the one the 2026-08-19 canary exercised.
+
 ## 6. Deployment
 
 The relay host has .NET 5/6/8 but not 10, so the CLI must be published self-contained:
