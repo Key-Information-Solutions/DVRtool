@@ -1,4 +1,4 @@
-﻿<Window x:Class="DVRTool.App.MainWindow"
+<Window x:Class="DVRTool.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
@@ -440,7 +440,8 @@
 
                 <TabItem Header="Access">
                     <DockPanel>
-                        <ToolBar DockPanel.Dock="Top">
+                        <StackPanel DockPanel.Dock="Top">
+                        <ToolBar>
                             <TextBlock Text="Panels " VerticalAlignment="Center"/>
                             <local:DevicePicker x:Name="AccessPanelsPicker" Width="150">
                                 <local:DevicePicker.ToolTip>
@@ -458,7 +459,7 @@
                                     <TextBlock>
                                         Extra one-off panel addresses, comma separated<LineBreak/>
                                         (e.g. 192.0.2.221,192.0.2.222) — read alongside the saved<LineBreak/>
-                                        panels, using the User/Password/SDK port boxes to the right.<LineBreak/>
+                                        panels, using the User/Password/SDK port boxes on the row below.<LineBreak/>
                                         <LineBreak/>
                                         Add a port to an entry when several controllers sit behind one address<LineBreak/>
                                         (10.0.0.5,10.0.0.5:8001) — the port is then the only thing telling them<LineBreak/>
@@ -472,15 +473,18 @@
                                     </TextBlock>
                                 </TextBox.ToolTip>
                             </TextBox>
-                            <TextBlock Text=" User " VerticalAlignment="Center"/>
-                            <TextBox x:Name="AccessUserBox" Width="85"/>
+                            <Button Content="Load roster" Click="OnLoadRoster" Margin="8,0,0,0"/>
+                        </ToolBar>
+                        <ToolBar>
+                            <TextBlock Text="User " VerticalAlignment="Center"/>
+                            <TextBox x:Name="AccessUserBox" Width="110"/>
                             <TextBlock Text=" Password " VerticalAlignment="Center"/>
-                            <PasswordBox x:Name="AccessPassBox" Width="85"/>
+                            <PasswordBox x:Name="AccessPassBox" Width="110"/>
                             <TextBlock Text=" SDK port " VerticalAlignment="Center"
                                        ToolTip="Default SDK port for panel entries that do not carry one."/>
                             <TextBox x:Name="AccessPortBox" Width="45" Text="8000"/>
                             <TextBlock Text=" SDK dir " VerticalAlignment="Center"/>
-                            <TextBox x:Name="AccessSdkDirBox" Width="110">
+                            <TextBox x:Name="AccessSdkDirBox" Width="200">
                                 <TextBox.ToolTip>
                                     <TextBlock>
                                         Optional. Folder holding HCNetSDK.dll — iVMS-4200 and HikCentral<LineBreak/>
@@ -488,8 +492,8 @@
                                     </TextBlock>
                                 </TextBox.ToolTip>
                             </TextBox>
-                            <Button Content="Load roster" Click="OnLoadRoster" Margin="8,0,0,0"/>
                         </ToolBar>
+                        </StackPanel>
 
                         <TextBlock x:Name="AccessWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
                                    TextWrapping="Wrap" Foreground="DarkRed" FontWeight="Bold"
