@@ -199,7 +199,9 @@ not linger), and is kept for the vendors that do deactivate in place.
 door/right-plan pairing (§7) is the trap that silently produces a card that opens nothing —
 not something to get wrong from a toolbar.
 
-**Not yet fired live from the GUI.** The CLI path is the one the 2026-08-19 canary exercised.
+**Fired live from the GUI on 2026-09-15**, in 1.1.3, against a customer fleet — a real
+cardholder revoke, not a canary. Until then only the CLI path had been exercised live
+(the 2026-08-19 throwaway-fob round trip, §5a).
 
 ## 6. Deployment
 

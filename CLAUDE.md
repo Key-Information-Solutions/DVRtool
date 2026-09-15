@@ -116,7 +116,8 @@ device, `FleetMatrix.cs` in Core) where an unreadable device shows "?" and is ex
 status, never read as "missing". Both go through `src/DVRTool.Vendors.HikvisionAccess`, which rides the shared
 HCNetSDK P/Invoke surface in `src/DVRTool.Vendors.HikvisionSdk` (SDK port, 8000 by default). Reads and writes are both live-verified against Site A's
 three OCB panels (writes via an approved canary round trip on a throwaway fob, rolled back
-clean; the GUI tab's only write is the revoke, and no GUI revoke has been fired live).
+clean; the GUI tab's only write is the revoke, fired live from 1.1.3 on a customer fleet
+2026-09-15).
 Read `docs/hikvision-access-control-findings.md` before touching it — notably: these panels store **no
 cardholder names**, and `dwModifyParamType` plus the door/right-plan pairing are the two traps that
 silently produce a card that never opens a door.
