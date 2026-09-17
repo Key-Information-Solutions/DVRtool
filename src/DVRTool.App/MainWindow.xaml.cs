@@ -700,6 +700,9 @@ public partial class MainWindow : Window
         UsersGrid.ItemsSource = null;
         UsersWarning.Text = "";
         UsersWarning.Visibility = Visibility.Collapsed;
+
+        // The write plans against a fresh read, so it is unavailable until there is one.
+        UpdateAddUserButton([]);
     }
 
     private async void OnLoadUsers(object sender, RoutedEventArgs e)
@@ -766,6 +769,19 @@ public partial class MainWindow : Window
         if (gen != _usersGen)
             return;
 
+        ShowAccountMatrix(results);
+
+        // The write button follows the fleet that was actually read, so an add is always
+        // planned against recorders this grid is describing.
+        UpdateAddUserButton(devices);
+    }
+
+    /// <summary>
+    /// Renders account reads into the grid. Split from the read so the Users tab's write can
+    /// re-render from the reads it already did, rather than reading the fleet a third time.
+    /// </summary>
+    private void ShowAccountMatrix(IReadOnlyList<DeviceUsersResult> results)
+    {
         var matrix = UserMatrix.Build(results);
         var readable = matrix.Devices.Select(d => d.Ok).ToList();
         ShowFleetMatrix(

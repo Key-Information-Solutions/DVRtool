@@ -102,6 +102,29 @@ a blank serial is *unverifiable*, never a match; `AccessCard.PanelHost` is the
 `DeviceIdentityException` is deliberately not an `NvrException`, so per-device "carry on with
 the rest" handlers do not swallow it.
 
+**User accounts** (2026-09-17, `docs/user-management.md`): the recorders' own login accounts —
+the GUI **Users** tab in DVR/NVR mode and `dvrtool users list | add`. Reads are Hikvision and
+Dahua; **writes are Hikvision only and add-only**, because creating an account cannot lock
+anyone out of a customer recorder and delete/password/level all can. `IUserAdminClient` is a
+sibling of `IUserManagementClient` (the `IDeviceConfigWriter` split, for the same reason), and
+both front ends ask before offering the button. `UserAddPlan` (Core, pure) is the one piece of
+arithmetic both the `--force` prompt and the GUI's default-to-No dialog describe the write from:
+a recorder that already holds the name goes to `AlreadyPresent` **with the level it holds** and
+is never written — add-only quietly becoming modify is what would hand somebody rights nobody
+chose to give them. The password is prompted once per run, applied to every recorder so the
+accounts genuinely match, and **never stored** — there is deliberately no `--password` flag.
+Read the doc before touching it — notably: the create sends **`<id>0</id>`** as a placeholder
+because the device assigns the id; a refused password arrives as **HTTP 200** with a non-1
+`statusCode` and `subStatusCode=riskPassword`, so a create that checks only the HTTP status
+reports success for an account that was never made (`DescribeRejection` carries the device's
+words through verbatim); `/ISAPI/Security/UserPermission/<id>` is deliberately **not** written,
+since `userLevel` carries the default permission set and a guessed permission document is the
+difference between an account that works and one that silently opens nothing; and there is **no
+undo in DVRTool** — an account is removed on the recorder's own web UI, so canaries belong on
+the lab recorder. One GUI trap: `ShowFleetMatrix` sets its own summary status, so a status set
+before re-rendering the grid is overwritten — render first, then speak. **No real create has
+been fired yet**; everything else is verified live on Site A's pair (2026-09-17).
+
 **Access control:** Hikvision/OEM door panels are surfaced primarily in the GUI Access tab
 (`src/DVRTool.App`, `MainWindow.Access.cs`) for viewing rosters and importing cardholder names; the
 `access` CLI command group provides the same reads **plus** the gated writes (`grant`/`revoke`) for

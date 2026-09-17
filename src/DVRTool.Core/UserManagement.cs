@@ -32,3 +32,28 @@ public interface IUserManagementClient
 {
     Task<IReadOnlyList<NvrUser>> GetUsersAsync(CancellationToken ct = default);
 }
+
+/// <summary>An account to create, as the operator asked for it.</summary>
+/// <param name="Password">
+/// Held only for the duration of the write. It is never persisted, never logged and never
+/// read back — both vendors treat passwords as write-only, so the tool can confirm that an
+/// account exists but never that two accounts share a password.
+/// </param>
+public sealed record NewUser(string Name, string Password, UserRole Role);
+
+/// <summary>
+/// Opt-in capability: create accounts. Split from <see cref="IUserManagementClient"/> for the
+/// same reason <see cref="IDeviceConfigWriter"/> is split from <see cref="IDeviceConfigClient"/>
+/// — a vendor that can be read is not thereby a vendor that can be written, and a front end
+/// must be able to ask which it has before it offers the button.
+/// </summary>
+public interface IUserAdminClient : IUserManagementClient
+{
+    /// <summary>
+    /// Creates <paramref name="user"/> and returns the account <b>read back off the device</b>,
+    /// never the one that was asked for: the recorder assigns the id, and it may keep a
+    /// different level than the one requested. A create that the device accepts but that leaves
+    /// no account behind is a failure, not a success.
+    /// </summary>
+    Task<NvrUser> CreateUserAsync(NewUser user, CancellationToken ct = default);
+}

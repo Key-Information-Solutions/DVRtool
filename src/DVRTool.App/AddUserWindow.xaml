@@ -1,0 +1,62 @@
+<Window x:Class="DVRTool.App.AddUserWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add user" Height="330" Width="430"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="110"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Recorders" VerticalAlignment="Center"/>
+        <TextBlock x:Name="TargetText" Grid.Row="0" Grid.Column="1" Margin="0,3"
+                   TextWrapping="Wrap" Foreground="Gray"/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Account" VerticalAlignment="Center"/>
+        <TextBox x:Name="NameBox" Grid.Row="1" Grid.Column="1" Margin="0,3"
+                 TextChanged="OnInputChanged"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Level" VerticalAlignment="Center"/>
+        <ComboBox x:Name="RoleCombo" Grid.Row="2" Grid.Column="1" Margin="0,3" SelectedIndex="0">
+            <ComboBoxItem Content="Operator"/>
+            <ComboBoxItem Content="Viewer"/>
+            <ComboBoxItem Content="Administrator"/>
+            <ComboBox.ToolTip>
+                <TextBlock>
+                    The recorder's own account level, which carries its default<LineBreak/>
+                    permission set. Fine-grained per-channel rights are not written<LineBreak/>
+                    here — set those on the recorder if you need them.
+                </TextBlock>
+            </ComboBox.ToolTip>
+        </ComboBox>
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Password" VerticalAlignment="Center"/>
+        <PasswordBox x:Name="PasswordBox1" Grid.Row="3" Grid.Column="1" Margin="0,3"
+                     PasswordChanged="OnInputChanged"/>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Confirm" VerticalAlignment="Center"/>
+        <PasswordBox x:Name="PasswordBox2" Grid.Row="4" Grid.Column="1" Margin="0,3"
+                     PasswordChanged="OnInputChanged"/>
+
+        <TextBlock x:Name="ComplaintText" Grid.Row="5" Grid.Column="1" Margin="0,6,0,0"
+                   TextWrapping="Wrap" Foreground="DarkRed" VerticalAlignment="Top"/>
+
+        <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,8,0,0">
+            <Button x:Name="OkButton" Content="Continue…" Click="OnOk" IsDefault="True"
+                    Width="96" Margin="0,0,6,0" IsEnabled="False"
+                    ToolTip="Nothing is written yet — the next step names every recorder and asks."/>
+            <Button Content="Cancel" Click="OnCancel" IsCancel="True" Width="76"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -199,12 +199,24 @@ download and says where it is: it is minutes of transfer, and VLC opens it.
 
 ### Users
 
-Pick a device, optionally a second to **compare with**, and **Load** reads the account
-list from each. The grid is **read-only** — user, the level on device A, the level on
-device B, and a status (match, level differs, or present on only one). This is an account
-**audit and comparison** view for spotting drift across the fleet; it does not create,
-modify or delete accounts. Reading users opens its own short-lived connections, so it
-never disturbs the Live or Playback session on the selected device.
+Pick one or more recorders and **Load** reads the account list from each: a row per
+account, a column per recorder, and a status (on all, missing on some, level differs).
+An unreadable recorder shows **?** rather than a blank, and is left out of every row's
+status — an account on a recorder that did not answer is unknown, not absent. Reading
+users opens its own short-lived connections, so it never disturbs the Live or Playback
+session on the selected device.
+
+**Add user…** creates one account on every selected recorder that does not already have
+it. The recorders are re-read first, the confirmation names each one and defaults to No,
+and every write is read back and reported. It is **add-only**: a recorder that already
+has the name is left exactly as it is, even if its level differs, and there is no undo
+here — removing an account is done on the recorder itself. Hikvision only; the button
+says which recorder is in the way when it is disabled. The password is typed at write
+time and never stored.
+
+The same thing from the CLI is `dvrtool users list` and `dvrtool users add`, where the
+write needs `--force` and the password is prompted rather than passed as a flag. See
+`docs/user-management.md`.
 
 ### Access
 

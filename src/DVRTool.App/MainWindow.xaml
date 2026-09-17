@@ -426,6 +426,23 @@
                             <TextBlock Text=" on " VerticalAlignment="Center"/>
                             <local:DevicePicker x:Name="UsersDevices" Width="230"/>
                             <Button Content="Load" Click="OnLoadUsers" Margin="8,0,0,0"/>
+                            <Button x:Name="UsersAddButton" Content="Add user…"
+                                    Click="OnAddUser" Margin="8,0,0,0" Padding="10,2"
+                                    IsEnabled="False">
+                                <Button.ToolTip>
+                                    <TextBlock>
+                                        Creates one account on every selected recorder that does not<LineBreak/>
+                                        already have it — the recorders are re-read first, the confirmation<LineBreak/>
+                                        names each one, and every write is read back and reported.<LineBreak/>
+                                        <LineBreak/>
+                                        Add-only: a recorder that already has the name is left exactly as<LineBreak/>
+                                        it is, even if its level differs. There is no undo here — removing<LineBreak/>
+                                        an account is done on the recorder itself.<LineBreak/>
+                                        <LineBreak/>
+                                        Hikvision recorders only. Load the accounts first.
+                                    </TextBlock>
+                                </Button.ToolTip>
+                            </Button>
                         </ToolBar>
 
                         <TextBlock x:Name="UsersWarning" DockPanel.Dock="Top" Margin="2,4,2,0"

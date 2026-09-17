@@ -17,7 +17,8 @@ const string Usage = """
       info            Device model / serial / firmware
       test            Probe the web, RTSP and SDK ports and say what each one costs
       channels        List channels
-      users           List the accounts configured on the device
+      users           Login accounts: list them, or add one across a fleet
+                      (see: dvrtool users --help)
       access          Door-access panels (see: dvrtool access --help)
       storage         Disks, retention, recording schedules and bitrate planning
                       (see: dvrtool storage --help)
@@ -118,8 +119,10 @@ bool isAccess = command == "access";
 bool isStorage = command == "storage";
 bool isRecording = command == "recording";
 bool isConfig = command == "config";
+bool isUsers = command == "users";
 bool isUpdate = command == "update";
-string groupSubcommand = (isAccess || isStorage || isRecording || isConfig || isUpdate) && args.Length > 1 &&
+string groupSubcommand = (isAccess || isStorage || isRecording || isConfig || isUpdate ||
+        isUsers) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -179,6 +182,17 @@ try
         // would otherwise demand a --host this invocation has no use for.
         if (ConfigCommands.UsesSavedDevices(groupSubcommand, opts))
             return await ConfigCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
+    }
+
+    if (isUsers)
+    {
+        if (UserCommands.TryRunHelp(groupSubcommand, opts, out int usersHelpExit))
+            return usersHelpExit;
+
+        // `--all-saved` and `--device <name>` work from the GUI's saved records and build
+        // their own clients, so they run before the single-device connection below.
+        if (UserCommands.UsesSavedDevices(opts))
+            return await UserCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
     }
 
     // `test` probes ports instead of driving a client, and ConnectivityProbe disposes every
@@ -252,27 +266,7 @@ try
             return 0;
         }
         case "users":
-        {
-            if (client is not IUserManagementClient userClient)
-            {
-                Console.Error.WriteLine(
-                    $"error: user management isn't implemented for {client.Vendor} devices.");
-                return 2;
-            }
-            var users = await userClient.GetUsersAsync(cts.Token);
-            if (users.Count == 0)
-            {
-                Console.WriteLine("No users reported.");
-                return 0;
-            }
-            Console.WriteLine(
-                $"{"ID",-6}  {"NAME",-20}  {"LEVEL",-14}  {"ROLE",-9}  {"RESERVED",-8}  MEMO");
-            foreach (var u in users)
-                Console.WriteLine(
-                    $"{u.Id,-6}  {u.Name,-20}  {u.NativeLevel,-14}  {u.Role,-9}  " +
-                    $"{(u.Reserved ? "yes" : ""),-8}  {u.Memo}");
-            return 0;
-        }
+            return await UserCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "search":
         {
             int channel = RequireChannel(opts);

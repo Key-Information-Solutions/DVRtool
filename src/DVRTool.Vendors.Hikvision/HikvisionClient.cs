@@ -17,7 +17,7 @@ namespace DVRTool.Vendors.Hikvision;
 ///  - times are written "yyyy-MM-ddTHH:mm:ssZ" but the device treats them as its own
 ///    local wall-clock time, not UTC. We preserve that behavior.
 /// </summary>
-public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
+public sealed partial class HikvisionClient : INvrClient, IUserAdminClient
 {
     private const string IsapiTimeFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
     private const string RtspTimeFormat = "yyyyMMdd'T'HHmmss'Z'";
@@ -311,31 +311,6 @@ public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
     /// </summary>
     private const int DownloadPeekBytes = 16 * 1024;
 
-    public async Task<IReadOnlyList<NvrUser>> GetUsersAsync(CancellationToken ct = default)
-    {
-        var doc = await GetXmlAsync("/ISAPI/Security/users", ct);
-        var users = new List<NvrUser>();
-        if (doc.Root is null)
-            return users;
-
-        foreach (var user in ElementsNamed(doc.Root, "User"))
-        {
-            string? name = Child(user, "userName");
-            if (string.IsNullOrEmpty(name))
-                continue;
-
-            string level = Child(user, "userLevel") ?? "";
-            bool reserved =
-                string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(Descendant(user, "inherent"), "true", StringComparison.OrdinalIgnoreCase);
-
-            // ISAPI has no memo field, and passwords are never returned.
-            users.Add(new NvrUser(Child(user, "id") ?? "", name, MapUserRole(level), level, reserved));
-        }
-
-        return users;
-    }
-
     // ----- helpers -----
 
     private static int TrackId(int channel, StreamType stream) => channel * 100 + (int)stream + 1;
@@ -379,15 +354,6 @@ public sealed partial class HikvisionClient : INvrClient, IUserManagementClient
             _ => RecordingType.Unknown,
         };
     }
-
-    private static UserRole MapUserRole(string userLevel) => userLevel.Trim().ToLowerInvariant() switch
-    {
-        "administrator" => UserRole.Admin,
-        "operator" => UserRole.Operator,
-        // Some firmware localizes the third tier as "User" or "Guest".
-        "viewer" or "user" or "guest" => UserRole.Viewer,
-        _ => UserRole.Custom,
-    };
 
     private async Task<XDocument> GetXmlAsync(string path, CancellationToken ct)
     {
