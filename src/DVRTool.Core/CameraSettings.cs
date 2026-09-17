@@ -141,6 +141,78 @@ public sealed record EncodingOptions
 
     public bool AllowsQuality(string quality) => QualityControlTypes.Count == 0 ||
         QualityControlTypes.Any(q => string.Equals(q, quality, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// What several cameras will <em>all</em> accept — what a front end may offer when more than
+    /// one is selected.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Empty stays the identity element throughout, because an empty list means "this camera
+    /// declared nothing" rather than "this camera allows nothing". Intersecting a declared list
+    /// with a silent camera therefore keeps the declared one: the silent camera has no opinion
+    /// to narrow it with. Treating silence as an empty set instead would make one undeclared
+    /// camera in a selection offer the operator nothing at all.
+    /// </para>
+    /// <para>
+    /// The numeric bounds intersect the other way round, as bounds do: the tightest min/max
+    /// that satisfies every camera.
+    /// </para>
+    /// </remarks>
+    public static EncodingOptions Intersect(IEnumerable<EncodingOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var all = options.ToList();
+        if (all.Count == 0)
+            return new EncodingOptions();
+
+        return new EncodingOptions
+        {
+            Resolutions = Narrow(all.Select(o => o.Resolutions)),
+            FrameRates = Narrow(all.Select(o => o.FrameRates)),
+            // "Offer full" only where every camera that has an opinion offers it.
+            SupportsFullFrameRate = all.All(o =>
+                o.FrameRates.Count == 0 || o.SupportsFullFrameRate),
+            Codecs = NarrowText(all.Select(o => o.Codecs)),
+            QualityControlTypes = NarrowText(all.Select(o => o.QualityControlTypes)),
+            Bitrate = all.Select(o => o.Bitrate).OfType<BitrateRange>()
+                .Aggregate((BitrateRange?)null, (acc, r) => acc is null
+                    ? r
+                    : new BitrateRange(Math.Max(acc.MinKbps, r.MinKbps),
+                        Math.Min(acc.MaxKbps, r.MaxKbps))),
+            GovLength = all.Select(o => o.GovLength).OfType<ValueRange>()
+                .Aggregate((ValueRange?)null, (acc, r) => acc is null
+                    ? r
+                    : new ValueRange(Math.Max(acc.Min, r.Min), Math.Min(acc.Max, r.Max))),
+        };
+    }
+
+    private static IReadOnlyList<T> Narrow<T>(IEnumerable<IReadOnlyList<T>> lists)
+    {
+        List<T>? kept = null;
+        foreach (var list in lists)
+        {
+            if (list.Count == 0)
+                continue; // declared nothing: no opinion to narrow with
+            kept = kept is null ? [.. list] : [.. kept.Where(list.Contains)];
+        }
+        return kept ?? [];
+    }
+
+    private static IReadOnlyList<string> NarrowText(IEnumerable<IReadOnlyList<string>> lists)
+    {
+        List<string>? kept = null;
+        foreach (var list in lists)
+        {
+            if (list.Count == 0)
+                continue;
+            kept = kept is null
+                ? [.. list]
+                : [.. kept.Where(k => list.Any(v =>
+                    string.Equals(k, v, StringComparison.OrdinalIgnoreCase)))];
+        }
+        return kept ?? [];
+    }
 }
 
 /// <summary>

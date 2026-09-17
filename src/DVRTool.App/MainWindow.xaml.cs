@@ -81,6 +81,7 @@ public partial class MainWindow : Window
 
         InitializeAccessTab();
         InitializeStorageTab();
+        InitializeCameraTab();
         InitializeConfigTab();
         InitializeDiagnostics();
         InitializeLiveStats();
@@ -146,6 +147,15 @@ public partial class MainWindow : Window
         {
             try { await storageWork; }
             catch { /* canceled/failed; the Storage tab already reported it */ }
+        }
+
+        // And the Camera tab, for the same reason as Storage: a canceled apply must still
+        // finish the read-back it is mid-way through rather than leave a written camera
+        // unreported.
+        if (_cameraTask is { } cameraWork)
+        {
+            try { await cameraWork; }
+            catch { /* canceled/failed; the Camera tab already reported it */ }
         }
 
         // And the Config tab, which holds the client that did its read for the life of the

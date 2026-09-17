@@ -210,6 +210,39 @@ boundary, never a point to difference across. The **Test pattern** button (`Fish
 shows a tiled floor through the calibration with no camera. Still missing: per-device calibration
 persistence, circle detection, Quad in the GUI, hardware decode.
 
+**Camera settings** (2026-09-17, `docs/hikvision-camera-settings.md`): the per-camera encoder —
+resolution, frame rate, codec, CBR/VBR, max bitrate, I-frame interval, audio and the channel's
+name — in the GUI **Camera** tab (`MainWindow.CameraSettings.cs`) and `dvrtool camera show |
+options | probe | set`. **Hikvision only**; `ICameraSettingsClient`/`ICameraSettingsWriter`
+(`CameraSettings.cs` in Core) are a sibling of `IStorageClient` and `IDeviceConfigClient`, not an
+extension of either — the three answer "what will this camera write to disk", "what is this
+recorder set to" and "what is this camera configured to do". What makes it safe is that
+`/ISAPI/Streaming/channels/{track}/capabilities` **self-describes its legal values** (`opt=` on
+resolution/rate/quality, `min`/`max` on bitrate and `GovLength`), so both front ends offer what
+the camera declares and **a value it never declared is refused, naming the camera's own list,
+never clamped** — a camera accepts an unsupported resolution and silently ignores it. Read the
+doc before touching it — notably: `maxFrameRate` 0 is **"Full Frame Rate", a choice the firmware
+re-resolves per resolution**, so it is its own request field and writing today's resolved number
+would pin a camera set to follow; resolutions arrive as **two parallel `opt=` lists** zipped
+positionally; the default attribute is spelled **`def=` and `default=` in the same document**
+(as in `adminAccesses/capabilities`); bitrate bounds **differ per track** (main 32–16384, sub
+32–2048 on the lab recorder); a camera with no audio input carries **no `<Audio>` element at
+all**, so "—" there is "nothing to configure", not a failed read; and a channel's **name is not
+in the streaming document** — it is in the IP-camera list or the video-input list, found by
+reading, because a rename aimed at the wrong one is accepted and does nothing. `GetEncodingAsync`
+keeps **every** track while `GetMainStreamsAsync`'s `x01` filter stays exactly where it is, since
+sub-stream bitrates in a retention total would flatter every estimate. **`SetMaxBitrateAsync` now
+forwards to `SetEncodingAsync`** rather than PUTting the same document with its own inline logic
+and no re-read guard — two writers to one document with different safety levels is how one of
+them quietly loses what the other has. `CameraSettingsPlan` (Core, pure) is the one piece of
+arithmetic the CLI dry run and the GUI dialog both describe the write from, and it honours the
+retention planner's **channel pins** — a pin bites on a bitrate change and nothing else.
+Live-verified 2026-09-17 on the lab recorder: reads, the enumerations, a refused resolution, a
+CLI canary (ch4 GovLength 50→40→50) and **the GUI Apply fired live** (50→45, read back, confirmed
+from the CLI, restored). Not yet fired: resolution/codec/quality changes, any rename, any
+customer recorder, or an M-series or DVR/hybrid chassis (where the analog name path is
+unexercised).
+
 **Storage / retention:** the GUI Storage tab (`MainWindow.Storage.cs`) and `dvrtool storage
 disks | retention | schedule | plan | set | pin` cover disk inventory, per-camera
 oldest-footage/days-held, the worst-case retention estimate, and the "we need X days" bitrate

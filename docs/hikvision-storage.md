@@ -16,7 +16,7 @@ the lab recorder (DS-7716NI-I4/16P, where the write path was canary-tested and r
 | Bitrate bounds | `GET /ISAPI/Streaming/channels/{track}/capabilities` | optional; `min`/`max` attrs |
 | Oldest recording | `POST /ISAPI/ContentMgmt/search` | `maxResults=1`, everything window |
 | Recording schedule | `GET /ISAPI/ContentMgmt/record/tracks` | optional; the RaCM `TrackList`, one `Track` per stream, main = id `x01` |
-| Bitrate write | `PUT /ISAPI/Streaming/channels/{track}` | full-document round trip |
+| Bitrate write | `PUT /ISAPI/Streaming/channels/{track}` | full-document round trip, via the camera-settings writer |
 
 All answered 200 on every recorder probed. Both XML namespaces
 (`hikvision.com/ver20` and `isapi.org/ver20`) appear across the fleet — parsers are
@@ -193,6 +193,21 @@ reading is meant; with the stars, `Continuous* + Motion*` cannot be read as a si
   name carrying its own `+` would make the mix separator unreadable.
 
 Live on the lab recorder 2026-09-03: 9/9 `Continuous`, no stars — the ordinary case reads as ordinary.
+
+## The bitrate write moved (2026-09-17)
+
+`SetMaxBitrateAsync` no longer PUTs `/ISAPI/Streaming/channels/{track}` with its own inline
+logic. It forwards to `SetEncodingAsync` in `HikvisionClient.CameraSettings.cs`
+(`docs/hikvision-camera-settings.md`), which owns that document. Its signature, its contract and
+everything above it — `IStorageClient`, `storage plan --force`, `storage set --force`, the
+Storage tab's Apply — are unchanged, and it gains the guarded re-read it did not have: the
+document is re-read immediately before the write and a copy that moved underneath is refused
+rather than clobbered.
+
+The reason is not tidiness. Once the camera-settings writer owned the same document there were
+two writers to it with different safety levels, which is how one of them quietly loses a guard
+the other has. `GetBitrateRangeAsync` shares the same bounds reader for the same reason — the
+planner and the settings editor must not disagree about what a camera will accept.
 
 ## The planner
 

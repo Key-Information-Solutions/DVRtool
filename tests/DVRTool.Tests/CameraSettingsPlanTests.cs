@@ -242,6 +242,75 @@ public class CameraSettingsPlanTests
         Assert.Contains("Front Door", plan.Channels[0].Describe());
     }
 
+    [Fact]
+    public void Intersecting_two_cameras_offers_only_what_both_accept()
+    {
+        var a = new EncodingOptions
+        {
+            Resolutions = [new Resolution(1920, 1080), new Resolution(2688, 1520)],
+            FrameRates = [12.0, 15.0, 20.0, 25.0],
+            SupportsFullFrameRate = true,
+            Codecs = ["H.264", "H.265"],
+            Bitrate = new BitrateRange(32, 16384),
+            GovLength = new ValueRange(1, 250),
+        };
+        var b = new EncodingOptions
+        {
+            Resolutions = [new Resolution(1920, 1080), new Resolution(1280, 720)],
+            FrameRates = [12.0, 20.0],
+            SupportsFullFrameRate = true,
+            Codecs = ["H.265"],
+            Bitrate = new BitrateRange(64, 2048),
+            GovLength = new ValueRange(1, 100),
+        };
+
+        var both = EncodingOptions.Intersect([a, b]);
+
+        Assert.Equal([new Resolution(1920, 1080)], both.Resolutions);
+        Assert.Equal([12.0, 20.0], both.FrameRates);
+        Assert.Equal(["H.265"], both.Codecs);
+        // Bounds narrow to what satisfies every camera, not to the widest of them.
+        Assert.Equal(new BitrateRange(64, 2048), both.Bitrate);
+        Assert.Equal(1, both.GovLength!.Min);
+        Assert.Equal(100, both.GovLength.Max);
+    }
+
+    [Fact]
+    public void A_camera_that_declared_nothing_does_not_empty_the_offer()
+    {
+        // The trap: treating silence as an empty set would make one undeclared camera in a
+        // selection leave the operator with no values to choose from at all.
+        var declared = new EncodingOptions
+        {
+            Resolutions = [new Resolution(1920, 1080)],
+            Codecs = ["H.264", "H.265"],
+        };
+
+        var both = EncodingOptions.Intersect([declared, new EncodingOptions()]);
+
+        Assert.Equal([new Resolution(1920, 1080)], both.Resolutions);
+        Assert.Equal(["H.264", "H.265"], both.Codecs);
+    }
+
+    [Fact]
+    public void Full_frame_rate_is_offered_only_where_every_opinionated_camera_has_it()
+    {
+        var with = new EncodingOptions { FrameRates = [20.0], SupportsFullFrameRate = true };
+        var without = new EncodingOptions { FrameRates = [20.0], SupportsFullFrameRate = false };
+
+        Assert.True(EncodingOptions.Intersect([with, with]).SupportsFullFrameRate);
+        Assert.False(EncodingOptions.Intersect([with, without]).SupportsFullFrameRate);
+        // A silent camera has no opinion, so it does not veto it.
+        Assert.True(EncodingOptions.Intersect([with, new EncodingOptions()]).SupportsFullFrameRate);
+    }
+
+    [Fact]
+    public void Intersecting_nothing_is_empty_rather_than_a_crash()
+    {
+        var none = EncodingOptions.Intersect([]);
+        Assert.True(none.IsEmpty);
+    }
+
     [Theory]
     [InlineData("1920x1080", 1920, 1080)]
     [InlineData("1920X1080", 1920, 1080)]

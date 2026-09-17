@@ -788,6 +788,140 @@
                         </Grid>
                     </DockPanel>
                 </TabItem>
+                <TabItem Header="Camera">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <TextBlock Text="System " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="CameraDeviceCombo" Width="220"
+                                      DisplayMemberPath="DisplayLabel"/>
+                            <TextBlock Text=" Stream " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                            <ComboBox x:Name="CameraStreamCombo" Width="80" SelectedIndex="0">
+                                <ComboBoxItem Content="main"/>
+                                <ComboBoxItem Content="sub"/>
+                                <ComboBoxItem Content="third"/>
+                                <ComboBox.ToolTip>
+                                    <TextBlock>
+                                        Which stream track to show and edit. The main stream is what<LineBreak/>
+                                        the recorder archives; the sub stream is what live grids and<LineBreak/>
+                                        remote apps pull. Not every camera has a third.
+                                    </TextBlock>
+                                </ComboBox.ToolTip>
+                            </ComboBox>
+                            <Button Content="Load" Click="OnLoadCameraSettings" Margin="8,0,0,0"/>
+                        </ToolBar>
+
+                        <TextBlock x:Name="CameraWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
+                                   TextWrapping="Wrap" Foreground="DarkRed" FontWeight="Bold"
+                                   Visibility="Collapsed"/>
+
+                        <GroupBox DockPanel.Dock="Bottom" Margin="0,6,0,0"
+                                  Header="Change the selected camera(s)">
+                            <DockPanel Margin="4">
+                                <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                                    <TextBlock Text="Resolution " VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="CameraResolutionCombo" Width="110"/>
+                                    <TextBlock Text=" FPS " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <ComboBox x:Name="CameraFpsCombo" Width="80"/>
+                                    <TextBlock Text=" Codec " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <ComboBox x:Name="CameraCodecCombo" Width="80"/>
+                                    <TextBlock Text=" Mode " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <ComboBox x:Name="CameraQualityCombo" Width="70"/>
+                                    <TextBlock Text=" Max kbps " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <TextBox x:Name="CameraKbpsBox" Width="70" VerticalAlignment="Center"/>
+                                    <TextBlock Text=" I-frame gap " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <TextBox x:Name="CameraGopBox" Width="55" VerticalAlignment="Center"/>
+                                    <TextBlock Text=" Audio " VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <ComboBox x:Name="CameraAudioCombo" Width="70"/>
+                                </WrapPanel>
+
+                                <TextBlock x:Name="CameraOptionsHint" DockPanel.Dock="Top"
+                                           Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#333"/>
+
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal"
+                                            Margin="0,8,0,0">
+                                    <TextBlock Text="Rename to " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="CameraNameBox" Width="180" VerticalAlignment="Center">
+                                        <TextBox.ToolTip>
+                                            <TextBlock>
+                                                Renames one camera — select a single row to use it. The name<LineBreak/>
+                                                is written to whichever list the recorder keeps it in, found<LineBreak/>
+                                                by reading rather than assumed.
+                                            </TextBlock>
+                                        </TextBox.ToolTip>
+                                    </TextBox>
+                                    <Button Content="Preview changes" Click="OnPreviewCameraSettings"
+                                            Margin="12,0,0,0" Padding="10,2"/>
+                                    <Button x:Name="CameraApplyButton" Content="Apply…"
+                                            Click="OnApplyCameraSettings" Margin="8,0,0,0"
+                                            Padding="10,2" IsEnabled="False">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Writes the previewed changes to each selected camera and reads<LineBreak/>
+                                                every one back. Asks for confirmation first — this changes what<LineBreak/>
+                                                the cameras record, and a bitrate change moves retention with it.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
+                                    <Button Content="Clear" Click="OnClearCameraSettings"
+                                            Margin="8,0,0,0" Padding="10,2"/>
+                                </StackPanel>
+
+                                <TextBlock x:Name="CameraPlanSummary" Margin="0,6,0,0"
+                                           TextWrapping="Wrap"/>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Cameras">
+                            <DockPanel>
+                                <TextBlock x:Name="CameraSummary" DockPanel.Dock="Top"
+                                           Margin="2,2,2,4" TextWrapping="Wrap"/>
+                                <DataGrid x:Name="CameraGrid" AutoGenerateColumns="False"
+                                          IsReadOnly="True" CanUserAddRows="False"
+                                          SelectionMode="Extended" Margin="0,2">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Ch" Width="40"
+                                                            Binding="{Binding Ch}"/>
+                                        <DataGridTextColumn Header="Name" Width="150"
+                                                            Binding="{Binding Name}"/>
+                                        <DataGridTextColumn Header="Stream" Width="55"
+                                                            Binding="{Binding Stream}"/>
+                                        <DataGridTextColumn Header="Resolution" Width="95"
+                                                            Binding="{Binding Resolution}"/>
+                                        <DataGridTextColumn Header="FPS" Width="80"
+                                                            Binding="{Binding Fps}"/>
+                                        <DataGridTextColumn Header="Codec" Width="60"
+                                                            Binding="{Binding Codec}"/>
+                                        <DataGridTextColumn Header="Mode" Width="55"
+                                                            Binding="{Binding Mode}"/>
+                                        <DataGridTextColumn Header="Max kbps" Width="70"
+                                                            Binding="{Binding Kbps}"/>
+                                        <DataGridTextColumn Header="I-frame" Width="60"
+                                                            Binding="{Binding Gop}"/>
+                                        <DataGridTextColumn Header="Audio" Width="55"
+                                                            Binding="{Binding Audio}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding AudioDetail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="Planned" Width="*"
+                                                            Binding="{Binding Planned}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding PlannedDetail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                        </GroupBox>
+                    </DockPanel>
+                </TabItem>
+
                 <TabItem Header="Config">
                     <DockPanel>
                         <ToolBar DockPanel.Dock="Top">
