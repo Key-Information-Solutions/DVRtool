@@ -117,12 +117,13 @@ string command = args[0].ToLowerInvariant();
 // the rest is parsed as options.
 bool isAccess = command == "access";
 bool isStorage = command == "storage";
+bool isCamera = command == "camera";
 bool isRecording = command == "recording";
 bool isConfig = command == "config";
 bool isUsers = command == "users";
 bool isUpdate = command == "update";
-string groupSubcommand = (isAccess || isStorage || isRecording || isConfig || isUpdate ||
-        isUsers) && args.Length > 1 &&
+string groupSubcommand = (isAccess || isStorage || isCamera || isRecording || isConfig ||
+        isUpdate || isUsers) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -167,6 +168,9 @@ try
     // to the ordinary client + identity path below.
     if (isStorage && StorageCommands.TryRunHelp(groupSubcommand, opts, out int storageHelpExit))
         return storageHelpExit;
+
+    if (isCamera && CameraCommands.TryRunHelp(groupSubcommand, opts, out int cameraHelpExit))
+        return cameraHelpExit;
 
     if (isRecording &&
         RecordingCommands.TryRunHelp(groupSubcommand, opts, out int recordingHelpExit))
@@ -418,6 +422,8 @@ try
         }
         case "storage":
             return await StorageCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
+        case "camera":
+            return await CameraCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "recording":
             return await RecordingCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "config":
@@ -1218,6 +1224,8 @@ static Dictionary<string, string> ParseOptions(string[] args)
         // `storage pin` / `storage plan` / `storage set`: valueless by design, and listed
         // here so a following bare word is reported as unexpected rather than swallowed.
         "pin", "unpin", "clear", "ignore-pins",
+        // `camera set` / `recording set`: valueless by design.
+        "all",
         // `config audit` / `config set`: valueless by design.
         "all-saved", "sync-now",
         // `update`: valueless by design.

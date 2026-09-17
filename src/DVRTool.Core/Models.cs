@@ -127,6 +127,13 @@ public enum StreamType
 {
     Main = 0,
     Sub = 1,
+
+    /// <summary>
+    /// The third stream, where a camera offers one. Hikvision numbers tracks
+    /// <c>channel*100 + stream + 1</c>, so this is track <c>x03</c>. Not every camera has one,
+    /// and a recorder that does not simply lists no such track.
+    /// </summary>
+    Third = 2,
 }
 
 public enum RecordingType

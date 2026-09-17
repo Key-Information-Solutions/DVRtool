@@ -440,82 +440,31 @@ public sealed partial class HikvisionClient : IStorageClient
         int trackId = TrackId(channel, StreamType.Main);
         var doc = await TryGetXmlAsync($"/ISAPI/Streaming/channels/{trackId}/capabilities",
             ct, null);
-        if (doc?.Root is null)
-            return null;
-
-        // The bounds ride as min/max attributes on the bitrate element itself
-        // (vbrUpperCap on VBR-capable firmware; constantBitRate is the CBR twin).
-        foreach (string name in new[] { "vbrUpperCap", "constantBitRate" })
-        {
-            var el = doc.Root.Descendants().FirstOrDefault(e => e.Name.LocalName == name);
-            if (el?.Attribute("min")?.Value is { } minText &&
-                el.Attribute("max")?.Value is { } maxText &&
-                int.TryParse(minText, out int min) && int.TryParse(maxText, out int max) &&
-                min > 0 && max >= min)
-                return new BitrateRange(min, max);
-        }
-        return null;
+        // One reader for the bounds, shared with the camera-settings path, so the retention
+        // planner and the settings editor cannot disagree about what a camera will accept.
+        return doc?.Root is null ? null : ReadBitrateRange(doc.Root);
     }
 
+    /// <summary>
+    /// Sets one channel's max recording bitrate, by way of the camera-settings writer.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a thin forward rather than its own write. Both this and
+    /// <see cref="SetEncodingAsync"/> PUT <c>/ISAPI/Streaming/channels/{track}</c>, and two
+    /// writers to one document with different safety levels is how one of them quietly loses a
+    /// guard the other has. The retention planner's contract is unchanged: it asks for a rate
+    /// and gets back the rate the device kept.
+    /// </remarks>
     public async Task<int> SetMaxBitrateAsync(int channel, int kbps,
         CancellationToken ct = default)
     {
         if (kbps <= 0)
             throw new ArgumentOutOfRangeException(nameof(kbps));
 
-        int trackId = TrackId(channel, StreamType.Main);
-        string path = $"/ISAPI/Streaming/channels/{trackId}";
+        var change = await SetEncodingAsync(channel, StreamType.Main,
+            new EncodingSettings(BitrateKbps: kbps), ct);
 
-        // Read-modify-write of the channel's own document: ISAPI PUT wants the full
-        // StreamingChannel back, and round-tripping what the device sent keeps every
-        // field (and the document's namespace) exactly as the firmware expects it.
-        var doc = await GetXmlAsync(path, ct);
-        var video = doc.Root?.Descendants().FirstOrDefault(e => e.Name.LocalName == "Video")
-            ?? throw new NvrException($"channel {channel}: GET {path} returned no <Video> element");
-
-        // Both fields where present: vbrUpperCap governs VBR recording, constantBitRate
-        // governs CBR — setting both keeps the channel consistent whichever mode it is in.
-        bool wroteAny = false;
-        foreach (string name in new[] { "vbrUpperCap", "constantBitRate" })
-        {
-            var el = video.Elements().FirstOrDefault(e => e.Name.LocalName == name);
-            if (el is null)
-                continue;
-            el.Value = kbps.ToString(CultureInfo.InvariantCulture);
-            wroteAny = true;
-        }
-        if (!wroteAny)
-            throw new NvrException(
-                $"channel {channel}: no writable bitrate field (neither vbrUpperCap nor " +
-                "constantBitRate) in its streaming config");
-
-        using var content = new StringContent(doc.ToString(SaveOptions.DisableFormatting),
-            Encoding.UTF8, "application/xml");
-        using var resp = await _http.PutAsync(path, content, ct);
-        string text = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode)
-            throw new NvrException(
-                $"PUT {path} → {(int)resp.StatusCode} {resp.ReasonPhrase}",
-                text, (int)resp.StatusCode);
-
-        // ISAPI answers a ResponseStatus document; statusCode 1 is OK. Anything else is a
-        // rejection even under HTTP 200.
-        if (TryParseStatusCode(text) is { } status && status != 1)
-            throw new NvrException(
-                $"channel {channel}: the device rejected the bitrate write (statusCode " +
-                $"{status})", text);
-
-        // Read back what actually stuck: NVR-managed cameras may snap the value to their
-        // own steps, and the caller should report the real number, not the requested one.
-        var verify = await GetXmlAsync(path, ct);
-        var verifyVideo = verify.Root?.Descendants()
-            .FirstOrDefault(e => e.Name.LocalName == "Video");
-        bool isVbr = string.Equals(
-            verifyVideo is null ? null : Child(verifyVideo, "videoQualityControlType"),
-            "VBR", StringComparison.OrdinalIgnoreCase);
-        int? readBack = TryParseInt(verifyVideo, isVbr ? "vbrUpperCap" : "constantBitRate")
-            ?? TryParseInt(verifyVideo, "vbrUpperCap");
-        return readBack
+        return change.After?.BitrateKbps
             ?? throw new NvrException(
                 $"channel {channel}: the write was accepted but the read-back shows no " +
                 "bitrate field — treat the channel's setting as unknown");

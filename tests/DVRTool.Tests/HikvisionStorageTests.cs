@@ -574,16 +574,17 @@ public class HikvisionStorageTests
             </StreamingChannel>
             """;
 
-        int gets = 0;
+        bool written = false;
         var handler = new MockHttpHandler((req, body) =>
         {
             Assert.Equal("/ISAPI/Streaming/channels/101", req.RequestUri!.AbsolutePath);
             if (req.Method == HttpMethod.Get)
             {
-                gets++;
-                // First GET: current config. Second GET: the read-back — the camera
-                // snapped 4096 down to its own step, 4000.
-                return MockHttpHandler.Xml(channelXml(gets == 1 ? 5120 : 4000));
+                // Before the PUT: the current config, and it must read the same both times —
+                // the write re-reads immediately beforehand and refuses a document that moved
+                // under it. After the PUT: the read-back, where the camera snapped 4096 down
+                // to its own step, 4000.
+                return MockHttpHandler.Xml(channelXml(written ? 4000 : 5120));
             }
 
             Assert.Equal(HttpMethod.Put, req.Method);
@@ -591,6 +592,7 @@ public class HikvisionStorageTests
             Assert.Contains("<vbrUpperCap>4096</vbrUpperCap>", body);
             Assert.Contains("<maxFrameRate>2000</maxFrameRate>", body);
             Assert.Contains(Ns, body);
+            written = true;
             return MockHttpHandler.Xml($"""
                 <ResponseStatus version="2.0" xmlns="{Ns}">
                 <requestURL>/ISAPI/Streaming/channels/101</requestURL>
@@ -605,7 +607,9 @@ public class HikvisionStorageTests
 
         // The caller learns what stuck, not what was asked.
         Assert.Equal(4000, actual);
-        Assert.Equal(3, handler.Requests.Count); // GET, PUT, verify GET
+        // GET, guarded re-read, PUT, read-back. The retention planner's bitrate write shares
+        // the camera-settings writer's path, so it gets that guard too.
+        Assert.Equal(4, handler.Requests.Count);
     }
 
     [Fact]
