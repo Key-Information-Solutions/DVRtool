@@ -410,6 +410,34 @@ issued it. Fired live: the Hikvision NTP-interval write on the lab recorder (30 
 back to 60). Not yet fired: any Dahua write, the Hikvision zone/name/sync-now writes, and the GUI
 Apply button.
 
+**Exception e-mail / the alerting audit** (2026-09-18, `docs/hikvision-exceptions.md`): which
+recorders would actually tell somebody when a fault fires — the GUI **Config** tab's *Fleet
+e-mail audit* panel (its own exception picker beside the clock audit) and `dvrtool exceptions
+show | audit [--type <eventType>] [--all-saved]`. **Read-only and Hikvision-only**;
+`IExceptionNotificationClient` (`EventNotification.cs` in Core) is a sibling of
+`IDeviceConfigClient`, and the aggregation (`ExceptionAudit.cs`) mirrors `ConfigAudit`/`ClockSweep`
+exactly. The product is the **illegal-login sweep**, and what makes it worth building is that the
+recorder's own web UI *cannot* answer it: the e-mail tick lives on the Exception page and the SMTP
+server two menus away, so a ticked box above a blank mail page looks configured, sends nothing
+forever and reports nothing — that is `ExceptionEmailState.GoesNowhere`, and only an outside read
+sees it. Three reads per device: `/ISAPI/Event/capabilities` (`isSupportIllAccess` — does the
+firmware have it), `/ISAPI/Event/triggers` (**presence is the switch**: a notification that is off
+is simply absent, so an empty `EventTriggerNotificationList` means it fires and nothing happens),
+and `/ISAPI/System/Network/mailing` (**the firmware ships three empty `<receiver>` slots**, so
+counting elements calls every blank mail page configured). Read the doc before touching it —
+notably: **a device-level exception is the one with no channel** (camera triggers carry
+`dynVideoInputChannelID`/`videoInputChannelID`, alarm inputs `inputIOPortID`), which is a
+correctness rule and not just a filter, since one DVR has `email` ticked on a *per-camera*
+`videoloss`; `isSupportViException` is deliberately **unpaired** because it reads false on a DVR
+that lists a working `badvideo`, so `Exists` is `Declared ?? Listed` and the trigger list is
+evidence in its own right; and **a 503 "Device Busy" under `/ISAPI/Event/triggers/` means "no such
+trigger"** — a bogus id and `/triggers/capabilities` answer it identically, so the client never
+asks for a trigger by id and code that retries that 503 waits forever. Swept live 2026-09-18 over
+17 Hikvision recorders, **0 failed reads**: all 17 have the exception, **1 e-mails on it**, 14 have
+working mail and the box unticked, 3 have no mail settings at all; the four Dahua/Nx records report
+*not implemented*, never "no alerts". No write exists — the fix is a tick on the recorder's own
+Exception page.
+
 **Recorded playback** (2026-09-04, `docs/playback.md`): the GUI Playback / Export tab is a
 day-per-camera **timeline** (`TimelineControl`, geometry in `TimelineWindow`/`FootageCoverage`/
 `PlaybackClock` in Core, all tested) — click seeks, drag selects an export range, wheel zooms,

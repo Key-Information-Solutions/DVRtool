@@ -26,6 +26,9 @@ const string Usage = """
                       switches (see: dvrtool recording --help)
       config          The recorder's own settings — clock, NTP, ports, LAN address —
                       and the FLEET CLOCK AUDIT (see: dvrtool config --help)
+      exceptions      The recorder's own faults (illegal login, HDD, network) and who
+                      hears about them — the FLEET EXCEPTION E-MAIL AUDIT
+                      (see: dvrtool exceptions --help)
       search          List recordings for a channel in a window
       footage         Which days of a month hold footage for a channel; --probe opens
                       the playback body the GUI plays and says what arrived
@@ -120,10 +123,11 @@ bool isStorage = command == "storage";
 bool isCamera = command == "camera";
 bool isRecording = command == "recording";
 bool isConfig = command == "config";
+bool isExceptions = command is "exceptions" or "exception";
 bool isUsers = command == "users";
 bool isUpdate = command == "update";
 string groupSubcommand = (isAccess || isStorage || isCamera || isRecording || isConfig ||
-        isUpdate || isUsers) && args.Length > 1 &&
+        isUpdate || isUsers || isExceptions) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -186,6 +190,17 @@ try
         // would otherwise demand a --host this invocation has no use for.
         if (ConfigCommands.UsesSavedDevices(groupSubcommand, opts))
             return await ConfigCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
+    }
+
+    if (isExceptions)
+    {
+        if (ExceptionCommands.TryRunHelp(groupSubcommand, opts, out int exceptionsHelpExit))
+            return exceptionsHelpExit;
+
+        // Same reason as `config`: the fleet sweep builds a client per saved record, so it
+        // must run before the single-device connection below demands a --host.
+        if (ExceptionCommands.UsesSavedDevices(groupSubcommand, opts))
+            return await ExceptionCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
     }
 
     if (isUsers)
@@ -428,6 +443,9 @@ try
             return await RecordingCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "config":
             return await ConfigCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
+        case "exceptions":
+        case "exception":
+            return await ExceptionCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "live-url":
         {
             int channel = RequireChannel(opts);

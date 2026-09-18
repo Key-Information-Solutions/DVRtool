@@ -944,6 +944,34 @@
                                     </TextBlock>
                                 </Button.ToolTip>
                             </Button>
+                            <Separator/>
+                            <TextBlock Text="Alerts on " VerticalAlignment="Center"/>
+                            <ComboBox x:Name="ExceptionTypeCombo" Width="175"
+                                      SelectedIndex="0">
+                                <ComboBoxItem Content="Illegal login" Tag="illaccess"/>
+                                <ComboBoxItem Content="HDD full" Tag="diskfull"/>
+                                <ComboBoxItem Content="HDD error" Tag="diskerror"/>
+                                <ComboBoxItem Content="Network disconnected" Tag="nicbroken"/>
+                                <ComboBoxItem Content="IP conflict" Tag="ipconflict"/>
+                                <ComboBoxItem Content="Record/capture exception"
+                                              Tag="recordingfailure"/>
+                            </ComboBox>
+                            <Button Content="Fleet e-mail audit" Click="OnAuditFleetExceptions"
+                                    Margin="6,0,0,0" Padding="10,2">
+                                <Button.ToolTip>
+                                    <TextBlock>
+                                        Asks every saved Hikvision recorder two things: does its firmware<LineBreak/>
+                                        have this exception, and is "Send Email" ticked on it — then reads<LineBreak/>
+                                        the recorder's mail settings to see whether that mail would arrive.<LineBreak/>
+                                        <LineBreak/>
+                                        The recorder's own web UI cannot answer this: the tick is on the<LineBreak/>
+                                        Exception page and the SMTP server is two menus away, so a ticked<LineBreak/>
+                                        box above blank mail settings looks configured and sends nothing.<LineBreak/>
+                                        <LineBreak/>
+                                        Read-only. The fix is a tick on the recorder itself.
+                                    </TextBlock>
+                                </Button.ToolTip>
+                            </Button>
                         </ToolBar>
 
                         <TextBlock x:Name="ConfigWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
@@ -966,6 +994,37 @@
                                                             Binding="{Binding Drift}"/>
                                         <DataGridTextColumn Header="Time source" Width="85"
                                                             Binding="{Binding Source}"/>
+                                        <DataGridTextColumn Header="Verdict" Width="*"
+                                                            Binding="{Binding Verdict}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding Detail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <GroupBox DockPanel.Dock="Top" Header="Fleet exception e-mail"
+                                  Margin="0,4,0,0">
+                            <DockPanel>
+                                <TextBlock x:Name="ExceptionFleetSummary" DockPanel.Dock="Top"
+                                           Margin="2,2,2,4" TextWrapping="Wrap"/>
+                                <DataGrid x:Name="ExceptionFleetGrid" AutoGenerateColumns="False"
+                                          IsReadOnly="True" CanUserAddRows="False"
+                                          MaxHeight="170" Margin="0,2">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Recorder" Width="150"
+                                                            Binding="{Binding Device}"/>
+                                        <DataGridTextColumn Header="Has it" Width="55"
+                                                            Binding="{Binding HasIt}"/>
+                                        <DataGridTextColumn Header="E-mail" Width="110"
+                                                            Binding="{Binding Email}"/>
+                                        <DataGridTextColumn Header="Mail server" Width="200"
+                                                            Binding="{Binding MailServer}"/>
                                         <DataGridTextColumn Header="Verdict" Width="*"
                                                             Binding="{Binding Verdict}">
                                             <DataGridTextColumn.CellStyle>

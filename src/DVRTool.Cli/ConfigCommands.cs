@@ -144,7 +144,7 @@ internal static class ConfigCommands
     }
 
     /// <summary>The saved recorders this invocation names, or null with an exit code.</summary>
-    private static List<SavedDevice>? ResolveSaved(Dictionary<string, string> opts,
+    internal static List<SavedDevice>? ResolveSaved(Dictionary<string, string> opts,
         out int exitCode)
     {
         exitCode = 0;
