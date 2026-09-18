@@ -147,7 +147,7 @@ per-type GETs it replaces.
 - **17 of 17** have the Illegal Login exception. It is not a firmware-dependent feature on
   anything we have deployed — the original worry does not survive contact with the fleet.
 - **1 of 17** actually e-mails on it (Site C, to one address).
-- **16** have it and do not use it. Fourteen of those have working mail settings already —
+- **16** have it and do not use it. Thirteen of those have working mail settings already —
   one tick each.
 - **3** of those sixteen have **no mail settings at all**: the tick alone would not help
   them, which is why the summary counts them separately.

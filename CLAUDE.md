@@ -433,7 +433,7 @@ that lists a working `badvideo`, so `Exists` is `Declared ?? Listed` and the tri
 evidence in its own right; and **a 503 "Device Busy" under `/ISAPI/Event/triggers/` means "no such
 trigger"** — a bogus id and `/triggers/capabilities` answer it identically, so the client never
 asks for a trigger by id and code that retries that 503 waits forever. Swept live 2026-09-18 over
-17 Hikvision recorders, **0 failed reads**: all 17 have the exception, **1 e-mails on it**, 14 have
+17 Hikvision recorders, **0 failed reads**: all 17 have the exception, **1 e-mails on it**, 13 have
 working mail and the box unticked, 3 have no mail settings at all; the four Dahua/Nx records report
 *not implemented*, never "no alerts". No write exists — the fix is a tick on the recorder's own
 Exception page.
