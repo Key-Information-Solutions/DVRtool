@@ -168,6 +168,14 @@ public partial class MainWindow : Window
         _configClient?.Dispose();
         _configClient = null;
 
+        // And the IP filter tab, whose clients each hold the read a write must be planned from.
+        if (_ipFilterTask is { } ipFilterWork)
+        {
+            try { await ipFilterWork; }
+            catch { /* canceled/failed; the IP filter tab already reported it */ }
+        }
+        DisposeIpFilterClients();
+
         // Before the players: an SDK preview is the source feeding one of them, and its
         // teardown blocks on the SDK's own receive thread. The grid first — it owns up to
         // sixteen of them on one session.

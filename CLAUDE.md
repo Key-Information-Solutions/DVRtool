@@ -438,6 +438,33 @@ working mail and the box unticked, 3 have no mail settings at all; the four Dahu
 *not implemented*, never "no alerts". No write exists — the fix is a tick on the recorder's own
 Exception page.
 
+**IP filter / the recorder's blocklist** (2026-09-29, `docs/hikvision-ip-filter.md`): the GUI
+**IP filter** tab (`MainWindow.IpFilter.cs`) and `dvrtool ipfilter show | add | remove | enable |
+disable` — read the filter across the fleet, block and unblock addresses; the CLI is the automation
+surface (`--ip` repeatable, `--from-file` with `#` comments, dry run by default, `--force`).
+**Hikvision only**; `IIpFilterClient`/`IIpFilterWriter` (`IpFilter.cs` in Core) are siblings of
+`IDeviceConfigClient`. One document, `/ISAPI/System/Network/ipFilter` (`enabled`, `permissionType`,
+`IPFilterAddressList size="32"`, one host per entry — `addressFilterType` `mask` has **no mask
+field**, so no ranges or CIDR). Most web UIs never show the page: `isSupportIPFilter` is true on 8
+of 17 recorders, and on the other 9 the flag is **absent** and the document 403s/404s — absent flag
++ no document is "no filter", a `true` flag + no document is a failed read. `IpFilterPlan` (Core,
+pure) is what both front ends describe a write from, and its rules are the feature: **blocklists
+only** — a filter in `allow` mode (only listed addresses may connect), with an unreadable mode, or
+mixed entries is refused whole, and the mode is never written, because there any change can lock
+out everyone including us; **never** the recorder's own address, **its gateway** (a masquerading
+router makes every remote client arrive from it), this workstation's interfaces or a `--protect`
+address; a **live session** (`/ISAPI/Security/onlineUser`) and LAN addresses are refused unless
+overridden (`--allow-logged-in` is CLI-only; `--allow-lan` / a GUI checkbox); parsing is strict
+(`IPAddress.TryParse` reads `"10.1"` as `10.0.0.1`); capacity overflow is refused by name; **a plan
+with one refusal writes nothing to that recorder**. This office's public address is invisible from
+inside NAT — protect it by naming it. Digest ISAPI requests open no session, so DVRTool never
+appears in `onlineUser`. The write rides the Config guard (plan must come from the same client's
+latest read, re-read refuses a moved document, read-back compares entry by entry → REJECTED), and
+entries are renumbered 1…n. A blocked host's connects to 80/554/8000 **time out** (dropped, not
+refused). Verified live 2026-09-29 on the lab recorder from **both** front ends: block a LAN host
++ enable, the host could no longer connect while this workstation kept reading, unblock + disable,
+restored. Not yet fired on a customer recorder, with IPv6, or on a full list.
+
 **Recorded playback** (2026-09-04, `docs/playback.md`): the GUI Playback / Export tab is a
 day-per-camera **timeline** (`TimelineControl`, geometry in `TimelineWindow`/`FootageCoverage`/
 `PlaybackClock` in Core, all tested) — click seeks, drag selects an export range, wheel zooms,

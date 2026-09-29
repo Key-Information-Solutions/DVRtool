@@ -29,6 +29,8 @@ const string Usage = """
       exceptions      The recorder's own faults (illegal login, HDD, network) and who
                       hears about them — the FLEET EXCEPTION E-MAIL AUDIT
                       (see: dvrtool exceptions --help)
+      ipfilter        The recorder's IP blocklist — read it across the fleet, block or
+                      unblock addresses (see: dvrtool ipfilter --help)
       search          List recordings for a channel in a window
       footage         Which days of a month hold footage for a channel; --probe opens
                       the playback body the GUI plays and says what arrived
@@ -124,10 +126,11 @@ bool isCamera = command == "camera";
 bool isRecording = command == "recording";
 bool isConfig = command == "config";
 bool isExceptions = command is "exceptions" or "exception";
+bool isIpFilter = command == "ipfilter";
 bool isUsers = command == "users";
 bool isUpdate = command == "update";
 string groupSubcommand = (isAccess || isStorage || isCamera || isRecording || isConfig ||
-        isUpdate || isUsers || isExceptions) && args.Length > 1 &&
+        isUpdate || isUsers || isExceptions || isIpFilter) && args.Length > 1 &&
         !args[1].StartsWith("--", StringComparison.Ordinal)
     ? args[1].ToLowerInvariant()
     : "";
@@ -201,6 +204,17 @@ try
         // must run before the single-device connection below demands a --host.
         if (ExceptionCommands.UsesSavedDevices(groupSubcommand, opts))
             return await ExceptionCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
+    }
+
+    if (isIpFilter)
+    {
+        if (IpFilterCommands.TryRunHelp(groupSubcommand, opts, out int ipFilterHelpExit))
+            return ipFilterHelpExit;
+
+        // Saved records build their own clients, one per recorder, before the single-device
+        // connection below demands a --host.
+        if (IpFilterCommands.UsesSavedDevices(opts))
+            return await IpFilterCommands.RunSavedAsync(groupSubcommand, opts, cts.Token);
     }
 
     if (isUsers)
@@ -446,6 +460,8 @@ try
         case "exceptions":
         case "exception":
             return await ExceptionCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
+        case "ipfilter":
+            return await IpFilterCommands.RunAsync(client, groupSubcommand, opts, cts.Token);
         case "live-url":
         {
             int channel = RequireChannel(opts);
@@ -1248,11 +1264,13 @@ static Dictionary<string, string> ParseOptions(string[] args)
         "all-saved", "sync-now",
         // `update`: valueless by design.
         "yes", "quiet", "json",
+        // `ipfilter`: valueless by design.
+        "enable", "disable", "allow-lan", "allow-logged-in",
     ];
     // Flags that may be given more than once (e.g. `access onboard --group A --group B`).
     // Repeats accumulate, joined by an ASCII unit separator the caller splits back out; a
     // plain dictionary would otherwise keep only the last one.
-    string[] multiFlags = ["group", "device"];
+    string[] multiFlags = ["group", "device", "ip", "protect"];
     var opts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     for (int i = 0; i < args.Length; i++)
     {

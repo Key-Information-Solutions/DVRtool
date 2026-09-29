@@ -1173,6 +1173,147 @@
                         </Grid>
                     </DockPanel>
                 </TabItem>
+                <TabItem Header="IP filter">
+                    <DockPanel>
+                        <ToolBar DockPanel.Dock="Top">
+                            <Button Content="Read fleet" Click="OnReadIpFilters" Padding="10,2">
+                                <Button.ToolTip>
+                                    <TextBlock>
+                                        Reads the IP filter of every saved recorder: whether the firmware<LineBreak/>
+                                        has one (most web UIs never show the page), whether it is on, and<LineBreak/>
+                                        what it blocks. Read-only.
+                                    </TextBlock>
+                                </Button.ToolTip>
+                            </Button>
+                            <TextBlock x:Name="IpFilterSummary" Margin="10,0,0,0"
+                                       VerticalAlignment="Center"/>
+                        </ToolBar>
+
+                        <TextBlock x:Name="IpFilterWarning" DockPanel.Dock="Top" Margin="2,4,2,0"
+                                   Foreground="DarkRed" FontWeight="SemiBold" TextWrapping="Wrap"
+                                   Visibility="Collapsed"/>
+
+                        <GroupBox DockPanel.Dock="Bottom" Header="Change (writes)" Margin="0,6,0,0">
+                            <DockPanel Margin="4">
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                                    <TextBlock Text="Addresses " VerticalAlignment="Top" Margin="0,3,0,0"/>
+                                    <TextBox x:Name="IpFilterAddressBox" Width="260" Height="54"
+                                             AcceptsReturn="True" TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto">
+                                        <TextBox.ToolTip>
+                                            <TextBlock>
+                                                One address per line, or comma-separated. Single hosts only —<LineBreak/>
+                                                the recorder has no field for a range or a subnet.
+                                            </TextBlock>
+                                        </TextBox.ToolTip>
+                                    </TextBox>
+                                    <StackPanel Margin="10,0,0,0">
+                                        <CheckBox x:Name="IpFilterEnableCheck"
+                                                  Content="Turn the filter on with Block" IsChecked="True">
+                                            <CheckBox.ToolTip>
+                                                <TextBlock>
+                                                    An address added to a filter that is OFF is listed and blocks nobody.
+                                                </TextBlock>
+                                            </CheckBox.ToolTip>
+                                        </CheckBox>
+                                        <CheckBox x:Name="IpFilterAllowLanCheck" Content="Allow LAN addresses"
+                                                  Margin="0,4,0,0">
+                                            <CheckBox.ToolTip>
+                                                <TextBlock>
+                                                    Private addresses (10/8, 172.16/12, 192.168/16, 100.64/10, link-local)<LineBreak/>
+                                                    are refused unless this is ticked: on a customer site a LAN address<LineBreak/>
+                                                    is usually the site's own iVMS workstation, not an attacker.
+                                                </TextBlock>
+                                            </CheckBox.ToolTip>
+                                        </CheckBox>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <TextBlock Text="Never block " VerticalAlignment="Center"/>
+                                            <TextBox x:Name="IpFilterProtectBox" Width="150">
+                                                <TextBox.ToolTip>
+                                                    <TextBlock>
+                                                        This office's public address, which DVRTool cannot see from inside NAT.<LineBreak/>
+                                                        This PC's own addresses, the recorder, its gateway and anyone logged in<LineBreak/>
+                                                        right now are always protected.
+                                                    </TextBlock>
+                                                </TextBox.ToolTip>
+                                            </TextBox>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </StackPanel>
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button Content="Block on selected…" Click="OnIpFilterBlock" Padding="10,2"/>
+                                    <Button Content="Unblock…" Click="OnIpFilterUnblock" Padding="10,2"
+                                            Margin="8,0,0,0">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Unblocks the addresses highlighted in the list (and any typed above)<LineBreak/>
+                                                on every selected recorder that has them.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
+                                    <Button Content="Turn on…" Click="OnIpFilterTurnOn" Padding="10,2"
+                                            Margin="16,0,0,0"/>
+                                    <Button Content="Turn off…" Click="OnIpFilterTurnOff" Padding="10,2"
+                                            Margin="8,0,0,0"/>
+                                    <TextBlock Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#555"
+                                               Text="Blocklists only — an allowlist, and the mode itself, are changed on the recorder."/>
+                                </StackPanel>
+                                <TextBox x:Name="IpFilterResult" DockPanel.Dock="Top" Margin="0,6,0,0"
+                                         IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                                         TextWrapping="Wrap" MaxHeight="120"
+                                         VerticalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas, Segoe UI"/>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="3*"/>
+                                <ColumnDefinition Width="2*"/>
+                            </Grid.ColumnDefinitions>
+                            <GroupBox Grid.Column="0" Header="Recorders (Ctrl/Shift-click to select several)">
+                                <DataGrid x:Name="IpFilterFleetGrid" AutoGenerateColumns="False"
+                                          IsReadOnly="True" CanUserAddRows="False" Margin="0,2"
+                                          SelectionMode="Extended"
+                                          SelectionChanged="OnIpFilterFleetSelectionChanged">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Recorder" Width="150"
+                                                            Binding="{Binding Device}"/>
+                                        <DataGridTextColumn Header="Filter" Width="170"
+                                                            Binding="{Binding Filter}"/>
+                                        <DataGridTextColumn Header="Verdict" Width="*"
+                                                            Binding="{Binding Verdict}">
+                                            <DataGridTextColumn.CellStyle>
+                                                <Style TargetType="DataGridCell">
+                                                    <Setter Property="ToolTip" Value="{Binding Detail}"/>
+                                                    <Setter Property="ToolTipService.ShowDuration" Value="60000"/>
+                                                </Style>
+                                            </DataGridTextColumn.CellStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </GroupBox>
+                            <GroupBox Grid.Column="1" Header="Blocked addresses">
+                                <DockPanel>
+                                    <TextBlock x:Name="IpFilterEntriesHeader" DockPanel.Dock="Top"
+                                               Margin="2,2,2,4" TextWrapping="Wrap"
+                                               Text="Read fleet, then pick a recorder."/>
+                                    <DataGrid x:Name="IpFilterEntryGrid" AutoGenerateColumns="False"
+                                              IsReadOnly="True" CanUserAddRows="False" Margin="0,2"
+                                              SelectionMode="Extended">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="#" Width="35" Binding="{Binding Id}"/>
+                                            <DataGridTextColumn Header="Address" Width="140"
+                                                                Binding="{Binding Address}"/>
+                                            <DataGridTextColumn Header="Also blocked on" Width="*"
+                                                                Binding="{Binding AlsoOn}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </GroupBox>
+                        </Grid>
+                    </DockPanel>
+                </TabItem>
             </TabControl>
         </Grid>
     </DockPanel>
