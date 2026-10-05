@@ -20,6 +20,14 @@
     <!-- Public property: pass UPDATES=0 and this machine's DVRTool never checks for, offers or
          installs updates (GUI shows nothing; `dvrtool update` reports the policy). docs/updates.md -->
     <Property Id="UPDATES" Value="1" Secure="yes" />
+    <!-- No System Restore point. Windows Installer otherwise asks System Restore for a
+         checkpoint (a VSS snapshot of C:) before every per-machine install, and on 2026-10-05
+         that snapshot deadlocked KIS-SHOP26 mid-update (mouse alive, every click hung, hard
+         power-off). The MSI is a plain file-copy major upgrade with nothing a restore point
+         would rescue. Authored here so every install path skips it — the built-in updater,
+         a hand-run msiexec, and older installed clients that predate the flag.
+         docs/updates.md, docs/installer.md. -->
+    <Property Id="MSIFASTINSTALL" Value="1" Secure="yes" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="DVRTool">

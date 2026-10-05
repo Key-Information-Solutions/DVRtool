@@ -130,6 +130,14 @@ quietly — unlike the pin files, whose contents guard writes to recorders.
 - `UpdateInstaller` does **not** elevate. msiexec raises UAC itself for a per-machine upgrade,
   so the operator sees a prompt for the MSI rather than for `cmd.exe`. `cmd.exe` is used as the
   relauncher because it is a system binary and survives our own files being replaced.
+- **No System Restore point** (2026-10-05, 1.2.1). Windows Installer asks System Restore for a
+  checkpoint before a per-machine install, and that checkpoint is a VSS snapshot of C:. The
+  1.1.3 → 1.2.0 auto-update on KIS-SHOP26 deadlocked inside that snapshot: the installer and
+  the shadow-copy service went silent at 07:14:20, every click then hung while the mouse and
+  untouched windows kept working, and the machine needed a hard power-off. The MSI now
+  authors `MSIFASTINSTALL=1` and `UpdateInstaller` passes the same on the command line, so
+  neither the updater nor a hand-run `msiexec` ever creates one. Keep both: the property in
+  the MSI covers an old client's updater, the argument covers an old MSI.
 - A dev build (`bin\Debug`) can exercise everything but the offer: it reports *not an installed
   copy*. To test the full path install an MSI and run from `Program Files`.
 - `UpdateClientTests` fake the whole channel through `MockHttpHandler` with a per-test key

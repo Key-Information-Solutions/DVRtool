@@ -73,7 +73,9 @@ Upgrades are major-upgrade in place: installing a higher `-Version` MSI replaces
 old one (same `UpgradeCode`); installing an older version over a newer one is
 refused. This is also exactly what the built-in updater does ([updates.md](updates.md)):
 it downloads the next release's MSI, verifies it against a signed manifest, and runs
-`msiexec /i … /passive /norestart`. Silent uninstall:
+`msiexec /i … /passive /norestart MSIFASTINSTALL=1`. The MSI authors `MSIFASTINSTALL=1`
+itself as well, so **no install path creates a System Restore point**: the VSS snapshot behind
+that checkpoint deadlocked a machine mid-upgrade on 2026-10-05 (updates.md). Silent uninstall:
 
 ```powershell
 msiexec /x DVRTool-1.0.0.msi /qn        # or /x {ProductCode} without the file

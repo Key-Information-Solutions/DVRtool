@@ -99,8 +99,16 @@ public class UpdateDecisionTests
     {
         string cmd = UpdateInstaller.BuildCommand(@"C:\u\DVRTool-1.1.0.msi", @"C:\Program Files\DVRTool\app\DVRTool.exe");
         Assert.Equal(
-            "msiexec /i \"C:\\u\\DVRTool-1.1.0.msi\" /passive /norestart && start \"\" \"C:\\Program Files\\DVRTool\\app\\DVRTool.exe\"",
+            "msiexec /i \"C:\\u\\DVRTool-1.1.0.msi\" /passive /norestart MSIFASTINSTALL=1 && start \"\" \"C:\\Program Files\\DVRTool\\app\\DVRTool.exe\"",
             cmd);
-        Assert.Equal("msiexec /i \"C:\\u\\x.msi\" /qn /norestart", UpdateInstaller.BuildCommand(@"C:\u\x.msi", null, passive: false));
+        Assert.Equal("msiexec /i \"C:\\u\\x.msi\" /qn /norestart MSIFASTINSTALL=1", UpdateInstaller.BuildCommand(@"C:\u\x.msi", null, passive: false));
+    }
+
+    [Fact]
+    public void Installer_never_asks_for_a_system_restore_point()
+    {
+        // 2026-10-05: the restore-point VSS snapshot deadlocked the release machine mid-update.
+        Assert.Contains("MSIFASTINSTALL=1", UpdateInstaller.MsiexecArguments(@"C:\u\x.msi"));
+        Assert.Contains("MSIFASTINSTALL=1", UpdateInstaller.MsiexecArguments(@"C:\u\x.msi", passive: false));
     }
 }

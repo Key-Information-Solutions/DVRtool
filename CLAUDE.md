@@ -8,6 +8,9 @@ CLI (`src/DVRTool.Cli`) as its automation/scripting surface; both front ends rid
 produces a per-machine WiX MSI carrying both front ends self-contained; it installs to
 `Program Files\DVRTool` (`app\` GUI, `cli\` CLI), puts `cli\` on the system PATH, writes the
 `HKLM\SOFTWARE\DVRTool` discovery key, and supports `msiexec /qn` with `DESKTOP_SHORTCUT=0`.
+It authors `MSIFASTINSTALL=1` and the updater passes the same (2026-10-05, 1.2.1): **no
+install ever creates a System Restore point**, because that VSS snapshot deadlocked
+KIS-SHOP26 mid-update (every click hung, hard power-off). Keep both halves.
 The wixproj is deliberately not in `DVRTool.slnx` — see `docs/installer.md` (UpgradeCode and
 component GUIDs are permanent; MSI versions are numeric x.y.z).
 

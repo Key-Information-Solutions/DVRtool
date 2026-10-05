@@ -11,12 +11,19 @@ namespace DVRTool.Core.Updates;
 /// our own files being replaced, so it can relaunch the new GUI after msiexec returns
 /// success; <c>/passive</c> shows only the progress bar. The caller must exit before the
 /// upgrade reaches its files-in-use check, or the installer stalls on a restart prompt.
+/// <para>
+/// <c>MSIFASTINSTALL=1</c> tells Windows Installer not to ask System Restore for a checkpoint
+/// first. That checkpoint is a VSS snapshot of C:, and on 2026-10-05 it deadlocked the
+/// release machine mid-update (every click hung until a hard power-off). The MSI authors
+/// the same property (installer/Package.wxs) so a hand-run install skips it too; passing it
+/// here as well covers an MSI built before the property existed.
+/// </para>
 /// </remarks>
 public static class UpdateInstaller
 {
     /// <summary>The exact msiexec arguments, for display and for the CLI's dry run.</summary>
     public static string MsiexecArguments(string msiPath, bool passive = true) =>
-        $"/i \"{msiPath}\" {(passive ? "/passive" : "/qn")} /norestart";
+        $"/i \"{msiPath}\" {(passive ? "/passive" : "/qn")} /norestart MSIFASTINSTALL=1";
 
     /// <summary>The cmd.exe command line that installs and, optionally, relaunches the GUI.</summary>
     public static string BuildCommand(string msiPath, string? relaunchExe, bool passive = true)
