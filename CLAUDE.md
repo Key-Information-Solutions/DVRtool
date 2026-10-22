@@ -415,7 +415,8 @@ Apply button. **Restart** (2026-10-22, `IDeviceRebooter` / `RebootWatch` in `Dev
 Config tab "Restart recorder…", `dvrtool config reboot --force`): Hikvision only, `PUT
 /ISAPI/System/reboot`, verified by watching the recorder go down *then* come back (it keeps
 answering for seconds after acknowledging). It is the only PoE power cycle the API has — the
-NVR's PoE document has no per-port switch (doc §Reboot). Not yet fired live.
+NVR's PoE document has no per-port switch (doc §Reboot). Fired live from the GUI
+2026-10-22 on a customer K-series NVR (the unreachable PoE camera came back); CLI `--force` unfired.
 
 **Exception e-mail / the alerting audit** (2026-09-18, `docs/hikvision-exceptions.md`): which
 recorders would actually tell somebody when a fault fires — the GUI **Config** tab's *Fleet

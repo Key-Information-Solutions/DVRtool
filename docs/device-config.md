@@ -221,7 +221,9 @@ returns the **PPPoE** list — the path matching is case-insensitive.)
 Both front ends re-check identity before sending (the GUI on the read's client, the CLI when the
 connection is built), and the GUI dialog names the device and defaults to **No**: every camera
 stops recording until the recorder is back. A refusal under HTTP 200 is reported in the device's
-own words. The CLI is a dry run unless `--force`. **Not yet fired live.**
+own words. The CLI is a dry run unless `--force`. **Fired live 2026-10-22 from the GUI (1.2.2)
+on the customer DS-7608NXI-K2/8P above**: it went down, came back, and the unreachable PoE camera
+returned. The CLI `--force` path has not been fired.
 
 ## Verified live, 2026-09-09
 
