@@ -91,6 +91,9 @@ public partial class MainWindow
     private async void OnSyncConfigClock(object sender, RoutedEventArgs e) =>
         await RunConfigWorkAsync(SyncConfigClockAsync);
 
+    private async void OnRebootConfigDevice(object sender, RoutedEventArgs e) =>
+        await RunConfigWorkAsync(RebootConfigDeviceAsync);
+
     /// <summary>
     /// Runs one piece of Config-tab work, superseding whatever was running before it — the
     /// same shape as the Storage and Access tabs, tracked so shutdown can wait for it.
@@ -299,6 +302,7 @@ public partial class MainWindow
         ConfigWriteResult.Text = "";
         ConfigApplyButton.IsEnabled = false;
         ConfigSyncNowButton.IsEnabled = false;
+        ConfigRebootButton.IsEnabled = false;
     }
 
     private void ShowConfig(SavedDevice device, DeviceConfiguration doc, ClockDrift drift)
@@ -362,6 +366,7 @@ public partial class MainWindow
         bool writable = _configClient is IDeviceConfigWriter;
         ConfigApplyButton.IsEnabled = writable;
         ConfigSyncNowButton.IsEnabled = writable;
+        ConfigRebootButton.IsEnabled = _configClient is IDeviceRebooter;
         ConfigWriteResult.Text = writable
             ? ""
             : "This system has no writable device configuration — a software VMS keeps one " +
@@ -640,6 +645,107 @@ public partial class MainWindow
         catch (Exception ex)
         {
             ShowConfigWarning($"The clock write failed: {Shorten(ex.Message)}");
+        }
+    }
+
+    /// <summary>
+    /// Restarts the recorder that was read, then watches it go down and come back. Identity is
+    /// re-checked first on the same client, because a restart is the one act on this tab that
+    /// cannot be undone or even compared afterwards.
+    /// </summary>
+    private async Task RebootConfigDeviceAsync(CancellationToken ct)
+    {
+        if (_configDevice is not { } device || _configClient is not IDeviceRebooter rebooter)
+        {
+            SetStatus("Read a system first.");
+            return;
+        }
+
+        if (MessageBox.Show(
+                $"Restart {device.Name} ({device.Host})?\n\n" +
+                "Every camera on it stops recording and live view drops until it is back — " +
+                "usually two to three minutes. On an NVR with built-in PoE this also " +
+                "power-cycles the cameras plugged into it.\n\n" +
+                "There is no way to cancel a restart once it is sent.",
+                "Restart the recorder", MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                MessageBoxResult.No)
+            != MessageBoxResult.Yes)
+            return;
+
+        var client = _configClient;
+        try
+        {
+            SetStatus($"{device.Name}: checking it is the same recorder …");
+            var check = await DeviceIdentityGuard.CheckAsync(client,
+                device.ExpectedSerial.Length > 0 ? device.ExpectedSerial : null, device.Name,
+                ct: ct);
+            if (check.Verdict == IdentityVerdict.Mismatch)
+            {
+                ShowConfigWarning($"WRONG DEVICE — {check.Message} Nothing was restarted.");
+                SetStatus($"{device.Name}: WRONG DEVICE — not restarted.");
+                return;
+            }
+
+            await rebooter.RebootAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ShowConfigWarning($"The restart request failed: {Shorten(ex.Message)} " +
+                "If the connection dropped, it may be restarting anyway — Read it in a few minutes.");
+            return;
+        }
+
+        ConfigWriteResult.Text = "Restart sent — waiting for it to go down …";
+        SetStatus($"{device.Name}: restart acknowledged — waiting for it to go down …");
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var progress = new Progress<string>(_ =>
+        {
+            ConfigWriteResult.Text = "Down — waiting for it to come back …";
+            SetStatus($"{device.Name}: down — waiting for it to come back …");
+        });
+
+        RebootWatchResult result;
+        try
+        {
+            result = await RebootWatch.WaitAsync(
+                probeCt => AnswersAsync(device, probeCt), () => started.Elapsed,
+                Task.Delay, ct, progress);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        ConfigWriteResult.Text = $"Restart: {result.Text}";
+        SetStatus($"{device.Name}: {result.Text}");
+        if (result.Outcome == RebootWatchOutcome.CameBack)
+            await LoadConfigAsync(ct);
+        else
+            ShowConfigWarning($"{device.Name}: {result.Text}.");
+    }
+
+    /// <summary>
+    /// One probe of a restarting recorder: a fresh client every time (the read's client holds
+    /// connections to a box that has since gone away) and a short deadline, since a probe
+    /// that waits out the default HTTP timeout would blur when it came back by half a minute.
+    /// </summary>
+    private static async Task<bool> AnswersAsync(SavedDevice device, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(8));
+        try
+        {
+            using var client = SavedDeviceClients.CreateClient(device);
+            await client.GetDeviceInfoAsync(deadline.Token);
+            return true;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return false;
         }
     }
 

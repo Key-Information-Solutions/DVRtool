@@ -36,6 +36,7 @@ internal static class ConfigCommands
           dvrtool config set    [--ntp-server <host>] [--ntp-port <n>] [--ntp-interval <min>]
                                 [--ntp on|off] [--timezone <vendor value>] [--sync-now]
                                 [--name <text>] [--force] [connection options]
+          dvrtool config reboot [--force] [connection options]
 
         Subcommands:
           show    Everything this recorder says about itself: clock and drift, time source,
@@ -47,6 +48,10 @@ internal static class ConfigCommands
                   each. The only config verb that reads more than one recorder.
           set     Change the time source, the zone, or the name. DRY RUN by default:
                   prints what would change and stops. --force applies it and reads back.
+          reboot  Restart the whole recorder (Hikvision only), then watch it go down and
+                  come back. DRY RUN by default; --force sends it. Every camera stops
+                  recording until it is back (2–3 minutes); on an NVR with built-in PoE it
+                  also power-cycles those cameras — the API has no per-port PoE switch.
 
         Options:
           --all-saved          Audit every recorder saved in the GUI (%APPDATA%\DVRTool\
@@ -248,6 +253,7 @@ internal static class ConfigCommands
             "clock" => await ClockAsync(config, ct),
             "audit" => await AuditOneAsync(client, config, ct),
             "set" => await SetAsync(config, opts, ct),
+            "reboot" or "restart" => await RebootAsync(client, opts, ct),
             _ => UnknownSubcommand(subcommand),
         };
     }
@@ -391,6 +397,62 @@ internal static class ConfigCommands
                 Console.WriteLine($"  {failure.Label}: {failure.Value}");
         }
         return 0;
+    }
+
+    // ----- reboot -----
+
+    private static async Task<int> RebootAsync(INvrClient client,
+        Dictionary<string, string> opts, CancellationToken ct)
+    {
+        if (client is not IDeviceRebooter rebooter)
+        {
+            Console.Error.WriteLine(
+                $"error: restarting a recorder isn't implemented for {client.Vendor} devices.");
+            return 2;
+        }
+
+        // Identity was checked when the connection was built; the name is for the operator.
+        var info = await client.GetDeviceInfoAsync(ct);
+        string who = $"{(info.Name.Length > 0 ? info.Name : info.Model)} " +
+            $"({client.Connection.Host}, serial {info.SerialNumber})";
+        if (!opts.ContainsKey("force") || opts.ContainsKey("dry-run"))
+        {
+            Console.WriteLine($"Would restart {who}.");
+            Console.WriteLine("Every camera on it stops recording until it is back (2–3 minutes).");
+            Console.WriteLine("Dry run — nothing sent. Add --force to restart it.");
+            return 0;
+        }
+
+        await rebooter.RebootAsync(ct);
+        Console.WriteLine($"Restart acknowledged by {who}. Waiting for it to go down …");
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var result = await RebootWatch.WaitAsync(
+            async probeCt =>
+            {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(probeCt);
+                deadline.CancelAfter(TimeSpan.FromSeconds(8));
+                try
+                {
+                    await client.GetDeviceInfoAsync(deadline.Token);
+                    return true;
+                }
+                catch (Exception) when (!probeCt.IsCancellationRequested)
+                {
+                    return false;
+                }
+            },
+            () => started.Elapsed, Task.Delay, ct,
+            new SyncProgress(_ => Console.WriteLine("Down. Waiting for it to come back …")));
+
+        Console.WriteLine($"Restart: {result.Text}.");
+        return result.Outcome == RebootWatchOutcome.CameBack ? 0 : 1;
+    }
+
+    /// <summary>Reports on the calling thread — <see cref="Progress{T}"/> would post to the pool.</summary>
+    private sealed class SyncProgress(Action<string> report) : IProgress<string>
+    {
+        public void Report(string value) => report(value);
     }
 
     // ----- set -----

@@ -411,7 +411,11 @@ is no IANA mapping on either vendor. **Tier 3 (LAN address and service-port writ
 deliberately unbuilt** — spec §7 — since a network write cannot be verified on the socket that
 issued it. Fired live: the Hikvision NTP-interval write on the lab recorder (30 → read back →
 back to 60). Not yet fired: any Dahua write, the Hikvision zone/name/sync-now writes, and the GUI
-Apply button.
+Apply button. **Restart** (2026-10-22, `IDeviceRebooter` / `RebootWatch` in `DeviceReboot.cs`;
+Config tab "Restart recorder…", `dvrtool config reboot --force`): Hikvision only, `PUT
+/ISAPI/System/reboot`, verified by watching the recorder go down *then* come back (it keeps
+answering for seconds after acknowledging). It is the only PoE power cycle the API has — the
+NVR's PoE document has no per-port switch (doc §Reboot). Not yet fired live.
 
 **Exception e-mail / the alerting audit** (2026-09-18, `docs/hikvision-exceptions.md`): which
 recorders would actually tell somebody when a fault fires — the GUI **Config** tab's *Fleet

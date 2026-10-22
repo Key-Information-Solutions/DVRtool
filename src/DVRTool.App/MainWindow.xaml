@@ -1106,6 +1106,20 @@
                                             </TextBlock>
                                         </Button.ToolTip>
                                     </Button>
+                                    <Button x:Name="ConfigRebootButton" Content="Restart recorder…"
+                                            Click="OnRebootConfigDevice" Margin="8,0,0,0" Padding="10,2"
+                                            IsEnabled="False">
+                                        <Button.ToolTip>
+                                            <TextBlock>
+                                                Restarts the whole recorder, then watches it go down and come back.<LineBreak/>
+                                                Every camera stops recording until it is back (2–3 minutes).<LineBreak/>
+                                                <LineBreak/>
+                                                On an NVR with built-in PoE this is also the only power cycle of<LineBreak/>
+                                                its cameras the API offers — the usual cure for a PoE camera the<LineBreak/>
+                                                NVR reports as unreachable. Hikvision only; asks first.
+                                            </TextBlock>
+                                        </Button.ToolTip>
+                                    </Button>
                                     <TextBlock x:Name="ConfigWriteResult" Margin="12,0,0,0"
                                                VerticalAlignment="Center" TextWrapping="Wrap"/>
                                 </StackPanel>

@@ -197,6 +197,32 @@ operator actually changed. Identity is verified before every read and before the
 rows: `host:port` names a socket, not a recorder, and a config view is where reading the wrong
 box misleads worst.
 
+## Reboot (2026-10-22)
+
+The Config tab's **Restart recorder…** button and `dvrtool config reboot [--force]` restart the
+whole recorder — **Hikvision only**, `PUT /ISAPI/System/reboot` with an empty body.
+`IDeviceRebooter` (`DeviceReboot.cs` in Core) is a sibling of `IDeviceConfigWriter`, not a member:
+there is no document to read, modify or read back, so none of the write guard applies. What
+replaces the read-back is `RebootWatch`: wait for the recorder to **stop** answering (it
+acknowledges and keeps serving for several seconds, so an answer straight after the request
+proves nothing), then for it to answer again — `CameBack`, `NeverWentDown` (still answering
+after 2 min: the restart probably never ran) or `DidNotReturn` (silent 10 min after going down).
+
+Why it exists: a PoE camera that the NVR reports `netUnreachable` in
+`/ISAPI/ContentMgmt/InputProxy/channels/status` is usually cured by a restart, because a
+restart power-cycles the PoE ports. **Nothing finer is offered by the API** — checked on a customer
+DS-7608NXI-K2/8P (V4.84.100): `/ISAPI/System/Network/POE/capabilities` describes the
+8 ports (`deviceClass`, `ipVersion`) with no power switch, `/ISAPI/System/POE`,
+`/ISAPI/System/Hardware/POE` and `/ISAPI/System/Network/POEPortsDisableAdaptiveServer` answer
+403 `notSupport`, and the NVR-relayed camera reboot needs the NVR to reach the camera, which is
+precisely what an unreachable one fails. (`/ISAPI/System/Network/POE` without `/capabilities`
+returns the **PPPoE** list — the path matching is case-insensitive.)
+
+Both front ends re-check identity before sending (the GUI on the read's client, the CLI when the
+connection is built), and the GUI dialog names the device and defaults to **No**: every camera
+stops recording until the recorder is back. A refusal under HTTP 200 is reported in the device's
+own words. The CLI is a dry run unless `--force`. **Not yet fired live.**
+
 ## Verified live, 2026-09-09
 
 - **Fleet audit, 21 saved recorders, 0 failures** — CLI and the GUI tab, same numbers. Four
