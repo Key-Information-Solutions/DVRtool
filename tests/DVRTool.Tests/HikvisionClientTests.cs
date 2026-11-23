@@ -231,6 +231,63 @@ public class HikvisionClientTests
         Assert.Equal(2, searches);
     }
 
+    // Site I again: a range export the recorder refuses by time becomes the overlapping
+    // files back to back - envelope kept on the first, dropped from the rest.
+    [Fact]
+    public async Task Download_Range_JoinsOverlappingFiles_WhenTimeOnlyUriIsRefused()
+    {
+        static byte[] Body(byte tag)
+        {
+            var b = new byte[64 + 4 + 8];
+            System.Text.Encoding.ASCII.GetBytes("IMKH").CopyTo(b, 0);
+            b[64] = 0x00; b[65] = 0x00; b[66] = 0x01; b[67] = 0xBA;
+            for (int i = 68; i < b.Length; i++) b[i] = tag;
+            return b;
+        }
+        var handler = new MockHttpHandler((req, body) =>
+        {
+            if (req.RequestUri!.AbsolutePath == "/ISAPI/ContentMgmt/search")
+                return MockHttpHandler.Xml($"""
+                    <CMSearchResult xmlns="{Ns}" version="1.0">
+                      <responseStatus>true</responseStatus><responseStatusStrg>OK</responseStatusStrg>
+                      <matchList>
+                        <searchMatchItem><timeSpan><startTime>2026-11-11T09:00:00Z</startTime><endTime>2026-11-11T09:10:00Z</endTime></timeSpan>
+                          <mediaSegmentDescriptor><playbackURI>rtsp://x/?name=A&amp;size=1</playbackURI></mediaSegmentDescriptor></searchMatchItem>
+                        <searchMatchItem><timeSpan><startTime>2026-11-11T09:58:15Z</startTime><endTime>2026-11-11T10:00:46Z</endTime></timeSpan>
+                          <mediaSegmentDescriptor><playbackURI>rtsp://x/?name=B&amp;size=1</playbackURI></mediaSegmentDescriptor></searchMatchItem>
+                        <searchMatchItem><timeSpan><startTime>2026-11-11T10:00:45Z</startTime><endTime>2026-11-11T10:01:19Z</endTime></timeSpan>
+                          <mediaSegmentDescriptor><playbackURI>rtsp://x/?name=C&amp;size=1</playbackURI></mediaSegmentDescriptor></searchMatchItem>
+                      </matchList>
+                    </CMSearchResult>
+                    """);
+            if (!body.Contains("name="))
+                return new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("<ResponseStatus><subStatusCode>badXmlContent</subStatusCode></ResponseStatus>",
+                        System.Text.Encoding.UTF8, "application/xml"),
+                };
+            Assert.DoesNotContain("name=A", body); // ends before the range
+            byte tag = body.Contains("name=B") ? (byte)0xBB : (byte)0xCC;
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(Body(tag)) };
+        });
+        using var client = new HikvisionClient(Conn, handler);
+        string dir = Directory.CreateTempSubdirectory("dvrtool-test-").FullName;
+        try
+        {
+            string path = Path.Combine(dir, "out.mpg");
+            await client.DownloadAsync(3, new DateTime(2026, 11, 11, 10, 0, 0),
+                new DateTime(2026, 11, 11, 10, 1, 0), path);
+
+            byte[] got = await File.ReadAllBytesAsync(path);
+            byte[] want = [.. Body(0xBB), .. Body(0xCC).AsSpan(64)];
+            Assert.Equal(want, got);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public void LiveAndPlaybackUris_UseIsapiConventions()
     {

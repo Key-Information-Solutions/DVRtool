@@ -227,18 +227,129 @@ public sealed partial class HikvisionClient : INvrClient, IUserAdminClient
             $"?starttime={FormatRtspTime(start)}&endtime={FormatRtspTime(end)}");
     }
 
-    public Task DownloadAsync(int channel, DateTime start, DateTime end, string destinationPath,
+    public async Task DownloadAsync(int channel, DateTime start, DateTime end, string destinationPath,
         IProgress<long>? bytesProgress = null, CancellationToken ct = default)
     {
         // A playbackURI we build ourselves; the NVR clips it to what actually exists.
         // NOTE: time-only download URIs (no name=/size=) are a firmware-dependent
         // extension, not spec-guaranteed — DownloadSegmentAsync prefers the real
-        // opaque search URI; this path is only for arbitrary ranges. Live-test item.
-        string playbackUri =
-            $"rtsp://{Connection.Host}:{Connection.RtspPort}" +
-            $"/Streaming/tracks/{TrackId(channel, StreamType.Main)}" +
-            $"?starttime={FormatRtspTime(start)}&endtime={FormatRtspTime(end)}";
-        return DownloadByPlaybackUriAsync(playbackUri, destinationPath, bytesProgress, ct);
+        // opaque search URI. Where the recorder refuses them (Site I), the range is
+        // exported as the recording files that overlap it, back to back.
+        if (!_timeOnlyDownloadRefused)
+        {
+            string playbackUri =
+                $"rtsp://{Connection.Host}:{Connection.RtspPort}" +
+                $"/Streaming/tracks/{TrackId(channel, StreamType.Main)}" +
+                $"?starttime={FormatRtspTime(start)}&endtime={FormatRtspTime(end)}";
+            try
+            {
+                // The refusal arrives while opening, before any file is created.
+                await DownloadByPlaybackUriAsync(playbackUri, destinationPath, bytesProgress, ct);
+                return;
+            }
+            catch (NvrException ex) when (IsTimeOnlyUriRefusal(ex))
+            {
+                _timeOnlyDownloadRefused = true;
+            }
+        }
+        await DownloadRangeByFilesAsync(channel, start, end, destinationPath, bytesProgress, ct);
+    }
+
+    /// <summary>
+    /// A time-range export on a recorder that only downloads whole files: every file that
+    /// overlaps the range, in order, as one MPEG program stream. Whole files, so the export
+    /// can run up to one file past either end of the range. Hikvision's 64-byte envelope is
+    /// kept on the first file (as every other export has it) and dropped from the rest, so
+    /// the joins are plain pack headers.
+    /// </summary>
+    private async Task DownloadRangeByFilesAsync(int channel, DateTime start, DateTime end,
+        string destinationPath, IProgress<long>? bytesProgress, CancellationToken ct)
+    {
+        var segments = await SearchAsync(channel, StreamType.Main, start - FileSearchLeadIn, end, ct);
+        var uris = segments
+            .Where(s => s.End > start && s.Start < end && !string.IsNullOrEmpty(s.NativeId))
+            .OrderBy(s => s.Start)
+            .Select(s => s.NativeId!)
+            .Distinct()
+            .ToList();
+        if (uris.Count == 0)
+            throw new NvrException(
+                $"No recording on channel {channel} between {start:yyyy-MM-dd HH:mm:ss} and {end:yyyy-MM-dd HH:mm:ss}.");
+
+        await using var joined = new FileSequenceStream(uris, OpenFileBodyAsync);
+        await AtomicDownload.WriteAsync(joined, destinationPath, bytesProgress, ct);
+    }
+
+    private async Task<(IDisposable Owner, Stream Body)> OpenFileBodyAsync(
+        string playbackUri, bool first, CancellationToken ct)
+    {
+        var (response, body) = await OpenDownloadAsync(playbackUri, ct);
+        if (!first)
+            body.SkipTo(PsPackHeader);
+        return (response, body);
+    }
+
+    /// <summary>Read-only concatenation of download bodies, each opened only when reached.</summary>
+    private sealed class FileSequenceStream(
+        IReadOnlyList<string> uris,
+        Func<string, bool, CancellationToken, Task<(IDisposable Owner, Stream Body)>> open) : Stream
+    {
+        private int _next;
+        private IDisposable? _owner;
+        private Stream? _current;
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            while (true)
+            {
+                if (_current is null)
+                {
+                    if (_next >= uris.Count)
+                        return 0;
+                    (_owner, _current) = await open(uris[_next], _next == 0, ct);
+                    _next++;
+                }
+                int n = await _current.ReadAsync(buffer, ct);
+                if (n > 0)
+                    return n;
+                CloseCurrent();
+            }
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
+
+        private void CloseCurrent()
+        {
+            _current?.Dispose();
+            _owner?.Dispose();
+            _current = null;
+            _owner = null;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                CloseCurrent();
+            base.Dispose(disposing);
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     public Task DownloadSegmentAsync(RecordingSegment segment, string destinationPath,
