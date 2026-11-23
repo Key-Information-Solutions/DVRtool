@@ -132,6 +132,105 @@ public class HikvisionClientTests
         Assert.All(segments, s => Assert.Equal(DateTimeKind.Unspecified, s.Start.Kind));
     }
 
+    // DS-7608NI-Q2 (Site I, 2026-11): numOfMatches is the grand total on every
+    // page, not the page size. Advancing by it skipped to the end after page one, so
+    // every search silently stopped at the first maxResults segments.
+    [Fact]
+    public async Task Search_AdvancesByItemsOnPage_WhenNumOfMatchesIsTheTotal()
+    {
+        static string Item(int i) => $"""
+            <searchMatchItem><trackID>301</trackID><timeSpan>
+              <startTime>2026-11-11T{i:00}:00:00Z</startTime><endTime>2026-11-11T{i:00}:00:30Z</endTime>
+            </timeSpan><mediaSegmentDescriptor><playbackURI>rtsp://x/{i}</playbackURI></mediaSegmentDescriptor>
+            <metadataMatches><metadataDescriptor>recordType.meta.std-cgi.com/motion</metadataDescriptor></metadataMatches>
+            </searchMatchItem>
+            """;
+        var positions = new List<int>();
+        var handler = new MockHttpHandler((_, body) =>
+        {
+            int pos = int.Parse(System.Text.RegularExpressions.Regex.Match(
+                body, "<searchResultPostion>(\\d+)<").Groups[1].Value);
+            positions.Add(pos);
+            // 5 results total, page size 2; numOfMatches always reports 5.
+            var items = Enumerable.Range(pos, Math.Max(0, Math.Min(2, 5 - pos))).Select(Item);
+            string status = pos + 2 < 5 ? "MORE" : "OK";
+            return MockHttpHandler.Xml($"""
+                <CMSearchResult xmlns="{Ns}" version="1.0">
+                  <responseStatus>true</responseStatus>
+                  <responseStatusStrg>{status}</responseStatusStrg>
+                  <numOfMatches>5</numOfMatches>
+                  <matchList>{string.Concat(items)}</matchList>
+                </CMSearchResult>
+                """);
+        });
+        using var client = new HikvisionClient(Conn, handler);
+
+        var segments = await client.SearchAsync(3,
+            new DateTime(2026, 11, 11, 0, 0, 0), new DateTime(2026, 11, 12, 0, 0, 0));
+
+        Assert.Equal(new[] { 0, 2, 4 }, positions);
+        Assert.Equal(5, segments.Count);
+        Assert.Equal(new DateTime(2026, 11, 11, 4, 0, 30), segments[^1].End);
+    }
+
+    // Same recorder: a playbackURI without name=/size= is 400 badXmlContent, so playback
+    // falls back to the file holding the target and reports that file's own span.
+    [Fact]
+    public async Task OpenPlayback_FallsBackToWholeFile_WhenTimeOnlyUriIsRefused()
+    {
+        var downloads = new List<string>();
+        int searches = 0;
+        var handler = new MockHttpHandler((req, body) =>
+        {
+            if (req.RequestUri!.AbsolutePath == "/ISAPI/ContentMgmt/search")
+            {
+                searches++;
+                Assert.Contains("<startTime>2026-11-11T08:00:00Z</startTime>", body); // 2 h lead-in
+                return MockHttpHandler.Xml($"""
+                    <CMSearchResult xmlns="{Ns}" version="1.0">
+                      <responseStatus>true</responseStatus><responseStatusStrg>OK</responseStatusStrg>
+                      <numOfMatches>2</numOfMatches>
+                      <matchList>
+                        <searchMatchItem><timeSpan><startTime>2026-11-11T09:50:00Z</startTime><endTime>2026-11-11T09:55:00Z</endTime></timeSpan>
+                          <mediaSegmentDescriptor><playbackURI>rtsp://x/A?name=A&amp;size=1</playbackURI></mediaSegmentDescriptor></searchMatchItem>
+                        <searchMatchItem><timeSpan><startTime>2026-11-11T09:58:15Z</startTime><endTime>2026-11-11T10:00:46Z</endTime></timeSpan>
+                          <mediaSegmentDescriptor><playbackURI>rtsp://x/B?name=B&amp;size=2</playbackURI></mediaSegmentDescriptor></searchMatchItem>
+                      </matchList>
+                    </CMSearchResult>
+                    """);
+            }
+            downloads.Add(body);
+            if (!body.Contains("name="))
+                return new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(
+                        "<ResponseStatus><statusCode>6</statusCode><subStatusCode>badXmlContent</subStatusCode></ResponseStatus>",
+                        System.Text.Encoding.UTF8, "application/xml"),
+                };
+            var media = new byte[4096];
+            media[0] = 0x00; media[1] = 0x00; media[2] = 0x01; media[3] = 0xBA;
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(media),
+            };
+        });
+        using var client = new HikvisionClient(Conn, handler);
+
+        var at = new DateTime(2026, 11, 11, 10, 0, 0);
+        using (var first = await client.OpenPlaybackAsync(3, at, at.AddHours(1)))
+        {
+            Assert.Equal(new DateTime(2026, 11, 11, 9, 58, 15), first.RequestedStart);
+            Assert.Equal(new DateTime(2026, 11, 11, 10, 0, 46), first.RequestedEnd);
+        }
+        Assert.Contains("name=B", downloads[^1]);
+        int refusedAttempts = downloads.Count(d => !d.Contains("name="));
+
+        // The refusal is remembered: a second seek goes straight to the file path.
+        using (await client.OpenPlaybackAsync(3, at, at.AddHours(1))) { }
+        Assert.Equal(refusedAttempts, downloads.Count(d => !d.Contains("name=")));
+        Assert.Equal(2, searches);
+    }
+
     [Fact]
     public void LiveAndPlaybackUris_UseIsapiConventions()
     {

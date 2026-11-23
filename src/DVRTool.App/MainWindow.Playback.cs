@@ -390,6 +390,16 @@ public partial class MainWindow
                 feed = pipe.Output;
             }
 
+            // A recorder that only plays whole files (Hikvision DS-7608NI-Q2) sends the file
+            // holding the target from its own start, and the body says so; anchor the clock
+            // there or every position on the timeline is off by how far into the file we asked.
+            if (opened.RequestedStart != target)
+            {
+                target = opened.RequestedStart;
+                _playbackClock.Reanchor(target);
+                PlaybackTimeline.Playhead = target;
+            }
+
             var previousStream = _playbackStream;
             var previousPipe = _playbackPipe;
             _playbackStream = opened;

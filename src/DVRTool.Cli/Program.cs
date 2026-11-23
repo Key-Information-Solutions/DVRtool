@@ -1125,6 +1125,10 @@ static async Task<int> RunFootageAsync(INvrClient client, IPlaybackClient playba
     Console.WriteLine(
         $"Opened playback from {at:yyyy-MM-dd HH:mm:ss} ({stream}) in {sw.ElapsedMilliseconds} ms — " +
         $"container {body.Container}, over the web port {client.Connection.HttpPort}.");
+    if (body.RequestedStart != at)
+        Console.WriteLine(
+            $"  this recorder plays whole files only: the body is the file " +
+            $"{body.RequestedStart:HH:mm:ss}–{body.RequestedEnd:HH:mm:ss}.");
 
     var (bytes, head) = await ReadSomeAsync(body.Body, 2 * 1024 * 1024, TimeSpan.FromSeconds(8), ct);
     Console.WriteLine(

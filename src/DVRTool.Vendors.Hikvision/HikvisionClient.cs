@@ -107,11 +107,15 @@ public sealed partial class HikvisionClient : INvrClient, IUserAdminClient
         return channels.Values.OrderBy(c => c.Id).ToList();
     }
 
-    public async Task<IReadOnlyList<RecordingSegment>> SearchAsync(
-        int channel, DateTime start, DateTime end, CancellationToken ct = default)
+    public Task<IReadOnlyList<RecordingSegment>> SearchAsync(
+        int channel, DateTime start, DateTime end, CancellationToken ct = default) =>
+        SearchAsync(channel, StreamType.Main, start, end, ct);
+
+    private async Task<IReadOnlyList<RecordingSegment>> SearchAsync(
+        int channel, StreamType stream, DateTime start, DateTime end, CancellationToken ct)
     {
         var results = new List<RecordingSegment>();
-        int trackId = TrackId(channel, StreamType.Main);
+        int trackId = TrackId(channel, stream);
         string searchId = Guid.NewGuid().ToString("D").ToUpperInvariant();
         int position = 0;
 
@@ -160,10 +164,11 @@ public sealed partial class HikvisionClient : INvrClient, IUserAdminClient
                     "ISAPI search returned a non-XML response (web login page? wrong port?)", text);
             }
             string statusStr = Descendant(doc.Root, "responseStatusStrg") ?? "";
-            int matches = int.TryParse(Descendant(doc.Root, "numOfMatches"), out int m) ? m : 0;
 
+            int itemsOnPage = 0;
             foreach (var item in doc.Descendants().Where(e => e.Name.LocalName == "searchMatchItem"))
             {
+                itemsOnPage++;
                 var timeSpan = item.Descendants().FirstOrDefault(e => e.Name.LocalName == "timeSpan");
                 if (timeSpan is null)
                     continue;
@@ -185,10 +190,14 @@ public sealed partial class HikvisionClient : INvrClient, IUserAdminClient
                 });
             }
 
-            hasMore = statusStr.Equals("MORE", StringComparison.OrdinalIgnoreCase) && matches > 0;
+            // Advance by the items actually on this page. numOfMatches is the page
+            // count on some firmware but the WHOLE result total on others (DS-7608NI-Q2,
+            // Site I 2026-11: 389 on every page) - adding it skipped past the end
+            // and silently truncated every search at the first 40 segments.
+            hasMore = statusStr.Equals("MORE", StringComparison.OrdinalIgnoreCase) && itemsOnPage > 0;
             if (!hasMore)
                 break;
-            position += matches;
+            position += itemsOnPage;
         }
 
         // Returning a silently partial list would make un-listed footage look
